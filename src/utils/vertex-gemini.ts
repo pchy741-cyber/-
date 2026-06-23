@@ -26,6 +26,7 @@ export interface GeminiCallOptions {
   label?: string;
   grounded?: boolean;   // true → Vertex AI + Google Search Grounding (GCP 크레딧)
   useVertex?: boolean;  // true → Vertex AI 직접 사용 (GCP 크레딧, grounding 없음) — DART 분석 등 장문 처리용
+  paid?: boolean;       // true → AI Studio 유료 경로 (레이트리미터 우회, GEMINI_API_KEY 결제 적용)
 }
 
 // ── 레이트 리미터: AI Studio 무료 티어 한도 ──
@@ -224,6 +225,42 @@ export async function callVertexGemini(
 ): Promise<string> {
   const label = opts.label ?? 'unknown';
   const startMs = Date.now();
+
+  // ── paid: true → AI Studio 유료 경로 (레이트리미터 우회, 결제 적용) ──
+  if (opts.paid) {
+    try {
+      const client = getStudioClient();
+      const model = client.getGenerativeModel({
+        model: FREE_MODEL,
+        generationConfig: {
+          temperature: opts.temperature ?? 0.2,
+          maxOutputTokens: opts.maxOutputTokens ?? 8192,
+        },
+        systemInstruction: systemPrompt,
+      });
+      const result = await model.generateContent(userMessage);
+      const response = result.response;
+      const text = response.text();
+      const usage = response.usageMetadata;
+      const inTok = usage?.promptTokenCount ?? 0;
+      const outTok = usage?.candidatesTokenCount ?? 0;
+      _dailyTotals.inputTokens += inTok;
+      _dailyTotals.outputTokens += outTok;
+      _dailyTotals.totalTokens += inTok + outTok;
+      _dailyTotals.calls++;
+      _dailyTotals.studioCalls++;
+      const durationMs = Date.now() - startMs;
+      _recentCalls.push({ label, inputTokens: inTok, outputTokens: outTok, at: new Date().toISOString(), durationMs, isGrounded: false, costUsd: 0 });
+      if (_recentCalls.length > 20) _recentCalls.shift();
+      logTokenUsage({ provider: 'gemini', model: FREE_MODEL, inputTokens: inTok, outputTokens: outTok, costUsd: calcGeminiStudioCost(), label });
+      logger.info(`💳 AI Studio Paid [${label}]: ${inTok}+${outTok}tok ${durationMs}ms`, { component: 'AI_COST' });
+      return text;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn(`⚠️ AI Studio Paid 실패 [${label}]: ${msg}`, { component: 'AI_COST' });
+      throw err;
+    }
+  }
 
   // ── useVertex: true → Vertex AI 직접 경로 (GCP 크레딧, grounding 없음) ──
   if (opts.useVertex && !opts.grounded) {

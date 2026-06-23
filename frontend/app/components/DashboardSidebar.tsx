@@ -3,7 +3,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Button, Modal } from '@/components/ui';
 
-type Tab = 'home' | 'trades' | 'journal' | 'watchlist' | 'news' | 'settings' | 'dividend' | 'strategy-lab' | 'ai-cost';
+type Tab = 'home' | 'trades' | 'journal' | 'watchlist' | 'news' | 'research' | 'settings' | 'dividend' | 'strategy-lab' | 'ai-cost';
 
 interface QAIssue {
   severity: 'CRITICAL' | 'WARNING' | 'INFO';
@@ -78,6 +78,7 @@ export function DashboardSidebar({ tab, setTab, mobileMenu, setMobileMenu, healt
     { id: 'journal', label: '매매일지', icon: '📓' },
     { id: 'watchlist', label: '감시목록', icon: '👁' },
     { id: 'news', label: '뉴스', icon: '📰' },
+    { id: 'research', label: '퀀트봇', icon: '🤖' },
     { id: 'dividend', label: '배당', icon: '💰' },
     { id: 'strategy-lab', label: '전략 Lab', icon: '🧪' },
     { id: 'ai-cost', label: 'AI 비용', icon: '🤖' },

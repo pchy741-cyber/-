@@ -85,13 +85,26 @@ export function tryFinalEntry(input: EntryInput): EntryVerdict {
   const { stockCode, aiScore, buyThreshold, scoring, winRates } = input;
   const { effectiveTechScore, minTechScore, priorityBonus, candleBonus } = scoring;
 
-  // No-Trade 게이트: 레짐 신뢰도 부족 → 진입 금지 (모든 진입 경로 공통 적용)
+  // No-Trade 게이트: 레짐 신뢰도 부족 → 진입 금지 (모든 진입 경로 공통 적용, 최우선)
   if (input.regimeRoute.regimeConfidence < REGIME_CONFIDENCE_THRESHOLD) {
     logger.info(
       `  🚫 ${stockCode}: 레짐 불확실 (confidence=${(input.regimeRoute.regimeConfidence * 100).toFixed(0)}%) → No-Trade 강제`,
       { component: 'TRACK_B' },
     );
     return { action: 'SKIP', reason: `레짐 신뢰도 부족 (${(input.regimeRoute.regimeConfidence * 100).toFixed(0)}%)` };
+  }
+
+  // SCALPING 시간 게이트: 개장창구(allowScalpingBuys=true) 이후 → AI 97점 필수
+  if (input.mode === 'SCALPING' && input.allowScalpingBuys === false) {
+    const scalpOffHourMinScore = 97;
+    const hasHighAI = aiScore && aiScore >= scalpOffHourMinScore;
+    if (!hasHighAI) {
+      logger.info(
+        `  🚫 ${stockCode}: 스캘핑 시간외 — AI=${aiScore} < ${scalpOffHourMinScore} → 차단 (개장창구 09:00-09:14만 허용)`,
+        { component: 'TRACK_B' },
+      );
+      return { action: 'SKIP', reason: `스캘핑 시간외 (AI=${aiScore}<${scalpOffHourMinScore})` };
+    }
   }
 
   // AI 게이트: Gemini ON → AI 필수, Gemini OFF → 기술지표 단독 매매 허용

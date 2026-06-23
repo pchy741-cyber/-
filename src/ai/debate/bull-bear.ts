@@ -160,6 +160,7 @@ async function callAgent(
     const text = await callVertexGemini(systemInstruction, prompt, {
       temperature: role === 'BULL' ? 0.3 : 0.4,
       label: `토론-${role}`,
+      useVertex: true,
     });
 
     // 마크다운 코드블록 제거 후 JSON 추출
@@ -206,7 +207,7 @@ ${bear.arguments.map((a, i) => `${i + 1}. ${a}`).join('\n')}
 양측 논거를 종합하여 판결하세요.
 JSON 형식: {"verdict": "STRONG_BUY|BUY|HOLD|SELL|STRONG_SELL", "confidence": 0.0~1.0, "reasoning": "판결 이유 2줄"}`;
 
-    const text = await callVertexGemini(judgeSystem, judgePrompt, { temperature: 0.1, label: '토론-심판' });
+    const text = await callVertexGemini(judgeSystem, judgePrompt, { temperature: 0.1, label: '토론-심판', useVertex: true });
 
     const cleaned = text.replace(/```json?\s*/gi, '').replace(/```/g, '');
     const json = cleaned.match(/\{[\s\S]*\}/)?.[0];

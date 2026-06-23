@@ -60,6 +60,7 @@ interface CrashContext {
   kospiChangePct?: number; // KOSPI 당일 변동 %
   fearGreedIndex?: number; // 0-100
   nasdaqChange1d?: number | null; // 나스닥 전일 등락률 — 선행 지표
+  inverseEtfChangePct?: number; // 인버스 ETF 당일 등락률 (직접 시장붕괴 신호)
 }
 
 /**
@@ -146,6 +147,21 @@ export function assessCrashLevel(ctx: CrashContext): CrashSignal {
     } else if (ctx.nasdaqChange1d <= -1.0) {
       score += 8;
       reasons.push(`나스닥${ctx.nasdaqChange1d.toFixed(1)}%(하락)`);
+    }
+  }
+
+  // 인버스 ETF 급등 — 시장붕괴 직접 신호 (돈이 인버스로 몰릴 때)
+  // 252670(KOSPI200선물2X인버스) 또는 114800(KODEX인버스) 기준
+  if (ctx.inverseEtfChangePct != null && ctx.inverseEtfChangePct > 0) {
+    if (ctx.inverseEtfChangePct >= 5.0) {
+      score += 20;
+      reasons.push(`인버스ETF+${ctx.inverseEtfChangePct.toFixed(1)}%(시장붕괴)`);
+    } else if (ctx.inverseEtfChangePct >= 3.0) {
+      score += 12;
+      reasons.push(`인버스ETF+${ctx.inverseEtfChangePct.toFixed(1)}%(급락)`);
+    } else if (ctx.inverseEtfChangePct >= 1.5) {
+      score += 6;
+      reasons.push(`인버스ETF+${ctx.inverseEtfChangePct.toFixed(1)}%(하락)`);
     }
   }
 
@@ -251,8 +267,8 @@ export function generateInverseDecisions(params: InverseDecisionParams): TradeDe
     // ── 매수/추가매수: 목표 배분 대비 부족분 top-up ──
     if (signal.level === 'NONE') continue;
 
-    // CAUTION 시 2x 주력(252670)만 사용 — 1x 보조(114800)는 이중헤징 비용 낭비
-    if (signal.level === 'CAUTION' && etf.code !== '252670') continue;
+    // CAUTION 시 1x(114800)만 사용 — 완만한 하락일에 2x 레버리지 과도 (개장 하락장 기본 대응)
+    if (signal.level === 'CAUTION' && etf.code !== '114800') continue;
 
     const allocPct = etf.alloc[signal.level];
     if (allocPct <= 0) continue;

@@ -230,7 +230,7 @@ export function useDashboardData() {
   }, [dash, trades, killSwitch, watchlist, usDash, todayStats, viewMode, isStale]);
 
   // SSE 실시간 스트림
-  useSSEStream(viewMode, { setTrades, setStrategy, setDash, setUsDash, setLoopStatus, setSseHealthScore, setHealth, setTodayStats, setNewInsightCount });
+  useSSEStream(viewMode, viewModeRef, { setTrades, setStrategy, setDash, setUsDash, setLoopStatus, setSseHealthScore, setHealth, setTodayStats, setNewInsightCount });
 
   const switchView = useCallback((mode: 'live' | 'paper') => {
     if (viewModeRef.current === mode) return;
@@ -245,6 +245,7 @@ export function useDashboardData() {
     setNewInsightCount(0);
     setTradingStatus(null);
     setAiStatus(null);
+    setLoading(true); // dash=null, loading=false 상태 방지 (빈 UI 노출 차단)
     loadingRef.current = false;
     tradesLoadedRef.current = false;
     staticLoadedRef.current = false;

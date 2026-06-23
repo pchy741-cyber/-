@@ -11,9 +11,10 @@ interface StockCardProps {
   fastAnalyzing?: boolean;
   onClick: () => void;
   onDelete: (code: string) => void;
+  onToggleLTH?: (code: string, current: boolean) => void;
 }
 
-function StockCard({ stock, score, chain, sparkline, isSelected, fastAnalyzing, onClick, onDelete }: StockCardProps) {
+function StockCard({ stock, score, chain, sparkline, isSelected, fastAnalyzing, onClick, onDelete, onToggleLTH }: StockCardProps) {
   const s = stock;
   const scoreVal = score ? Number(score.composite_score) : -1;
   const displayName = toDisplayName(s.stock_name, s.stock_code);
@@ -83,6 +84,18 @@ function StockCard({ stock, score, chain, sparkline, isSelected, fastAnalyzing, 
             {s.source === 'KIS_SYNC' ? 'KIS관심그룹' : '자동편입'}
           </span>
         </div>
+      )}
+      {onToggleLTH && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onToggleLTH(s.stock_code, !!s.long_term_hold); }}
+          title={s.long_term_hold ? '장기보유 해제' : '장기보유 설정 (SL 무시)'}
+          className={`mt-1.5 text-[9px] px-1.5 py-0.5 rounded font-semibold transition-colors ${
+            s.long_term_hold
+              ? 'bg-violet-500/20 text-violet-300 hover:bg-violet-500/30'
+              : 'bg-white/5 text-slate-500 hover:bg-white/10 hover:text-slate-300'
+          }`}>
+          {s.long_term_hold ? '🏛️ 장기보유' : '장기보유'}
+        </button>
       )}
       <button onClick={(e) => { e.stopPropagation(); onDelete(s.stock_code); }}
         className="absolute top-1.5 right-1.5 opacity-0 group-hover:opacity-100 text-[9px] text-rose-400 hover:text-rose-300 transition-opacity leading-none">✕</button>

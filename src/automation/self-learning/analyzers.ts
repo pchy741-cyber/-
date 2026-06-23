@@ -718,8 +718,10 @@ export function analyzeHotStocks(enrichedChains: EnrichedChain[]): LearnedInsigh
     if (trades.length < 3) continue;
 
     // 최근 3건 확인
-    const sorted = [...trades].sort((a, b) =>
-      (b.chain.closed_at ?? b.chain.opened_at).localeCompare(a.chain.closed_at ?? a.chain.opened_at),
+    const sorted = [...trades].sort(
+      (a, b) =>
+        new Date(b.chain.closed_at ?? b.chain.opened_at).getTime() -
+        new Date(a.chain.closed_at ?? a.chain.opened_at).getTime(),
     );
     const recent3 = sorted.slice(0, 3);
     const allWins = recent3.every((t) => Number(t.chain.realized_pnl) > 0);

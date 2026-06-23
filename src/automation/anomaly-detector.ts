@@ -1,8 +1,7 @@
 import { getActiveWatchlist } from '../db/client.js';
-import { getCurrentPrice } from '../kis/market.js';
+import { getBatchPrices } from '../kis/market.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
 import { logger } from '../utils/logger.js';
-import { sleep } from '../utils/sleep.js';
 import { getKSTNow } from '../utils/time.js';
 
 /**
@@ -48,78 +47,77 @@ export async function detectAnomalies(): Promise<AnomalyAlert[]> {
 
   const alerts: AnomalyAlert[] = [];
 
+  // 배치 조회 — 개별 루프 대비 API 호출 횟수 대폭 감소
+  const codes = watchlist.map((s) => s.stock_code);
+  const priceMap = await getBatchPrices(codes);
+
   for (const stock of watchlist) {
-    try {
-      const price = await getCurrentPrice(stock.stock_code);
-      const prev = priceHistory.get(stock.stock_code);
+    const price = priceMap.get(stock.stock_code);
+    if (!price) continue;
 
-      // 1. 급등 감지 (전일 대비 +5% 이상)
-      if (price.changePct >= SURGE_THRESHOLD_PCT) {
-        alerts.push({
-          stockCode: stock.stock_code,
-          stockName: stock.stock_name,
-          type: 'PRICE_SURGE',
-          severity: price.changePct >= CRITICAL_SURGE_THRESHOLD_PCT ? 'CRITICAL' : 'WARNING',
-          message: `${stock.stock_name} +${price.changePct.toFixed(1)}% 급등!`,
-          currentPrice: price.currentPrice,
-          changePct: price.changePct,
-        });
-      }
+    const prev = priceHistory.get(stock.stock_code);
 
-      // 2. 급락 감지 (전일 대비 -5% 이상)
-      if (price.changePct <= -SURGE_THRESHOLD_PCT) {
-        alerts.push({
-          stockCode: stock.stock_code,
-          stockName: stock.stock_name,
-          type: 'PRICE_CRASH',
-          severity: price.changePct <= -CRITICAL_SURGE_THRESHOLD_PCT ? 'CRITICAL' : 'WARNING',
-          message: `${stock.stock_name} ${price.changePct.toFixed(1)}% 급락!`,
-          currentPrice: price.currentPrice,
-          changePct: price.changePct,
-        });
-      }
-
-      // 3. 5분 내 급변 감지 (이전 체크 대비 ±2%)
-      if (prev && prev.price > 0) {
-        const shortTermChange = ((price.currentPrice - prev.price) / prev.price) * 100;
-        if (Number.isFinite(shortTermChange) && Math.abs(shortTermChange) >= SHORT_TERM_CHANGE_PCT) {
-          alerts.push({
-            stockCode: stock.stock_code,
-            stockName: stock.stock_name,
-            type: shortTermChange > 0 ? 'PRICE_SURGE' : 'PRICE_CRASH',
-            severity: 'WARNING',
-            message: `${stock.stock_name} 5분 내 ${shortTermChange > 0 ? '+' : ''}${shortTermChange.toFixed(1)}% 급변`,
-            currentPrice: price.currentPrice,
-            changePct: shortTermChange,
-          });
-        }
-
-        // 4. 거래량 급증 (이전 체크 대비 N배)
-        if (prev.volume > 0 && price.volume > prev.volume * VOLUME_SPIKE_MULTIPLIER) {
-          alerts.push({
-            stockCode: stock.stock_code,
-            stockName: stock.stock_name,
-            type: 'VOLUME_SPIKE',
-            severity: 'INFO',
-            message: `${stock.stock_name} 거래량 급증 (${(price.volume / prev.volume).toFixed(0)}배)`,
-            currentPrice: price.currentPrice,
-            changePct: price.changePct,
-          });
-        }
-      }
-
-      // 가격 히스토리 업데이트
-      priceHistory.set(stock.stock_code, {
-        price: price.currentPrice,
-        volume: price.volume,
-        checkedAt: new Date(),
+    // 1. 급등 감지 (전일 대비 +5% 이상)
+    if (price.changePct >= SURGE_THRESHOLD_PCT) {
+      alerts.push({
+        stockCode: stock.stock_code,
+        stockName: stock.stock_name,
+        type: 'PRICE_SURGE',
+        severity: price.changePct >= CRITICAL_SURGE_THRESHOLD_PCT ? 'CRITICAL' : 'WARNING',
+        message: `${stock.stock_name} +${price.changePct.toFixed(1)}% 급등!`,
+        currentPrice: price.currentPrice,
+        changePct: price.changePct,
       });
-
-      // rate limit
-      await sleep(100);
-    } catch (err) {
-      logger.warn(`이상감지 개별 종목 실패: ${err}`, { component: 'ANOMALY' });
     }
+
+    // 2. 급락 감지 (전일 대비 -5% 이상)
+    if (price.changePct <= -SURGE_THRESHOLD_PCT) {
+      alerts.push({
+        stockCode: stock.stock_code,
+        stockName: stock.stock_name,
+        type: 'PRICE_CRASH',
+        severity: price.changePct <= -CRITICAL_SURGE_THRESHOLD_PCT ? 'CRITICAL' : 'WARNING',
+        message: `${stock.stock_name} ${price.changePct.toFixed(1)}% 급락!`,
+        currentPrice: price.currentPrice,
+        changePct: price.changePct,
+      });
+    }
+
+    // 3. 5분 내 급변 감지 (이전 체크 대비 ±2%)
+    if (prev && prev.price > 0) {
+      const shortTermChange = ((price.currentPrice - prev.price) / prev.price) * 100;
+      if (Number.isFinite(shortTermChange) && Math.abs(shortTermChange) >= SHORT_TERM_CHANGE_PCT) {
+        alerts.push({
+          stockCode: stock.stock_code,
+          stockName: stock.stock_name,
+          type: shortTermChange > 0 ? 'PRICE_SURGE' : 'PRICE_CRASH',
+          severity: 'WARNING',
+          message: `${stock.stock_name} 5분 내 ${shortTermChange > 0 ? '+' : ''}${shortTermChange.toFixed(1)}% 급변`,
+          currentPrice: price.currentPrice,
+          changePct: shortTermChange,
+        });
+      }
+
+      // 4. 거래량 급증 (이전 체크 대비 N배)
+      if (prev.volume > 0 && price.volume > prev.volume * VOLUME_SPIKE_MULTIPLIER) {
+        alerts.push({
+          stockCode: stock.stock_code,
+          stockName: stock.stock_name,
+          type: 'VOLUME_SPIKE',
+          severity: 'INFO',
+          message: `${stock.stock_name} 거래량 급증 (${(price.volume / prev.volume).toFixed(0)}배)`,
+          currentPrice: price.currentPrice,
+          changePct: price.changePct,
+        });
+      }
+    }
+
+    // 가격 히스토리 업데이트
+    priceHistory.set(stock.stock_code, {
+      price: price.currentPrice,
+      volume: price.volume,
+      checkedAt: new Date(),
+    });
   }
 
   // 알림 발송 (WARNING 이상만)

@@ -138,7 +138,8 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
   const portfolioPnlPct = _portfolioCost > 0 ? ((_portfolioValue - _portfolioCost) / _portfolioCost) * 100 : 0;
 
   // 하락장 레짐: 분할매도 금지 → 전량 즉시 청산 (단계별 추가 손실 방지)
-  const isDowntrendMode = (params.macroSizingMult ?? 1.0) < 0.8;
+  // penalty=1(조정장, mult=0.8)도 포함 — < 0.8은 조정장을 누락함
+  const isDowntrendMode = (params.macroSizingMult ?? 1.0) <= 0.8;
 
   // 1. 보유 종목 매도 판단 (손절/익절)
   // 각 체인은 독립 평가 — 같은 종목이라도 avg_buy_price/strategy가 다를 수 있음
@@ -304,9 +305,11 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
         const sniperTypeMatch = triggerSrcForTrail?.match(/SNIPER[_\s]?(\w+)/);
         const chainSniperType = sniperTypeMatch?.[1] ?? null;
         const learnedMult = chainSniperType ? learnedParams.trailingStopMultipliers[chainSniperType] : undefined;
-        // 학습 배수: ATR 기반 비율 (예: 0.8 → -0.8%, 1.5 → -1.5%)
-        // 안전 범위: -0.5% ~ -2.5% (너무 타이트하면 잦은 매도, 너무 넓으면 수익 반납)
-        const trailingDrop = learnedMult != null ? -Math.max(0.5, Math.min(2.5, learnedMult)) : isRunner ? -1.8 : -1.0; // 러너: -1.8% (숨고르기 허용), 일반: -1.0%
+        // 안전 범위 확장: 0.5%~5.0% (기존 2.5% 상한 → 상한가 모멘텀 종목 조기 청산 방지)
+        const baseTrailDrop = learnedMult != null ? -Math.max(0.5, Math.min(5.0, learnedMult)) : isRunner ? -3.0 : -1.5;
+        // 고점 수익률 비례 숨고르기 허용폭 확장 (부국철강 +30% 상한가 조기 매도 재발 방지)
+        const momentumBonus = curPeak >= 15 ? 4.5 : curPeak >= 10 ? 3.0 : curPeak >= 5 ? 1.5 : 0;
+        const trailingDrop = Math.max(baseTrailDrop - momentumBonus, -10.0);
 
         const dropFromPeak = pnlPct - curPeak;
         if (dropFromPeak <= trailingDrop) {
@@ -355,6 +358,29 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
         confidence: 0.95,
       });
       processedSellChains.add(chain.id);
+      continue;
+    }
+
+    // ── LTH (장기보유): 일반 SL/TP 무시 — 하락장 -5% 이하일 때만 탈출 매도 ──
+    // 탈출 후 당일 재매수 허용 (pipeline에서 lossBlockedCodes 예외 처리)
+    const isLTH = params.longTermHoldCodes?.has(chain.stock_code);
+    if (isLTH) {
+      const LTH_EXIT_THRESHOLD = -5.0;
+      if (isDowntrendMode && pnlPct < LTH_EXIT_THRESHOLD) {
+        decisions.push({
+          action: 'SELL',
+          stock_code: chain.stock_code,
+          quantity: chain.total_quantity,
+          price_type: 'MARKET',
+          reasoning: `🏛️ LTH 하락장 탈출 (pnl=${pnlPct.toFixed(1)}%, 기준=${LTH_EXIT_THRESHOLD}%) — 재매수 대기`,
+          confidence: 0.85,
+        });
+        processedSellChains.add(chain.id);
+      } else {
+        // 하락장 미달 또는 일반 SL/TP → 보유 유지
+        logger.debug(`🏛️ LTH 보유 유지: ${chain.stock_code} pnl=${pnlPct.toFixed(1)}% downtrend=${isDowntrendMode}`, { component: 'TRACK_B' });
+        processedSellChains.add(chain.id);
+      }
       continue;
     }
 

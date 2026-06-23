@@ -402,7 +402,7 @@ export function manageCashParking(params: CashManagerParams): TradeDecision[] {
   // ── 해외 현금 예약: us_pct만큼 현금을 해외용으로 보존 ──
   // 국내 파킹은 국내 몫(kr_pct) 내에서만 허용, 해외 예산 침범 방지
   const osPct = params.overseasTargetPct ?? 0;
-  if (osPct > 0 && !isPaper) {
+  if (osPct > 0) {
     const domesticInvested = openChains.reduce((sum, c) => sum + Number(c.total_invested ?? 0), 0);
     const domesticBudgetCeil = totalAssets * ((100 - osPct) / 100);
     const remainingDomesticBudget = Math.max(0, domesticBudgetCeil - domesticInvested);

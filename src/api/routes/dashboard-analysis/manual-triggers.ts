@@ -68,6 +68,30 @@ manualTriggersRoutes.post('/release-defense-park', async (c) => {
       sellMsg = `${parkName} ${position.quantity}주 매도 완료. `;
     }
 
+    // 파킹 ETF(SOFR+인버스) 오픈 체인 강제 종료 — KIS에서 수동매도 후 DB가 열려있는 경우 처리
+    try {
+      const { updateChain } = await import('../../../db/client.js');
+      const { INVERSE_ETF_CODES } = await import('../../../automation/crash-profit.js');
+      const isPaperNow = resolveRequestMode(c);
+      const allParkCodes = new Set([parkCode, ...Array.from(INVERSE_ETF_CODES)]);
+      const allChains = await getOpenChains(isPaperNow);
+      const parkChains = (allChains as any[]).filter((ch) => allParkCodes.has(ch.stock_code));
+      for (const chain of parkChains) {
+        await updateChain(chain.id, {
+          status: 'CLOSED',
+          close_reason: 'CEO 수동 해제 — KIS 수동매도 감지',
+          closed_at: new Date().toISOString(),
+        });
+      }
+      if (parkChains.length > 0) {
+        const codes = parkChains.map((c: any) => c.stock_code).join(', ');
+        logger.info(`🔓 파킹 체인 ${parkChains.length}개 강제종료: ${codes}`, { component: 'MANUAL' });
+        sellMsg += `체인 ${parkChains.length}개 종료. `;
+      }
+    } catch (chainErr: any) {
+      logger.warn(`파킹 체인 강제종료 실패: ${chainErr.message}`, { component: 'MANUAL' });
+    }
+
     let syncMsg = '';
     try {
       const isPaper = resolveRequestMode(c);

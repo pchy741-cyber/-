@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { api, fmtTime } from '../../lib/utils';
+import type { WatchlistItem, UsDashboard, UsWatchlistItem } from '../../types';
 
 interface Note {
   id: number;
@@ -38,28 +39,6 @@ interface DartResult {
   analyzedAt: string;
 }
 
-// 핵심 종목 (실전/연습 공통)
-const DART_TARGET_STOCKS = [
-  { code: '005930', name: '삼성전자' },
-  { code: '000660', name: 'SK하이닉스' },
-  { code: '012450', name: '한화에어로스페이스' },
-];
-
-const SEC_TARGET_STOCKS = [
-  { ticker: 'NVDA', name: 'NVIDIA' },
-  { ticker: 'AAPL', name: 'Apple' },
-  { ticker: 'MSFT', name: 'Microsoft' },
-  { ticker: 'AVGO', name: 'Broadcom' },
-  { ticker: 'META', name: 'Meta' },
-];
-
-// 종목코드 → 종목명 매핑 (DART API corpName 미반환 시 fallback)
-const KR_NAME_MAP: Record<string, string> = Object.fromEntries(
-  DART_TARGET_STOCKS.map((s) => [s.code, s.name]),
-);
-const US_NAME_MAP: Record<string, string> = Object.fromEntries(
-  SEC_TARGET_STOCKS.map((s) => [s.ticker, s.name]),
-);
 
 // 추천 금융 사이트 (공신력 + 매매 확률 향상에 유용)
 const RECOMMENDED_SITES = [
@@ -117,6 +96,10 @@ export function ResearchBotPanel() {
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [activeTab, setActiveTab] = useState<'reports' | 'dart' | 'sec' | 'url'>('dart');
 
+  // 감시목록 동적 로드
+  const [krWatchlist, setKrWatchlist] = useState<Array<{ code: string; name: string }>>([]);
+  const [usWatchlist, setUsWatchlist] = useState<Array<{ ticker: string; name: string }>>([]);
+
   // DART 재무분석 상태
   const [dartResults, setDartResults] = useState<DartResult[]>([]);
   const [dartLoading, setDartLoading] = useState(false);
@@ -128,6 +111,10 @@ export function ResearchBotPanel() {
   const [secLoading, setSecLoading] = useState(false);
   const [secError, setSecError] = useState<string | null>(null);
   const [expandedSec, setExpandedSec] = useState<string | null>(null);
+
+  // 종목명 lookup
+  const krName = (code: string) => krWatchlist.find((s) => s.code === code)?.name ?? code;
+  const usName = (ticker: string) => usWatchlist.find((s) => s.ticker === ticker)?.name ?? ticker;
 
   const loadNotes = async () => {
     try {
@@ -144,10 +131,16 @@ export function ResearchBotPanel() {
     setDartLoading(true);
     setDartError(null);
     try {
+      const stockCodes = krWatchlist.map((s) => s.code).slice(0, 15);
+      if (stockCodes.length === 0) {
+        setDartError('감시목록에 KR 종목이 없습니다');
+        setDartLoading(false);
+        return;
+      }
       const data = await api('/research/dart/batch', {
         method: 'POST',
-        body: JSON.stringify({ stockCodes: DART_TARGET_STOCKS.map((s) => s.code) }),
-        timeout: 60000,
+        body: JSON.stringify({ stockCodes }),
+        timeout: 90000,
       });
       if (data.ok && Array.isArray(data.results)) {
         setDartResults(data.results);
@@ -165,9 +158,15 @@ export function ResearchBotPanel() {
     setSecLoading(true);
     setSecError(null);
     try {
+      const tickers = usWatchlist.map((s) => s.ticker).slice(0, 10);
+      if (tickers.length === 0) {
+        setSecError('감시목록에 US 종목이 없습니다');
+        setSecLoading(false);
+        return;
+      }
       const data = await api('/research/sec/batch', {
         method: 'POST',
-        body: JSON.stringify({ tickers: SEC_TARGET_STOCKS.map((s) => s.ticker) }),
+        body: JSON.stringify({ tickers }),
         timeout: 90000,
       });
       if (data.ok && Array.isArray(data.results)) {
@@ -205,7 +204,25 @@ export function ResearchBotPanel() {
     }
   };
 
-  useEffect(() => { loadNotes(); }, []);
+  useEffect(() => {
+    loadNotes();
+    // KR 감시목록 로드
+    api('/watchlist?viewMode=live')
+      .then((items: WatchlistItem[]) => {
+        if (Array.isArray(items))
+          setKrWatchlist(items.map((i) => ({ code: i.stock_code, name: String(i.stock_name ?? i.stock_code) })));
+      })
+      .catch(() => {});
+    // US 감시목록 로드
+    api('/overseas/dashboard?viewMode=live')
+      .then((us: UsDashboard) => {
+        if (Array.isArray(us?.watchlist))
+          setUsWatchlist(
+            (us.watchlist as UsWatchlistItem[]).map((i) => ({ ticker: i.code, name: String(i.name ?? i.code) })),
+          );
+      })
+      .catch(() => {});
+  }, []);
 
   const crawl = async () => {
     if (!url.trim()) return;
@@ -334,7 +351,9 @@ export function ResearchBotPanel() {
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <span className="text-[10px] text-slate-500">
-                  대상: {DART_TARGET_STOCKS.map((s) => s.name).join(', ')}
+                  {krWatchlist.length > 0
+                    ? `감시목록 ${krWatchlist.length}종목`
+                    : '감시목록 로딩 중...'}
                 </span>
               </div>
               <button
@@ -387,8 +406,8 @@ export function ResearchBotPanel() {
                         onClick={() => setExpandedDart(isExpanded ? null : r.stockCode)}
                       >
                         <div className="flex-1 min-w-0 flex items-center gap-2">
-                          <span className="text-xs font-bold text-slate-100">{KR_NAME_MAP[r.stockCode] || r.corpName || r.stockCode}</span>
-                          <span className="text-[9px] text-slate-600 bg-slate-800/80 rounded px-1.5 py-0.5">{KR_NAME_MAP[r.stockCode] ? r.stockCode : ''}</span>
+                          <span className="text-xs font-bold text-slate-100">{krName(r.stockCode) || r.corpName || r.stockCode}</span>
+                          <span className="text-[9px] text-slate-600 bg-slate-800/80 rounded px-1.5 py-0.5">{r.stockCode}</span>
                         </div>
                         {/* 점수 배지 */}
                         <div className="flex items-center gap-2 shrink-0">
@@ -510,7 +529,9 @@ export function ResearchBotPanel() {
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <span className="text-[10px] text-slate-500">
-                  대상: {SEC_TARGET_STOCKS.map((s) => s.ticker).join(', ')}
+                  {usWatchlist.length > 0
+                    ? `US 감시목록 ${usWatchlist.length}종목`
+                    : 'US 감시목록 로딩 중...'}
                 </span>
               </div>
               <button
@@ -561,7 +582,7 @@ export function ResearchBotPanel() {
                         onClick={() => setExpandedSec(isExpanded ? null : r.stockCode)}
                       >
                         <div className="flex-1 min-w-0 flex items-center gap-2">
-                          <span className="text-xs font-bold text-slate-100">{US_NAME_MAP[r.stockCode] || r.corpName}</span>
+                          <span className="text-xs font-bold text-slate-100">{usName(r.stockCode) || r.corpName}</span>
                           <span className="text-[9px] text-blue-400 bg-blue-900/30 rounded px-1.5 py-0.5">{r.stockCode}</span>
                         </div>
                         <div className="flex items-center gap-2 shrink-0">

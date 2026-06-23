@@ -32,14 +32,12 @@ strategyRoutes.put('/strategy', async (c) => {
     gemini_prompt: body.gemini_prompt ?? '',
     gpt_prompt: body.gpt_prompt ?? '',
     claude_prompt: body.claude_prompt ?? '',
-    // UI 입력값 허용 (최소 50, 최대 99)
-    buy_threshold: body.buy_threshold != null ? Math.max(Math.min(Number(body.buy_threshold), 99), 50) : modeBase.buyThreshold,
-    // CEO 직접 설정 허용 — 범위: -10% ~ -0.5%
-    stop_loss_pct:
-      body.stop_loss_pct != null ? Math.max(Math.min(Number(body.stop_loss_pct), -0.5), -10) : modeBase.stopLossPct,
-    // CEO 직접 설정 허용 — 범위: 1% ~ 30%
-    take_profit_pct:
-      body.take_profit_pct != null ? Math.max(Math.min(Number(body.take_profit_pct), 30), 1) : modeBase.takeProfitPct,
+    // UI 입력값 허용 (최소 50, 최대 99) — NaN 가드: 비숫자 입력 시 기본값 사용
+    buy_threshold: (() => { const v = Number(body.buy_threshold); return body.buy_threshold != null && Number.isFinite(v) ? Math.max(Math.min(v, 99), 50) : modeBase.buyThreshold; })(),
+    // CEO 직접 설정 허용 — 범위: -10% ~ -0.5% — NaN 가드
+    stop_loss_pct: (() => { const v = Number(body.stop_loss_pct); return body.stop_loss_pct != null && Number.isFinite(v) ? Math.max(Math.min(v, -0.5), -10) : modeBase.stopLossPct; })(),
+    // CEO 직접 설정 허용 — 범위: 1% ~ 30% — NaN 가드
+    take_profit_pct: (() => { const v = Number(body.take_profit_pct); return body.take_profit_pct != null && Number.isFinite(v) ? Math.max(Math.min(v, 30), 1) : modeBase.takeProfitPct; })(),
     strategy_document: body.strategy_document ?? '',
     risk_prompt: body.risk_prompt ?? '',
     use_dynamic_tpsl: useDynamic,

@@ -144,6 +144,9 @@ export interface WatchlistItem {
   stock_name?: string;
   market?: string;
   last_sell_at?: string;
+  last_sell_pct?: number;
+  last_sell_price?: number;
+  long_term_hold?: boolean;
   [key: string]: unknown;
 }
 

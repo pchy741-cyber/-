@@ -43,6 +43,8 @@ export interface Chain {
   weight?: number;
   trigger_source?: string;
   escape_target_price?: number;
+  chainIds?: string[];
+  _mergedCount?: number;
 }
 
 export interface Portfolio {

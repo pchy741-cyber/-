@@ -14,6 +14,7 @@ import { getInvestorFlow } from '../../automation/investor-flow.js';
 import { getMacroScoreAdjustment, getMacroSnapshot } from '../../automation/macro-data.js';
 import { getNaverTrendScoreAdjustment, refreshNaverTrends, registerStockNames } from '../../automation/naver-trend.js';
 import { checkNewsForStock } from '../../automation/news-sentinel.js';
+import { getLastNewsCollectedAt } from '../../automation/news-collector.js';
 import {
   calcPortfolioStressLevel,
   getCrossModeBoost,
@@ -448,6 +449,8 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     }
 
     // ── 하락장 수익화 — Crash Signal 평가 ──────────────────────────────
+    // 인버스 ETF 선행 신호: 252670(KOSPI200선물2X인버스) 주력, 없으면 114800 폴백
+    const _inverseEtfPx = livePrices.get('252670') ?? livePrices.get('114800');
     const crashSignal: CrashSignal = assessCrashLevel({
       kospiPenalty: kospiRegime.penalty,
       todayDown: kospiRegime.todayDown,
@@ -457,6 +460,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       kospiChangePct: macroSnapshot?.kospiChange ?? undefined,
       fearGreedIndex: macroSnapshot?.fearGreedIndex ?? undefined,
       nasdaqChange1d: macroSigForCrash?.nasdaqChange1d ?? undefined,
+      inverseEtfChangePct: _inverseEtfPx?.changePct ?? undefined,
     });
     if (crashSignal.level !== 'NONE') {
       logger.warn(
@@ -468,9 +472,15 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     // ── 방어 파킹 자동 진입: Live 전용, 하락세 감지 시 ──────────────────
     // 단, 기관(연금 포함) 순매수 지속 중이면 파킹 보류 (정부 지지선 반영)
     // 14:00 이후 진입 금지 — 장 마감 직전 FORCE_CLOSE → 당일 손실 확정 방지
+    // 개장 30분 내 하락장: 포트폴리오 스냅샷 없어도 즉시 KODEX 인버스 파킹 (개장 손실 누적 전 선제 대응)
+    const _isOpeningDownDay = kstH === 9 && kstM < 30 && kospiRegime.todayDown;
     if (!parkState.isActive && !ctxIsPaper && kstH < 14) {
       const dt = await isPortfolioInDowntrend();
-      if (dt.downtrend) {
+      const shouldPark = dt.downtrend || _isOpeningDownDay;
+      const parkReason = dt.downtrend
+        ? dt.reason
+        : `개장직후 하락 감지 (09:${kstM.toString().padStart(2, '0')}, penalty=${kospiRegime.penalty})`;
+      if (shouldPark) {
         // KODEX 200(069500)으로 시장 전체 기관 흐름 확인
         const kospiFlow = await getInvestorFlow('069500', 5).catch(() => null);
         const instBuying =
@@ -481,14 +491,19 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
             { component: 'DEFENSE_PARK' },
           );
         } else {
-          logger.warn(`🛡️ 방어 파킹 진입 트리거: ${dt.reason}`, { component: 'DEFENSE_PARK' });
+          logger.warn(`🛡️ 방어 파킹 진입 트리거: ${parkReason}`, { component: 'DEFENSE_PARK' });
+          // 개장 하락장: crashSignal이 NONE이어도 CAUTION 최소 보장 → KODEX 인버스(114800) 매수 허용
+          const effectiveCrashSignal =
+            _isOpeningDownDay && crashSignal.level === 'NONE'
+              ? { ...crashSignal, level: 'CAUTION' as const, score: Math.max(crashSignal.score, 20), reasons: [...crashSignal.reasons, '개장직후하락'] }
+              : crashSignal;
           return buildDefenseParkEntryDecisions(
             openChains,
             livePrices,
             orderableCash,
             totalAssets,
-            dt.reason,
-            crashSignal,
+            parkReason,
+            effectiveCrashSignal,
           );
         }
       }
@@ -505,10 +520,14 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     // ── 매수 후보 스크리닝 + KIS 관심종목 동기화 ──────────────────────
     const hasScores = scores.length > 0;
 
-    // 자동 DEFENSE 트리거: 급락 서킷브레이커 OR (하락장+당일하락+손실-1.5%+)
+    // 자동 DEFENSE 트리거: 급락 서킷브레이커 OR 개장30분내 하락 OR (하락장+당일하락+손실-1.5%+)
+    // _isOpeningDownDay는 위 방어파킹 블록에서 이미 선언됨
     const autoShouldDefense =
       dbMode === 'SWING' &&
-      (kospiRegime.flashCrash || (kospiRegime.penalty >= 2 && kospiRegime.todayDown && dailyLoss.dailyPnlPct <= -1.5));
+      !ctxIsPaper &&
+      (kospiRegime.flashCrash ||
+        _isOpeningDownDay || // 개장 30분 내 하락장 → 손실 누적 전 선제 방어파킹
+        (kospiRegime.penalty >= 2 && kospiRegime.todayDown && dailyLoss.dailyPnlPct <= -1.5));
     // 자동 SWING 복귀: DB=DEFENSE이지만 시장 정상화 (MA60 위 + 당일 하락 없음 + 손실 0.5% 미만)
     const autoShouldRevertSwing =
       dbMode === 'DEFENSE' && kospiRegime.penalty === 0 && !kospiRegime.todayDown && dailyLoss.dailyPnlPct > -0.5;
@@ -550,7 +569,9 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     if (autoShouldDefense) {
       const reason = kospiRegime.flashCrash
         ? '급락 서킷브레이커'
-        : `하락장(penalty${kospiRegime.penalty})+당일하락+손실${dailyLoss.dailyPnlPct.toFixed(1)}%`;
+        : _isOpeningDownDay
+          ? `개장직후 하락 감지 (09:${kstM.toString().padStart(2, '0')}, penalty=${kospiRegime.penalty})`
+          : `하락장(penalty${kospiRegime.penalty})+당일하락+손실${dailyLoss.dailyPnlPct.toFixed(1)}%`;
       logger.warn(
         `🔴 자동 DEFENSE 모드 전환: ${reason} → 신규 매수 극제한${ctxIsPaper ? ' (Paper: DB쓰기 차단)' : ''}`,
         { component: 'TRACK_B' },
@@ -825,6 +846,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
               added_at: '',
               notes: null,
               source: 'AUTO',
+              long_term_hold: false,
             });
           logger.info(`✅ 상승장 동적 편입: ${newStocks.length}개 → 총 후보 ${watchlist.length}개`, {
             component: 'TRACK_B',
@@ -924,6 +946,17 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         component: 'TRACK_B',
       });
     }
+    // 뉴스 수집 끊김 감지 — 뉴스는 08:00/08:40 프리페치로 개장 전에 확보되어야 함
+    // 09:00 개장 시점에 오늘 뉴스 없으면 즉시 차단, 장중 90분 초과 끊김도 차단
+    const newsLastAt = getLastNewsCollectedAt();
+    const isNewsStale =
+      !ctxIsPaper &&
+      kstH >= 9 && kstH < 15 && // 장중에만
+      (newsLastAt === 0 || Date.now() - newsLastAt > 90 * 60 * 1000); // 0=미수집 or 90분 초과
+    if (isNewsStale) {
+      logger.warn(`📰 뉴스 수집 끊김 (마지막: ${newsLastAt ? Math.round((Date.now() - newsLastAt) / 60000) + '분 전' : '오늘 없음'}) — Live 신규매수 차단`, { component: 'TRACK_B' });
+    }
+
     const blockNewBuys =
       (!ctxIsPaper && isPastClose) || // Paper: 마감시간 면제 (적극적 매매)
       (!ctxIsPaper && isLunchBlock) || // 점심블록: 랠리일 해제
@@ -932,11 +965,12 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       isMaxPositionsReached || // 최대 동시 포지션 수 초과: 신규 매수 차단
       (!ctxIsPaper && dailyLoss.blocked) || // Paper: 일일손실 차단 면제 (데이터 수집 우선)
       (!ctxIsPaper && kospiRegime.flashCrash) || // 급락 서킷브레이커: Live만 차단 (Paper 면제 — 모의자금)
-      (!ctxIsPaper && !isKospiOverrideActive() && kospiRegime.todayDown) || // 코스피 당일 -0.3%+ 하락: 신규매수 전면 차단 (고확신 종목은 decision-flow에서 개별 허용)
-      (!ctxIsPaper && !isKospiOverrideActive() && kospiRegime.penalty >= 2 && kospiRegime.todayDown) || // 하락장+당일하락: Live만 차단 (고확신 개별 허용은 downstream)
+      (!ctxIsPaper && !isKospiOverrideActive() && kospiRegime.todayDown) || // 코스피 당일 -0.3%+ 하락: 신규매수 전면 차단
+      (!ctxIsPaper && !isKospiOverrideActive() && kospiRegime.penalty >= 2 && kospiRegime.todayDown) || // 하락장+당일하락
       (!ctxIsPaper && portfolioStress >= 2) || // Paper: 포트스트레스 면제
-      (!ctxIsPaper && crashSignal.level === 'CRASH') || // 크래시 시그널 CRASH: 인버스 외 일반 매수 차단
-      (!ctxIsPaper && crashSignal.level === 'PANIC') || // 크래시 시그널 PANIC: 전면 매수 차단
+      (!ctxIsPaper && crashSignal.level === 'CRASH') || // 크래시 시그널 CRASH
+      (!ctxIsPaper && crashSignal.level === 'PANIC') || // 크래시 시그널 PANIC
+      isNewsStale || // 📰 뉴스 수집 90분 이상 끊김: Live 신규매수 차단
       eodOnlyActive; // 🎰 연패 EOD-only 모드 (Paper는 이미 false 반환)
 
     // ── entry-timing-guard 연결: 이브닝 블록 + 전략 필터 + 기술지표 다중 확증 ──
@@ -1328,13 +1362,22 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     const decisions = await technicalFallbackDecisions({
       mode: effectiveMode,
       watchlist: activeWatchlist,
+      // SCALPING 시간 게이트: 개장벨(09:00-09:14)에만 허용, 이후 97점 미만 차단
+      allowScalpingBuys: effectiveMode !== 'SCALPING' || _isOpeningBell,
       livePrices,
       chartData,
       openChains,
       orderableCash,
       maxPositionKrw: adjMaxPositionKrw,
       totalAssets,
-      lossBlockedCodes: new Set([...recentLossCodes, ...todayRepeatStopCodes]),
+      longTermHoldCodes: new Set(watchlist.filter((w) => (w as any).long_term_hold).map((w) => w.stock_code)),
+      // LTH 종목은 당일 손절 재진입 차단에서 제외 — 하락장 탈출 후 재매수 허용
+      lossBlockedCodes: (() => {
+        const lthCodes = new Set(watchlist.filter((w) => (w as any).long_term_hold).map((w) => w.stock_code));
+        const blocked = new Set([...recentLossCodes, ...todayRepeatStopCodes]);
+        for (const c of lthCodes) blocked.delete(c);
+        return blocked;
+      })(),
       bigLossBlockedCodes: bigLossBlocked,
       manuallySoldCodes,
       recentlySoldCodes,
@@ -1377,7 +1420,14 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
           orderableCash,
           maxPositionKrw: adjMaxPositionKrw,
           totalAssets,
-          lossBlockedCodes: new Set([...recentLossCodes, ...todayRepeatStopCodes]),
+          longTermHoldCodes: new Set(filteredWatchlist.filter((w) => (w as any).long_term_hold).map((w) => w.stock_code)),
+          // LTH 종목은 forceSell 후에도 BREAKOUT 재진입 허용
+          lossBlockedCodes: (() => {
+            const lthCodes = new Set(filteredWatchlist.filter((w) => (w as any).long_term_hold).map((w) => w.stock_code));
+            const blocked = new Set([...recentLossCodes, ...todayRepeatStopCodes]);
+            for (const c of lthCodes) blocked.delete(c);
+            return blocked;
+          })(),
           bigLossBlockedCodes: bigLossBlocked,
           manuallySoldCodes,
           recentlySoldCodes,

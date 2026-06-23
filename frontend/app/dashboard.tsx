@@ -22,8 +22,9 @@ import StrategyLabView from './views/StrategyLabView';
 import AiCostView from './views/AiCostView';
 import ScreenshotReview from './components/ScreenshotReview';
 import DbWarmingOverlay from './components/DbWarmingOverlay';
+import { ResearchBotPanel } from './views/news/ResearchBotPanel';
 
-type Tab = 'home' | 'trades' | 'journal' | 'watchlist' | 'news' | 'settings' | 'dividend' | 'strategy-lab' | 'ai-cost';
+type Tab = 'home' | 'trades' | 'journal' | 'watchlist' | 'news' | 'research' | 'settings' | 'dividend' | 'strategy-lab' | 'ai-cost';
 
 export default function Dashboard() {
   const { show: toast, ToastContainer } = useToast();
@@ -229,6 +230,13 @@ export default function Dashboard() {
               </ErrorBoundary>
               <ErrorBoundary fallbackTitle="뉴스 로딩 오류">
                 {tab === 'news' && <NewsView watchlist={watchlist} setWatchlist={setWatchlist} viewMode={viewMode} />}
+              </ErrorBoundary>
+              <ErrorBoundary fallbackTitle="퀀트봇 로딩 오류">
+                {tab === 'research' && (
+                  <div className="space-y-4">
+                    <ResearchBotPanel />
+                  </div>
+                )}
               </ErrorBoundary>
               <ErrorBoundary fallbackTitle="배당 로딩 오류">
                 {tab === 'dividend' && <DividendView toast={toast} viewMode={viewMode} confirm={confirm} mpData={mpData} onRefreshMp={refreshMp} />}

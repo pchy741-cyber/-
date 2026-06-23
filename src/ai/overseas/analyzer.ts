@@ -130,7 +130,7 @@ export async function analyzeOverseasWithAI(
   const MAX_RETRIES = 2;
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
-      const text = await callVertexGemini(SYSTEM_PROMPT, context, { temperature: 0.1, label: '해외-분석' });
+      const text = await callVertexGemini(SYSTEM_PROMPT, context, { temperature: 0.1, label: '해외-분석', useVertex: true });
 
       const jsonMatch = text.match(/\[[\s\S]*\]/);
       if (!jsonMatch) throw new Error('JSON 배열 없음');

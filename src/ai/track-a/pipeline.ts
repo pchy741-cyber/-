@@ -446,6 +446,11 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
           combinedSources = combinedSources ? `${combinedSources}\n\n${section}` : section;
           logger.info(`Groq 뉴스 감성 ${lines.length}건 스코어러에 주입`, { component: 'TRACK_A' });
         }
+      } else {
+        // Groq API 실패 또는 결과 없음 → GPT에 명시해 sentiment_score 과신 방지
+        const reason = groqSentiments.status === 'rejected' ? 'API 오류' : 'API 키 미설정 또는 결과 없음';
+        const sentinel = `## Groq 뉴스 감성 분석 불가 (${reason})\n→ sentiment_score 산출 시 뉴스 데이터 제외, 수급·공시·차트 기반으로만 판단하세요.`;
+        combinedSources = combinedSources ? `${combinedSources}\n\n${sentinel}` : sentinel;
       }
 
       // 4-f. Google Trends 급등 섹션
@@ -498,8 +503,8 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
     try {
       const { analyzeTechnicals: analyzeTech } = await import('../../analysis/indicators.js');
       const { detectRegimeV2 } = await import('../track-b/regime-v2.js');
-      // 대표 종목(첫 5개)의 차트로 시장 레짐 판단
-      const sampleStocks = allStocks.slice(0, 5);
+      // 대표 종목(최대 20개)의 차트로 시장 레짐 판단 — 샘플이 클수록 레짐 정확도 향상
+      const sampleStocks = allStocks.slice(0, 20);
       const regimeCounts = new Map<string, number>();
       for (const s of sampleStocks) {
         const candles = chartData.get(s.stock_code) ?? [];

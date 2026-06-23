@@ -28,6 +28,7 @@ import { acquireLock } from '../utils/lock.js';
 import { logger } from '../utils/logger.js';
 import { roundKrw } from '../utils/money.js';
 import { getKSTNow } from '../utils/time.js';
+import { getLatestSnapshot } from '../db/repo/snapshots.js';
 import { registerBuyIntent, releaseBuyIntent } from './buy-intent.js';
 import { chainManager } from './chain.js';
 
@@ -56,14 +57,54 @@ export class TradeExecutor {
     );
   }
 
+  /**
+   * 일일 서킷브레이커: 당일 총자산 -2% 이하 시 신규 매수 전면 차단
+   * - 기존 포지션 SL/TP/TrailingStop 청산은 영향 없음 (매도만 차단 안 함)
+   * - 판단 기준: 오늘 최신 스냅샷의 daily_pnl_pct
+   * - 스냅샷 없으면 차단 안 함 (장 시작 직후 첫 스냅샷 전)
+   * @returns true = 서킷브레이커 발동 (매수 차단)
+   */
+  private async _checkDailyCircuitBreaker(): Promise<boolean> {
+    const DAILY_LOSS_LIMIT = -2.0; // -2%
+    try {
+      const isPaper = getCtxIsPaper();
+      const latest = await getLatestSnapshot(isPaper);
+      if (!latest) return false; // 스냅샷 없음 → 차단 안 함
+
+      const dailyPnlPct = Number(latest.daily_pnl_pct ?? 0);
+      if (dailyPnlPct <= DAILY_LOSS_LIMIT) {
+        const modeTag = isPaper ? '🧪PAPER' : '💰LIVE';
+        logger.warn(
+          `🚨 [${modeTag}] 일일 서킷브레이커 발동: 당일 손실 ${dailyPnlPct.toFixed(2)}% ≤ ${DAILY_LOSS_LIMIT}% → 신규 매수 전면 차단 (장 마감까지 유지)`,
+          { component: 'CIRCUIT_BREAKER' },
+        );
+        this._logFire(
+          'WARN',
+          'CIRCUIT_BREAKER',
+          `일일 손실 한도 초과: ${dailyPnlPct.toFixed(2)}% ≤ ${DAILY_LOSS_LIMIT}% — 신규 매수 차단`,
+        );
+        return true;
+      }
+      return false;
+    } catch (e) {
+      // fail-open: 서킷브레이커 조회 실패 시 매수 허용 (스냅샷 DB 장애가 매매를 막으면 안 됨)
+      logger.warn(`서킷브레이커 체크 실패 → 매수 허용 (fail-open): ${(e as Error).message}`, {
+        component: 'CIRCUIT_BREAKER',
+      });
+      return false;
+    }
+  }
+
   private _minuteKey(stockCode: string, action: string): string {
     const now = getKSTNow();
-    // 5분마다 오래된 키 정리 (메모리 누수 방지)
+    const ymd = now.toISOString().slice(0, 16).replace(/[-:T]/g, ''); // YYYYMMDDHHmm (KST)
+    // 5분마다 이전 분 키만 정리 (현재 분 키 보존 — 전체 clear 시 동일 분 중복 허용 버그 방지)
     if (now.getTime() - this._lastKeyCleanup > 5 * 60_000) {
-      this._recentOrderKeys.clear();
+      for (const key of this._recentOrderKeys) {
+        if (!key.includes(ymd)) this._recentOrderKeys.delete(key);
+      }
       this._lastKeyCleanup = now.getTime();
     }
-    const ymd = now.toISOString().slice(0, 16).replace(/[-:T]/g, ''); // YYYYMMDDHHmm (KST)
     const mode = getCtxIsPaper() ? 'paper' : 'live';
     return `${mode}-${stockCode}-${action}-${ymd}`;
   }
@@ -79,10 +120,12 @@ export class TradeExecutor {
     const others = decisions.filter((d) => !sells.includes(d) && !buys.includes(d));
 
     // 매도: 순차 (체인 상태 의존)
+    const justSoldCodes = new Set<string>();
     for (const decision of [...sells, ...others]) {
       try {
         await this.executeDecision(decision, mode);
         reportSuccess();
+        if (sells.includes(decision)) justSoldCodes.add(decision.stock_code);
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
         logger.error(`주문 실행 실패 [${decision.stock_code}]: ${msg}`, { component: 'EXECUTOR' });
@@ -92,9 +135,23 @@ export class TradeExecutor {
     }
 
     // 매수: 종목별 병렬 실행 (서로 다른 종목은 동시 주문 가능)
-    if (buys.length > 0) {
+    // 일일 서킷브레이커: 당일 -2% 초과 손실 시 신규 매수 전면 차단
+    if (buys.length > 0 && (await this._checkDailyCircuitBreaker())) {
+      return;
+    }
+
+    // 즉시 반전 방지: 같은 사이클에서 매도된 종목은 재매수 차단 (수수료 이중 손실 방지)
+    const buyList = justSoldCodes.size > 0 ? buys.filter((b) => {
+      if (justSoldCodes.has(b.stock_code)) {
+        const modeTag = getCtxIsPaper() ? '🧪PAPER' : '💰LIVE';
+        logger.warn(`⏳ [${modeTag}] 즉시 반전 차단: ${b.stock_code} (같은 사이클 매도됨)`, { component: 'EXECUTOR' });
+        return false;
+      }
+      return true;
+    }) : buys;
+    if (buyList.length > 0) {
       await Promise.allSettled(
-        buys.map(async (decision) => {
+        buyList.map(async (decision) => {
           const intentSource = decision.trigger_source ?? source ?? mode;
           if (!registerBuyIntent(decision.stock_code, intentSource)) return;
           try {

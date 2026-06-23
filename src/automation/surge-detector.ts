@@ -14,6 +14,7 @@
  */
 
 import { getPool } from '../db/client.js';
+import { TRADING_VALUE } from '../config/constants.js';
 import { syncInterestGroups } from '../kis/interest-group.js';
 import { getChangeRankingStocks, getCurrentPrice, getVolumeRankingStocks } from '../kis/market.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
@@ -26,12 +27,12 @@ const COMPONENT = 'SURGE_DETECTOR';
 
 // 일반 급등: 등락률 +5%+ && 거래대금 500억원+
 const SURGE_CHANGE_PCT = 5;
-const SURGE_TRADING_VALUE = 50_000_000_000; // 500억
+const SURGE_TRADING_VALUE = TRADING_VALUE.SURGE_MIN;
 
 // 초대형주 (시총 50조+): 등락률 +2%+ && 거래대금 3000억+
 const MEGA_CAP_CHANGE_PCT = 2;
 const MEGA_CAP_MARKET_CAP_EOK = 500_000; // 시총 50조 = 500,000억
-const MEGA_CAP_TRADING_VALUE = 300_000_000_000; // 3000억
+const MEGA_CAP_TRADING_VALUE = TRADING_VALUE.MEGA_CAP_SURGE_MIN;
 
 // 1회 최대 편입
 const MAX_ADD_PER_RUN = 10;
@@ -162,7 +163,7 @@ export async function runSurgeDetector(): Promise<void> {
           // 상폐 리스크 제외
           if (p.haltYn === 'Y' || p.mrktWarnClsCode >= '02') return;
 
-          const tradingValue = p.currentPrice * p.volume; // 거래대금 추정 (원)
+          const tradingValue = p.tradingValueEok * 100_000_000; // 거래대금 (원, KIS acml_tr_pbmn 공식값)
           const isMegaCap = p.marketCapEok >= MEGA_CAP_MARKET_CAP_EOK;
 
           const isSurge = p.changePct >= SURGE_CHANGE_PCT && tradingValue >= SURGE_TRADING_VALUE;
@@ -276,7 +277,7 @@ export async function runSurgeDetector(): Promise<void> {
               if (p.currentPrice < MIN_PRICE || p.currentPrice > MAX_PRICE) return;
               if (p.haltYn === 'Y' || p.mrktWarnClsCode >= '02') return;
 
-              const tradingValue = p.currentPrice * p.volume;
+              const tradingValue = p.tradingValueEok * 100_000_000;
               if (
                 news.score >= NEWS_MIN_SENTIMENT &&
                 p.changePct >= NEWS_MIN_CHANGE_PCT &&
@@ -379,7 +380,7 @@ async function expandThemeCluster(
         if (p.currentPrice < MIN_PRICE || p.currentPrice > MAX_PRICE) return;
         if (p.haltYn === 'Y' || p.mrktWarnClsCode >= '02') return;
 
-        const tradingValue = p.currentPrice * p.volume;
+        const tradingValue = p.tradingValueEok * 100_000_000;
         if (tradingValue < CLUSTER_MIN_TRADING_VALUE) return;
 
         if (p.changePct < CLUSTER_MIN_CHANGE || p.changePct >= CLUSTER_MAX_CHANGE) return;

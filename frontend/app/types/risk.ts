@@ -11,7 +11,6 @@ export interface RiskLimits {
 }
 
 export interface DefensePark {
-  active?: boolean;
   isActive?: boolean;
   reason?: string;
   parkStockName?: string;

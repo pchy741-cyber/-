@@ -40,8 +40,8 @@ function splitSqlStatements(sql: string): string[] {
   const parts = sql.split('$$');
   for (let i = 0; i < parts.length; i++) {
     if (inDollarQuote) {
-      // $$ 블록 내부: 세미콜론 포함 그대로 유지
-      current += '$$' + parts[i];
+      // $$ 블록 내부: 세미콜론 포함 그대로 유지 (opening $$는 이전 iteration에서 붙음, 여기서 closing $$ 추가)
+      current += parts[i] + '$$';
       inDollarQuote = false;
     } else {
       // 일반 SQL: 세미콜론으로 분리

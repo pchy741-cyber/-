@@ -37,10 +37,12 @@ export default function SuggestedActionsPanel({
   suggestedActions,
   monthlyGoal,
   fxImpact,
+  viewMode = 'live',
 }: {
   suggestedActions?: SuggestedAction[];
   monthlyGoal?: MonthlyGoal;
   fxImpact?: FxImpact | null;
+  viewMode?: 'live' | 'paper';
 }) {
   const actions = suggestedActions ?? [];
   const goal = monthlyGoal;
@@ -159,7 +161,7 @@ export default function SuggestedActionsPanel({
         return (
           <>
             {liveActions.length > 0 && renderList(liveActions, '자동매매 현황 — 실전', 'emerald')}
-            {paperActions.length > 0 && renderList(paperActions, '자동매매 현황 — 연습', 'amber')}
+            {paperActions.length > 0 && viewMode !== 'live' && renderList(paperActions, '자동매매 현황 — 연습', 'amber')}
           </>
         );
       })()}

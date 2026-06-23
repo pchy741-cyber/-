@@ -1041,7 +1041,8 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
         const [domResult, allocResult, rotResult] = await Promise.all([
           getPool().query(
             `SELECT COALESCE(SUM(invested_amount), 0) AS domestic_invested
-             FROM chains WHERE is_active = true AND is_paper = false`,
+             FROM chains WHERE is_active = true AND is_paper = $1`,
+            [isPaper()],
           ),
           getPool().query(
             'SELECT us_pct FROM portfolio_allocation_config WHERE is_paper = $1 ORDER BY id DESC LIMIT 1',

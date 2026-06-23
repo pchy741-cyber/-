@@ -18,6 +18,7 @@ export interface CurrentPrice {
   changePrice: number;
   changePct: number;
   volume: number;
+  tradingValueEok: number; // 누적거래대금 (억원, acml_tr_pbmn) — KIS 공식값
   highPrice: number;
   lowPrice: number;
   openPrice: number;
@@ -54,6 +55,7 @@ export async function getCurrentPrice(stockCode: string): Promise<CurrentPrice> 
     changePrice: safeNum(o.prdy_vrss),
     changePct: safeNum(o.prdy_ctrt),
     volume: safeNum(o.acml_vol),
+    tradingValueEok: safeNum(o.acml_tr_pbmn) / 100_000_000,
     highPrice: safeNum(o.stck_hgpr),
     lowPrice: safeNum(o.stck_lwpr),
     openPrice: safeNum(o.stck_oprc),
@@ -85,6 +87,7 @@ export interface DailyCandle {
   low: number;
   close: number;
   volume: number;
+  tradingValueEok: number; // 누적거래대금 (억원, acml_tr_pbmn) — KIS 공식값
 }
 
 // ── getDailyChart 인메모리 캐시 (일봉은 장중 변하지 않음) ──
@@ -157,6 +160,7 @@ export async function getDailyChart(stockCode: string, days: number = 60): Promi
       low: safeNum(c.stck_lwpr),
       close: safeNum(c.stck_clpr),
       volume: safeNum(c.acml_vol),
+      tradingValueEok: safeNum(c.acml_tr_pbmn) / 100_000_000,
     }))
     .sort((a, b) => b.date.localeCompare(a.date));
 

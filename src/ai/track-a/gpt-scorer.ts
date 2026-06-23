@@ -14,7 +14,7 @@ const COMP = 'TRACK_A_GPT';
 const MODEL = 'gpt-4o-mini'; // 비용 최적화: o3 대비 10배 저렴, 스코어링 충분
 const BATCH_SIZE = 30; // gpt-4o-mini는 저렴하므로 배치 크기 확대 (API 호출 횟수 절감)
 const API_TIMEOUT_MS = 60_000; // OpenAI API 타임아웃 (60초)
-const MAX_SOURCES_CHARS = 4000; // additionalSources 최대 문자 수
+const MAX_SOURCES_CHARS = 8000; // additionalSources 최대 문자 수 — DART/공시/커뮤니티 손실 방지
 const MIN_CANDLES_FOR_ANALYSIS = 5;
 const RSI_PERIOD = 14;
 const RSI_LOOKBACK = RSI_PERIOD + 1; // 15일치 종가 필요
@@ -207,12 +207,23 @@ ${chartSummary}${sourcesBlock}
 
         const clampScore = (v: number) => Math.max(SCORE_MIN, Math.min(SCORE_MAX, Math.round(v)));
 
+        const fundamentalScore = clampScore(safeNum(item.fundamental_score, DEFAULT_SCORE));
+        const technicalScore = clampScore(safeNum(item.technical_score, DEFAULT_SCORE));
+        const sentimentScore = clampScore(safeNum(item.sentiment_score, DEFAULT_SCORE));
+
+        // composite가 서브스코어 가중 평균(F×0.35+T×0.40+S×0.25)과 15점 이상 괴리 시 자동 교정
+        const weightedAvg = Math.round(fundamentalScore * 0.35 + technicalScore * 0.40 + sentimentScore * 0.25);
+        let finalComposite = clampScore(rawComposite);
+        if (Math.abs(finalComposite - weightedAvg) > 15) {
+          finalComposite = clampScore((finalComposite + weightedAvg) / 2);
+        }
+
         results.push({
           stock_code: code,
-          composite_score: clampScore(rawComposite),
-          fundamental_score: clampScore(safeNum(item.fundamental_score, DEFAULT_SCORE)),
-          technical_score: clampScore(safeNum(item.technical_score, DEFAULT_SCORE)),
-          sentiment_score: clampScore(safeNum(item.sentiment_score, DEFAULT_SCORE)),
+          composite_score: finalComposite,
+          fundamental_score: fundamentalScore,
+          technical_score: technicalScore,
+          sentiment_score: sentimentScore,
           signal: (validSignals.includes(signal) ? signal : 'HOLD') as ScoringResult['signal'],
           confidence: Math.max(CONFIDENCE_MIN, Math.min(CONFIDENCE_MAX, safeNum(item.confidence, DEFAULT_CONFIDENCE))),
           reasoning: `[GPT] ${String(item.reasoning ?? '').slice(0, 200)}`,

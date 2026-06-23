@@ -19,6 +19,7 @@ import { config } from '../config/index.js';
 import { getActiveStrategy, getActiveWatchlist, getOpenChains } from '../db/client.js';
 import { getAccountBalance } from '../kis/account.js';
 import { getBatchPrices, getDailyChart } from '../kis/market.js';
+import { TRADING_VALUE } from '../config/constants.js';
 import { isKillSwitchActive } from '../risk/kill-switch.js';
 import { tradeExecutor } from '../trading/executor.js';
 import { logger } from '../utils/logger.js';
@@ -206,22 +207,17 @@ JSON만 반환 (다른 텍스트 없이):
     } // end else (sharedScores 없을 때만 Gemini 호출)
 
     // 주도주 필터: 전일 거래대금 500억+ (개장 초단타는 유동성 확보 필수)
-    const JUDO_MIN_TRADED = 50_000_000_000; // 500억 KRW
     const judeojuCodes = new Set<string>();
     for (const [code, candles] of chartData) {
       if (candles.length === 0) continue;
       const last = candles[0]; // 전일(최신) 기준 거래대금 판정
-      if (Number(last.close) * Number(last.volume) >= JUDO_MIN_TRADED) judeojuCodes.add(code);
+      if (last.tradingValueEok * 100_000_000 >= TRADING_VALUE.SURGE_MIN) judeojuCodes.add(code);
     }
     if (judeojuCodes.size < 3) {
       // fallback: top-5 by 거래대금
       const top5 = [...chartData.entries()]
         .filter(([, c]) => c.length > 0)
-        .sort(
-          ([, a], [, b]) =>
-            Number(b[0].close) * Number(b[0].volume) -
-            Number(a[0].close) * Number(a[0].volume),
-        )
+        .sort(([, a], [, b]) => Number(b[0].tradingValueEok) - Number(a[0].tradingValueEok))
         .slice(0, 5)
         .map(([code]) => code);
       for (const code of top5) judeojuCodes.add(code);

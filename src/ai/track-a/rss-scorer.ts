@@ -454,22 +454,22 @@ export async function runRSSScoring(
     );
 
     // 신호 결정 + 눌림목 확인 시 confidence 상향
-    // HOLD 기본값 0.65: Gemini 실패 시 RSS 폴백이 pipeline 0.60 필터를 통과하도록 보장
-    // (구 0.55는 필터 탈락 → adjustedScores=[] → aiScore=0 → 전 종목 매수 차단 버그)
+    // HOLD 기본값 0.63: RSS 폴백은 AI 분석 없으므로 GPT 대비 -2% 패널티 (과신 방지)
+    // (너무 낮추면 pipeline 0.60 필터 탈락 → 전 종목 매수 차단 버그)
     let signal: ScoringResult['signal'] = 'HOLD';
-    let confidence = 0.65;
+    let confidence = 0.63; // RSS 폴백: GPT(0.65) 대비 -0.02 패널티
     if (composite >= STRONG_BUY_THRESHOLD) {
       signal = 'STRONG_BUY';
-      confidence = 0.82;
+      confidence = 0.78; // RSS 폴백: GPT(0.82~0.9) 대비 -0.04 패널티
     } else if (composite >= BUY_THRESHOLD) {
       signal = 'BUY';
-      confidence = 0.72;
+      confidence = 0.68; // RSS 폴백: GPT(0.72) 대비 -0.04 패널티
     } else if (composite <= STRONG_SELL_THRESHOLD) {
       signal = 'STRONG_SELL';
-      confidence = 0.8;
+      confidence = 0.76;
     } else if (composite <= SELL_THRESHOLD) {
       signal = 'SELL';
-      confidence = 0.7;
+      confidence = 0.66;
     }
 
     // 눌림목 + 거래량 콤보: confidence 추가 상향 (Track B 진입 문턱 넘기 용이)

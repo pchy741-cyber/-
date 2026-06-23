@@ -375,7 +375,7 @@ export function registerManualBuyRoutes(app: Hono) {
         /* 잔고 조회 실패 시 패스 */
       }
 
-      // 리스크 엔진 검증 (실전만) — MDD -12%와 현금부족만 하드블락, 나머지 경고
+      // 리스크 엔진 검증 (실전만) — MDD/현금부족/일일손실/킬스위치는 하드블락, 나머지 경고
       if (!isPaper) {
         try {
           const riskResult = await riskEngine.validateOrder({
@@ -390,8 +390,11 @@ export function registerManualBuyRoutes(app: Hono) {
             const reason = riskResult.reason ?? '';
             const isMddHardBlock = /mdd|max.*drawdown|최대.*손실/i.test(reason);
             const isCashBlock = /현금.*부족|잔고.*부족|cash/i.test(reason);
-            if (isMddHardBlock || isCashBlock) {
-              // 하드블락: MDD -12% 또는 현금 부족은 절대 차단
+            // 일일손실 초과/소프트리밋/킬스위치: Track B와 동일 기준 적용
+            // ceo_override라도 일일손실 보호는 우회 불가 (재매수=적자 주범)
+            const isDailyLossBlock = /kill switch|소프트 리밋|일일 손실.*초과|일일 손실.*차단/i.test(reason);
+            if (isMddHardBlock || isCashBlock || isDailyLossBlock) {
+              // 하드블락: MDD -12%, 현금 부족, 일일손실 한도 초과
               logger.warn(`🚫 하드블락: ${stock_code} — ${reason}`, { component: 'CLAUDE_BUY' });
               return c.json({ error: `하드블락: ${reason}` }, 403);
             }
@@ -496,53 +499,62 @@ export function registerManualBuyRoutes(app: Hono) {
               );
               const liveQty = Math.floor(liveAmountKrw / curPrice);
               if (liveQty >= 1 && liveAvailCash >= liveQty * curPrice) {
-                const liveResult = await runWithMode(false, () =>
-                  placeOrder({ stockCode: stock_code, side: 'BUY', quantity: liveQty }),
-                );
-                if (liveResult.success) {
-                  const liveTotalInvested = liveQty * curPrice;
-                  const liveChainId = await createChain({
-                    stock_code,
-                    status: 'OPEN',
-                    strategy_mode: 'SWING',
-                    avg_buy_price: curPrice,
-                    total_quantity: liveQty,
-                    total_invested: liveTotalInvested,
-                    realized_pnl: 0,
-                    target_profit_pct: takeProfitPct,
-                    stop_loss_pct: stopLossPct,
-                    max_averaging_count: STRATEGY_PARAMS.SWING.maxAveragingCount,
-                    current_averaging_count: 0,
-                    is_paper: false,
-                  });
-                  await getPool().query(
-                    `INSERT INTO orders (chain_id, stock_code, side, order_type, quantity, price, filled_quantity, filled_price, kis_order_no, status, trading_mode, trigger_source, ai_reasoning)
-                     VALUES ($1, $2, 'BUY', 'MARKET', $3, $4, $3, $4, $5, 'FILLED', 'live', 'CLAUDE', $6)`,
-                    [
-                      liveChainId,
+                const liveTotalInvested = liveQty * curPrice;
+                // createChain 먼저 — placeOrder 실패/예외 시 체인 삭제로 롤백
+                const liveChainId = await createChain({
+                  stock_code,
+                  status: 'OPEN',
+                  strategy_mode: 'SWING',
+                  avg_buy_price: curPrice,
+                  total_quantity: liveQty,
+                  total_invested: liveTotalInvested,
+                  realized_pnl: 0,
+                  target_profit_pct: takeProfitPct,
+                  stop_loss_pct: stopLossPct,
+                  max_averaging_count: STRATEGY_PARAMS.SWING.maxAveragingCount,
+                  current_averaging_count: 0,
+                  is_paper: false,
+                });
+                let orderFilled = false;
+                try {
+                  const liveResult = await runWithMode(false, () =>
+                    placeOrder({ stockCode: stock_code, side: 'BUY', quantity: liveQty }),
+                  );
+                  if (liveResult.success) {
+                    orderFilled = true;
+                    await getPool().query(
+                      `INSERT INTO orders (chain_id, stock_code, side, order_type, quantity, price, filled_quantity, filled_price, kis_order_no, status, trading_mode, trigger_source, ai_reasoning)
+                       VALUES ($1, $2, 'BUY', 'MARKET', $3, $4, $3, $4, $5, 'FILLED', 'live', 'CLAUDE', $6)`,
+                      [
+                        liveChainId,
+                        stock_code,
+                        liveQty,
+                        curPrice,
+                        liveResult.orderNo ?? '',
+                        `AUTO_PROMOTE AI${aiScore}점 연습→실전`,
+                      ],
+                    );
+                    livePromoted = true;
+                    liveAmount = liveTotalInvested;
+                    logger.info(
+                      `⭐ 엘리트 자동 실전 매수: ${stock_code} ${liveQty}주 @${curPrice.toLocaleString()}원 (AI${aiScore}점)`,
+                      { component: 'CLAUDE_BUY' },
+                    );
+                    invalidateBalanceCache();
+                    await notifyBuy(
                       stock_code,
                       liveQty,
                       curPrice,
-                      liveResult.orderNo ?? '',
                       `AUTO_PROMOTE AI${aiScore}점 연습→실전`,
-                    ],
-                  );
-                  livePromoted = true;
-                  liveAmount = liveTotalInvested;
-                  logger.info(
-                    `⭐ 엘리트 자동 실전 매수: ${stock_code} ${liveQty}주 @${curPrice.toLocaleString()}원 (AI${aiScore}점)`,
-                    { component: 'CLAUDE_BUY' },
-                  );
-                  invalidateBalanceCache();
-                  await notifyBuy(
-                    stock_code,
-                    liveQty,
-                    curPrice,
-                    `AUTO_PROMOTE AI${aiScore}점 연습→실전`,
-                    'ELITE_AUTO_PROMOTION',
-                  ).catch((err) =>
-                    logger.warn(`notifyBuy() 실패 (엘리트 자동 실전): ${err}`, { component: 'CLAUDE_BUY' }),
-                  );
+                      'ELITE_AUTO_PROMOTION',
+                    ).catch((err) =>
+                      logger.warn(`notifyBuy() 실패 (엘리트 자동 실전): ${err}`, { component: 'CLAUDE_BUY' }),
+                    );
+                  }
+                } finally {
+                  if (!orderFilled) {
+                    await getPool().query(`DELETE FROM transaction_chains WHERE id = $1`, [liveChainId]).catch(() => {});
+                  }
                 }
               }
             }

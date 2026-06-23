@@ -28,7 +28,7 @@ export default function StatusBanners({ dash, busyAction, guard, toast, onRefres
             <span className="text-base shrink-0">{dash.cooldown.eodOnly ? '🎰' : '🔒'}</span>
             <div className="flex flex-col gap-0.5 min-w-0">
               <span className="text-sm font-bold text-orange-300">{dash.cooldown.eodOnly ? 'EOD-only 모드' : '매수 쿨다운 중'}</span>
-              <span className="text-[10px] text-orange-200/70">{dash.cooldown.eodOnly ? `${dash.cooldown.consecutive}연패 → 장중매수 차단` : dash.cooldown.reason}</span>
+              <span className="text-[10px] text-orange-200/70">{dash.cooldown.eodOnly ? `${dash.cooldown.consecutive ?? 0}연패 → 장중매수 차단` : dash.cooldown.reason}</span>
             </div>
             <Button
               variant="ghost"
@@ -36,7 +36,7 @@ export default function StatusBanners({ dash, busyAction, guard, toast, onRefres
               className="ml-auto bg-orange-500/20 hover:bg-orange-500/40 text-orange-200 shrink-0"
               disabled={!!busyAction}
               onClick={guard('cooldown', async () => {
-                if (!await confirm({ title: `${dash!.cooldown!.consecutive}연패 쿨다운을 수동으로 해제할까요?`, description: '나는 이 결정에 책임집니다', confirmLabel: '쿨다운 해제', confirmVariant: 'danger' })) return;
+                if (!await confirm({ title: `${dash!.cooldown!.consecutive ?? 0}연패 쿨다운을 수동으로 해제할까요?`, description: '나는 이 결정에 책임집니다', confirmLabel: '쿨다운 해제', confirmVariant: 'danger' })) return;
                 try {
                   await api(`/cooldown/reset?viewMode=${viewMode}`, { method: 'POST' });
                   toast?.('쿨다운 해제 완료 — 다음 루프에서 매수 재개', 'ok');

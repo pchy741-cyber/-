@@ -131,15 +131,20 @@ export default function MarketProgressBar({
         )}
       </div>
 
-      {/* 손실 한도 */}
+      {/* 손실도 + 손익금액 + 손절포인트 */}
       <div className="flex items-center gap-1.5 shrink-0">
         <span className="text-[10px] text-slate-500">손실도</span>
-        <div className={`text-[11px] font-bold tabular-nums ${lossColor}`}>
-          {isUs
-            ? (loss < 0 ? `${usedPct.toFixed(1)}% ($${Math.abs(Math.round(loss)).toLocaleString('en-US')}/$${limit.toLocaleString('en-US')})` : `0% / $${limit.toLocaleString('en-US')}`)
-            : (loss < 0 ? `${usedPct.toFixed(1)}% (${fmtWon(Math.abs(loss))}/${fmtWon(limit)})` : `0% / ${fmtWon(limit)}`)}
+        <div className="flex flex-col items-end gap-0">
+          <div className={`text-[11px] font-bold tabular-nums leading-tight ${lossColor}`}>
+            {usedPct > 0 ? `${usedPct.toFixed(1)}%` : '0%'}
+          </div>
+          <div className="text-[10px] tabular-nums leading-tight text-slate-400">
+            {isUs
+              ? `${loss >= 0 ? '+' : ''}$${Math.round(loss).toLocaleString('en-US')} / -$${limit.toLocaleString('en-US')}`
+              : `${loss >= 0 ? '+' : ''}${fmtWon(loss)} / -${fmtWon(limit)}`}
+          </div>
+        </div>
       </div>
-    </div>
   </div>
   );
 }

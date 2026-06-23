@@ -206,8 +206,8 @@ export async function runEodBettingJob(): Promise<void> {
       const modeKey = isPaper ? 'paper' : 'live';
       if (_eodBoughtToday.get(modeKey)?.has(stock.stock_code)) continue;
 
-      // 거래대금 (억원) = 누적거래량 × 현재가 / 1억
-      const tradeValueEok = (p.volume * p.currentPrice) / 100_000_000;
+      // 거래대금 (억원, KIS acml_tr_pbmn 공식값)
+      const tradeValueEok = p.tradingValueEok;
       if (tradeValueEok < MIN_TRADE_VALUE_EOK) continue;
 
       // 캔들 위치: (현재가 - 저가) / (고가 - 저가)

@@ -11,6 +11,7 @@
 
 import { sma } from '../../analysis/moving-averages.js';
 import { rsi } from '../../analysis/oscillators.js';
+import { TRADING_VALUE } from '../../config/constants.js';
 import type { DailyCandle } from '../../kis/market.js';
 
 // ── 박스권(SCALP_TARGET) 판별 임계값 ──
@@ -58,7 +59,7 @@ function isTrendLeader(candles: DailyCandle[], tradingValue: number): boolean {
   const ma20Rising = sma20Now > sma20Prev;
 
   // 거래대금 500억+ (슬리피지 방지)
-  const bigEnough = tradingValue >= 50_000_000_000;
+  const bigEnough = tradingValue >= TRADING_VALUE.SURGE_MIN;
 
   return isNew60High && isVolExplosion && ma20Rising && bigEnough;
 }

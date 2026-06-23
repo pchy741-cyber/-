@@ -307,20 +307,36 @@ export async function generateKRInsights(): Promise<void> {
     }
 
     const summary = buildSummary(trades);
-    const client = new OpenAI({ apiKey, timeout: 30_000 });
-    const res = await client.chat.completions.create({
-      model: 'gpt-4o-mini',
-      max_tokens: 400,
-      temperature: 0.2,
-      messages: [
-        {
-          role: 'system',
-          content:
-            '당신은 알고리즘 트레이딩 퍼포먼스 분석 전문가입니다. 최근 30일 국내주식 자동매매 실적을 분석하여 다음 매매 사이클을 개선할 3~5가지 실행 가능한 인사이트를 생성하고, 매수 임계값 조정 신호를 추출하세요.\n\nthresholdAdj 규칙: 정수 -5~+5. 승률>65%이면 -2(진입 완화), 승률<40%이면 +4(더 엄격), 그 외 0. 데이터 부족(10건 미만)이면 0.\n\nJSON만 응답: {"insights":["인사이트1","인사이트2",...],"thresholdAdj":0}',
-        },
-        { role: 'user', content: summary },
-      ],
-    });
+    const client = new OpenAI({ apiKey, timeout: 90_000 });
+    let res: import('openai').OpenAI.ChatCompletion | undefined;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        res = await client.chat.completions.create({
+          model: 'gpt-4o-mini',
+          stream: false,
+          max_tokens: 400,
+          temperature: 0.2,
+          messages: [
+            {
+              role: 'system',
+              content:
+                '당신은 알고리즘 트레이딩 퍼포먼스 분석 전문가입니다. 최근 30일 국내주식 자동매매 실적을 분석하여 다음 매매 사이클을 개선할 3~5가지 실행 가능한 인사이트를 생성하고, 매수 임계값 조정 신호를 추출하세요.\n\nthresholdAdj 규칙: 정수 -5~+5. 승률>65%이면 -2(진입 완화), 승률<40%이면 +4(더 엄격), 그 외 0. 데이터 부족(10건 미만)이면 0.\n\nJSON만 응답: {"insights":["인사이트1","인사이트2",...],"thresholdAdj":0}',
+            },
+            { role: 'user', content: summary },
+          ],
+        });
+        break;
+      } catch (retryErr) {
+        const msg = (retryErr as Error).message ?? '';
+        if (attempt < 2 && (msg.includes('Premature close') || msg.includes('ECONNRESET') || msg.includes('timeout'))) {
+          logger.warn(`국내 인사이트 재시도 ${attempt + 1}/2 — ${msg}`, { component: 'KR_INSIGHTS' });
+          await new Promise((r) => setTimeout(r, (attempt + 1) * 5_000));
+          continue;
+        }
+        throw retryErr;
+      }
+    }
+    if (!res) throw new Error('재시도 소진');
 
     const text = res.choices[0]?.message?.content ?? '';
     const jsonMatch = text.match(/\{[\s\S]*\}/);

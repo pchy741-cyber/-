@@ -669,8 +669,13 @@ async function bootstrap() {
 
   // 7-1. 미종료 루프 세션 자동 재개
   try {
-    const { checkPendingLoop } = await import('./scheduler/loop-mode.js');
+    const { checkPendingLoop, isLoopActive, startLoop } = await import('./scheduler/loop-mode.js');
     await checkPendingLoop();
+    // AUTO_START_LOOP=true 환경변수 시 재배포 후에도 루프 자동 시작
+    if (process.env.AUTO_START_LOOP === 'true' && !isLoopActive()) {
+      const result = await startLoop();
+      logger.info(`🔁 AUTO_START_LOOP: ${result.ok ? '루프 자동 시작됨' : `실패 — ${result.error ?? ''}`}`, { component: 'BOOT' });
+    }
   } catch (e: any) {
     logger.warn(`루프 자동재개 실패: ${e.message}`, { component: 'BOOT' });
   }

@@ -173,11 +173,11 @@ export async function applyHardRules(params: {
         // 과매수 영역 → 타이트
         if (tech.rsi14 > 75) dynamicTrail = Math.max(dynamicTrail, -3.5);
 
-        // 수익 크기 비례 타이트닝 (수익 클수록 보호 강화)
+        // 수익 클수록 트레일 허용폭 확장 (모멘텀 종목 조기 청산 방지 — 상한가 진입 여지 보존)
         const maxPnl = peakForTrail > avgBuy ? ((peakForTrail - avgBuy) / avgBuy) * 100 : pnlPct;
-        if (maxPnl >= 15) dynamicTrail = Math.max(dynamicTrail, -3.0);
-        else if (maxPnl >= 10) dynamicTrail = Math.max(dynamicTrail, -4.0);
-        else if (maxPnl >= 6) dynamicTrail = Math.max(dynamicTrail, -5.0);
+        if (maxPnl >= 15) dynamicTrail = Math.min(dynamicTrail, -6.0); // 강한 모멘텀 → 최소 -6% 여유
+        else if (maxPnl >= 10) dynamicTrail = Math.min(dynamicTrail, -5.0);
+        else if (maxPnl >= 6) dynamicTrail = Math.min(dynamicTrail, -4.0);
 
         // 최종 클램프
         dynamicTrail = Math.max(-7.0, Math.min(-2.0, dynamicTrail));

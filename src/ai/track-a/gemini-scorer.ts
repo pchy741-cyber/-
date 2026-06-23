@@ -36,6 +36,7 @@ ${JSON.stringify(stocks, null, 2)}
     temperature: 0.2,
     maxOutputTokens: 16384,
     label: 'TrackA-스코어링',
+    useVertex: true,
   });
 
   // Resilient JSON parsing — 잘린 응답에서도 개별 스코어 복구

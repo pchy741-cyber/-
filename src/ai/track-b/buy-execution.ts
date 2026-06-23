@@ -247,7 +247,7 @@ export async function executeBuyDecisions(
   const intraday15mDown = new Set<string>(); // 15분봉 하락 종목
   const intradayVwapBelow = new Set<string>(); // VWAP 아래 종목 (싸게 사기 보너스)
   if (isMarketOpen() && candidates.length > 0) {
-    const topN = candidates.slice(0, 10); // 5→10개로 확대 (더 많은 종목 분봉 확인)
+    const topN = candidates.slice(0, 15); // 장중 MTF 게이트 상위 15개 후보에 적용
     await Promise.allSettled(
       topN.map(async (cand) => {
         try {
@@ -352,6 +352,16 @@ export async function executeBuyDecisions(
   const ctxPaper = getCtxIsPaper();
   const maxBuys = ctxPaper ? 15 : mode === 'SNIPER' ? 2 : 5;
   const splitCount = strategyParams.splitCount || 2;
+
+  // 하락장 전면차단 — blockNewBuys=true(kospiRegime.todayDown 포함) 시 실전 신규매수 완전 차단
+  // 고확신(90점+) 종목도 예외 없음
+  if (params.blockNewBuys && !ctxPaper) {
+    logger.info(
+      `🚫 신규매수 전면차단 (blockNewBuys=true) — ${candidates.length}개 후보 전원 스킵`,
+      { component: 'TRACK_B' },
+    );
+    return decisions;
+  }
 
   for (const cand of candidates.slice(0, maxBuys)) {
     // ── BREAKOUT 전용 사이징 + 태깅 ──────────────────────────────────────
@@ -744,7 +754,8 @@ export async function executeBuyDecisions(
       try {
         const dynSize = await getDynamicPositionSize(cand.stock_code, effectivePositionSize, 'live');
         if (dynSize.multiplier !== 1.0) {
-          effectivePositionSize = Math.round(dynSize.amount);
+          // 동적 사이징 후 remainingCash 재캡핑 (음수 잔고 방지)
+          effectivePositionSize = Math.round(Math.min(dynSize.amount, remainingCash * 0.95));
           logger.info(
             `  📊 ${cand.stock_code}: 동적사이징 x${dynSize.multiplier.toFixed(2)} → ${Math.round(effectivePositionSize / 10000)}만원 (${dynSize.reason})`,
             { component: 'TRACK_B' },
@@ -791,7 +802,7 @@ export async function executeBuyDecisions(
     // ── Signal Router: 종목 성격 분류 (Dual-Track) ─────────────────────────
     const srCandles = chartData.get(cand.stock_code);
     const liveDataSR = livePrices.get(cand.stock_code);
-    const dailyTradingValue = (liveDataSR?.volume ?? 0) * (liveDataSR?.currentPrice ?? cand.price.currentPrice);
+    const dailyTradingValue = (liveDataSR?.tradingValueEok ?? cand.price.tradingValueEok ?? 0) * 100_000_000; // KIS acml_tr_pbmn 공식값
     const srResult = srCandles ? classifyStock(srCandles, dailyTradingValue) : null;
     const srClass = srResult?.class ?? 'STANDARD';
     if (srResult && srClass !== 'STANDARD') {

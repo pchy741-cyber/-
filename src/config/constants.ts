@@ -698,6 +698,13 @@ export const SECTOR_MAP_KR: Readonly<Record<string, string>> = {
   '267260': '전력', '009540': '조선', '066570': '가전',
 };
 
+// ── 거래대금 임계값 (Single Source of Truth) ──
+// 여러 파일에 분산된 하드코딩 제거 — surge-detector, signal-router, opening-bell-job 공유
+export const TRADING_VALUE = {
+  SURGE_MIN: 50_000_000_000,          // 500억: 일반 급등 최소 거래대금 (유동성 확보)
+  MEGA_CAP_SURGE_MIN: 300_000_000_000, // 3000억: 초대형주(시총 50조+) 급등 최소 거래대금
+} as const;
+
 // ── 월간 MDD 한도 (Single Source of Truth) ──
 export const MDD_LIMIT = {
   LIVE: 8,   // 실전: 월간 최대 낙폭 8%

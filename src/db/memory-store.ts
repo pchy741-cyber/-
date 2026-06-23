@@ -1,6 +1,7 @@
 import { v4 as uuid } from 'uuid';
 import { getCtxIsPaper } from '../config/context.js';
 import { logger } from '../utils/logger.js';
+import { getKSTNow } from '../utils/time.js';
 import type { AIScore, Order, StrategyConfig, TransactionChain, WatchlistItem } from './models.js';
 
 /**
@@ -22,6 +23,7 @@ const DEFAULT_WATCHLIST: WatchlistItem[] = [
     notes: 'AI반도체',
     currency: 'KRW',
     source: 'MANUAL',
+    long_term_hold: false,
   },
   {
     id: uuid(),
@@ -33,6 +35,7 @@ const DEFAULT_WATCHLIST: WatchlistItem[] = [
     notes: 'HBM/AI반도체',
     currency: 'KRW',
     source: 'MANUAL',
+    long_term_hold: false,
   },
   {
     id: uuid(),
@@ -44,6 +47,7 @@ const DEFAULT_WATCHLIST: WatchlistItem[] = [
     notes: 'AI반도체패키징',
     currency: 'KRW',
     source: 'MANUAL',
+    long_term_hold: false,
   },
   {
     id: uuid(),
@@ -55,6 +59,7 @@ const DEFAULT_WATCHLIST: WatchlistItem[] = [
     notes: '반도체공정장비',
     currency: 'KRW',
     source: 'MANUAL',
+    long_term_hold: false,
   },
   // 반도체 소재·원자재
   {
@@ -67,6 +72,7 @@ const DEFAULT_WATCHLIST: WatchlistItem[] = [
     notes: '반도체소재',
     currency: 'KRW',
     source: 'MANUAL',
+    long_term_hold: false,
   },
   {
     id: uuid(),
@@ -78,6 +84,7 @@ const DEFAULT_WATCHLIST: WatchlistItem[] = [
     notes: '반도체소재',
     currency: 'KRW',
     source: 'MANUAL',
+    long_term_hold: false,
   },
   // 로봇·자동화
   {
@@ -90,6 +97,7 @@ const DEFAULT_WATCHLIST: WatchlistItem[] = [
     notes: '협동로봇',
     currency: 'KRW',
     source: 'MANUAL',
+    long_term_hold: false,
   },
   {
     id: uuid(),
@@ -101,6 +109,7 @@ const DEFAULT_WATCHLIST: WatchlistItem[] = [
     notes: '협동로봇',
     currency: 'KRW',
     source: 'MANUAL',
+    long_term_hold: false,
   },
   // 방산·인프라 (트럼프 테마)
   {
@@ -113,6 +122,7 @@ const DEFAULT_WATCHLIST: WatchlistItem[] = [
     notes: '방산/우주',
     currency: 'KRW',
     source: 'MANUAL',
+    long_term_hold: false,
   },
   {
     id: uuid(),
@@ -124,6 +134,7 @@ const DEFAULT_WATCHLIST: WatchlistItem[] = [
     notes: '조선/LNG',
     currency: 'KRW',
     source: 'MANUAL',
+    long_term_hold: false,
   },
   // 바이오·제약
   {
@@ -136,6 +147,7 @@ const DEFAULT_WATCHLIST: WatchlistItem[] = [
     notes: '바이오시밀러',
     currency: 'KRW',
     source: 'MANUAL',
+    long_term_hold: false,
   },
   {
     id: uuid(),
@@ -147,6 +159,7 @@ const DEFAULT_WATCHLIST: WatchlistItem[] = [
     notes: 'CMO바이오',
     currency: 'KRW',
     source: 'MANUAL',
+    long_term_hold: false,
   },
   // 원자재 (알래스카/광물)
   {
@@ -159,6 +172,7 @@ const DEFAULT_WATCHLIST: WatchlistItem[] = [
     notes: '비철금속',
     currency: 'KRW',
     source: 'MANUAL',
+    long_term_hold: false,
   },
   {
     id: uuid(),
@@ -170,6 +184,7 @@ const DEFAULT_WATCHLIST: WatchlistItem[] = [
     notes: '2차전지소재',
     currency: 'KRW',
     source: 'MANUAL',
+    long_term_hold: false,
   },
 ];
 
@@ -229,6 +244,7 @@ export function memUpsertWatchlistItem(item: Pick<WatchlistItem, 'stock_code' | 
       added_at: new Date().toISOString(),
       notes: null,
       source: 'MANUAL',
+      long_term_hold: false,
     });
   }
 }
@@ -246,7 +262,7 @@ export function memUpsertAIScore(score: Omit<AIScore, 'id' | 'created_at'>) {
 }
 
 export function memGetLatestScores(stockCodes: string[]): AIScore[] {
-  const today = new Date().toISOString().split('T')[0];
+  const today = getKSTNow().toISOString().split('T')[0];
   return store.aiScores
     .filter((s) => stockCodes.includes(s.stock_code) && s.score_date === today)
     .sort((a, b) => (b.composite_score ?? 0) - (a.composite_score ?? 0));
@@ -325,8 +341,13 @@ export function memInsertSnapshot(snapshot: {
 }
 
 export function memGetTodayStartSnapshot() {
-  const today = new Date().toISOString().split('T')[0];
+  const today = getKSTNow().toISOString().split('T')[0];
   return store.snapshots.find((s) => s.snapshot_at >= `${today}T00:00:00`) ?? null;
+}
+
+export function memGetLatestSnapshot() {
+  if (store.snapshots.length === 0) return null;
+  return store.snapshots[store.snapshots.length - 1];
 }
 
 // ── Strategy Config ──

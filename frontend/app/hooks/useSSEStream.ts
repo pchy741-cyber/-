@@ -16,7 +16,11 @@ interface SSESetters {
   setNewInsightCount: React.Dispatch<React.SetStateAction<number>>;
 }
 
-export function useSSEStream(viewMode: 'live' | 'paper', setters: SSESetters) {
+export function useSSEStream(
+  viewMode: 'live' | 'paper',
+  viewModeRef: React.MutableRefObject<'live' | 'paper'>,
+  setters: SSESetters,
+) {
   const { setTrades, setStrategy, setDash, setUsDash, setLoopStatus, setSseHealthScore, setHealth, setTodayStats, setNewInsightCount } = setters;
 
   useEffect(() => {
@@ -105,11 +109,13 @@ export function useSSEStream(viewMode: 'live' | 'paper', setters: SSESetters) {
           const data = JSON.parse(e.data);
           if (Array.isArray(data.recentTrades) && data.recentTrades.length > 0) {
             setTrades(prev => {
-              // 모드 전환 직후: prev가 비어있으면(switchView에서 초기화됨) SSE 데이터로 교체
+              // 스테일 SSE 핸들러 차단: viewModeRef가 이미 다른 모드로 전환됐으면 무시
+              // (switchView 후 React cleanup 실행 전 구 SSE 이벤트 인입 방지)
+              if (viewModeRef.current !== vm) return prev;
+              const sseMode = String(data.recentTrades[0]?.trading_mode ?? '');
               if (prev.length === 0) return data.recentTrades.slice(0, 200);
               // trading_mode 교차오염 방지: SSE 데이터의 모드와 prev 모드가 다르면 SSE 데이터로 교체
               const prevMode = String(prev[0]?.trading_mode ?? '');
-              const sseMode = String(data.recentTrades[0]?.trading_mode ?? '');
               if (prevMode && sseMode && prevMode !== sseMode && sseMode !== 'p_arch') {
                 return data.recentTrades.slice(0, 200);
               }
@@ -178,5 +184,5 @@ export function useSSEStream(viewMode: 'live' | 'paper', setters: SSESetters) {
       es?.close();
       if (retryTimer) clearTimeout(retryTimer);
     };
-  }, [viewMode, setTrades, setStrategy, setDash, setUsDash, setLoopStatus, setSseHealthScore, setHealth, setTodayStats, setNewInsightCount]);
+  }, [viewMode, viewModeRef, setTrades, setStrategy, setDash, setUsDash, setLoopStatus, setSseHealthScore, setHealth, setTodayStats, setNewInsightCount]);
 }

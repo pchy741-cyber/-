@@ -112,6 +112,14 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash, toast, confirm, 
     } catch (err: unknown) { toast(err instanceof Error ? err.message : '삭제 실패', 'err'); }
   };
 
+  const toggleLTH = async (code: string, current: boolean) => {
+    try {
+      await api(`/watchlist/${code}`, { method: 'PATCH', body: JSON.stringify({ long_term_hold: !current }) });
+      setWatchlist((prev: WatchlistItem[]) => prev.map(s => s.stock_code === code ? { ...s, long_term_hold: !current } : s));
+      toast(!current ? `🏛️ ${code} 장기보유 설정 — SL 무시` : `${code} 장기보유 해제`, 'ok');
+    } catch (err: unknown) { toast(err instanceof Error ? err.message : 'LTH 변경 실패', 'err'); }
+  };
+
   // 스코어 스파크라인 캐시 — 이미 로드된 종목은 재요청 없음
   const [sparklines, setSparklines] = useState<Map<string, number[]>>(new Map());
   const sparklineFetchedRef = React.useRef<Set<string>>(new Set());
@@ -179,6 +187,7 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash, toast, confirm, 
           fastAnalyzing={fastAnalyzing}
           onSelect={loadAnalysis}
           onDelete={del}
+          onToggleLTH={toggleLTH}
         />
 
         {/* 미국 */}
@@ -207,9 +216,10 @@ interface KRWatchlistPanelProps {
   fastAnalyzing: Set<string>;
   onSelect: (code: string) => void;
   onDelete: (code: string) => void;
+  onToggleLTH: (code: string, current: boolean) => void;
 }
 
-function KRWatchlistPanel({ watchlist, chains, dash, sparklines, selectedStock, fastAnalyzing, onSelect, onDelete }: KRWatchlistPanelProps) {
+function KRWatchlistPanel({ watchlist, chains, dash, sparklines, selectedStock, fastAnalyzing, onSelect, onDelete, onToggleLTH }: KRWatchlistPanelProps) {
   const [krFilter, setKrFilter] = useState<'전체' | 'KOSPI' | 'KOSDAQ' | '투자중' | '매수근접' | '최근매도'>('전체');
   const KR_FILTERS: Array<typeof krFilter> = ['전체', 'KOSPI', 'KOSDAQ', '투자중', '매수근접', '최근매도'];
 
@@ -280,6 +290,7 @@ function KRWatchlistPanel({ watchlist, chains, dash, sparklines, selectedStock, 
             fastAnalyzing={fastAnalyzing.has(s.stock_code)}
             onClick={() => onSelect(s.stock_code)}
             onDelete={onDelete}
+            onToggleLTH={onToggleLTH}
           />
         ))}
         {krFiltered.length === 0 && watchlist.length === 0 && <div className="col-span-2"><EmptyMsg>종목을 추가하면 로봇이 24시간 감시합니다</EmptyMsg></div>}

@@ -255,7 +255,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
     <div className="space-y-4 sm:space-y-5">
       <StatusBanners dash={dash} busyAction={busyAction} guard={guard} toast={toast} confirm={confirm} onRefresh={onRefresh} tradingStatus={tradingStatus} aiStatus={aiStatus} defensePark={defensePark} viewMode={viewMode} />
 
-      <SuggestedActionsPanel suggestedActions={dash?.suggestedActions} monthlyGoal={dash?.monthlyGoal} fxImpact={dash?.fxImpact} />
+      <SuggestedActionsPanel suggestedActions={dash?.suggestedActions} monthlyGoal={dash?.monthlyGoal} fxImpact={dash?.fxImpact} viewMode={viewMode} />
 
       <MarketProgressBar health={health} holdingsTab={holdingsTab} currentTimeStr={currentTimeStr} marketProgress={marketProgress} usMarketProgress={usMarketProgress} unrealizedPnl={unrealizedPnl} overseasPnlUsd={overseasPnlUsd} dailyLossLimit={dailyLossLimit} overseasLimitUsd={overseasLimitUsd} />
 

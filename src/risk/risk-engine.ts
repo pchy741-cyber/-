@@ -476,31 +476,15 @@ export class RiskEngine {
         const targetUsPct = Number(allocRows[0]?.us_pct ?? 70);
 
         if (targetUsPct > 0) {
-          const [, osHoldings, fx] = await Promise.all([getOverseasCash(), getOverseasHoldings(), getFxRate()]);
-          const osHoldingCostUsd = Array.from(osHoldings.values()).reduce((sum, h) => sum + h.qty * h.avgPrice, 0);
-          const osInvestedKrw = Math.round(osHoldingCostUsd * fx);
+          // 국내 투자가 totalPortfolio 기준 kr_pct 몫(+15% 여유)을 초과하면 차단
+          // totalPortfolio = KR잔고+보유 + OS잔고+보유(원화환산) → 해외 포지션 유무 무관
           const domesticInvested = balance.totalEvalAmount;
-          const totalInvested = domesticInvested + osInvestedKrw;
-
-          if (totalInvested > 0) {
-            // 투자 비율 기반 체크 (기존 방식 + 15% 여유)
-            const currentKrPct = (domesticInvested / totalInvested) * 100;
-            if (currentKrPct > targetKrPct * 1.15) {
-              return {
-                approved: false,
-                reason: `국내 배분 비중 초과: ${currentKrPct.toFixed(0)}% > 목표 ${targetKrPct}% (+15% 여유)`,
-              };
-            }
-          } else {
-            // 해외 투자 0일 때: 총자산 대비 국내 투자 한도로 현금 예약
-            // 국내 투자가 kr_pct 몫을 초과하면 매수 차단 (해외용 현금 보존)
-            const domesticBudgetCeil = totalPortfolio * (targetKrPct / 100);
-            if (domesticInvested + orderValue > domesticBudgetCeil * 1.15) {
-              return {
-                approved: false,
-                reason: `국내 예산 한도: 투자 ${Math.round(domesticInvested / 10000)}만 + 주문 ${Math.round(orderValue / 10000)}만 > 한도 ${Math.round(domesticBudgetCeil / 10000)}만 (kr${targetKrPct}%)`,
-              };
-            }
+          const domesticBudgetCeil = totalPortfolio * (targetKrPct / 100);
+          if (domesticInvested + orderValue > domesticBudgetCeil * 1.15) {
+            return {
+              approved: false,
+              reason: `국내 예산 한도: 투자 ${Math.round(domesticInvested / 10000)}만 + 주문 ${Math.round(orderValue / 10000)}만 > 한도 ${Math.round(domesticBudgetCeil / 10000)}만 (kr${targetKrPct}%)`,
+            };
           }
         }
       } catch (err) {

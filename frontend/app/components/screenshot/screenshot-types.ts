@@ -1,4 +1,4 @@
-export type Tab = 'home' | 'trades' | 'journal' | 'watchlist' | 'news' | 'settings' | 'dividend' | 'strategy-lab' | 'ai-cost';
+export type Tab = 'home' | 'trades' | 'journal' | 'watchlist' | 'news' | 'research' | 'settings' | 'dividend' | 'strategy-lab' | 'ai-cost';
 
 export interface LoopStatus {
   active: boolean;

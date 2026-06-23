@@ -60,11 +60,11 @@ export async function filterBuyCandidates(params: TechnicalFallbackParams): Prom
   const openStockCodes = new Set(openChains.map((c) => c.stock_code));
   const isPaper = getCtxIsPaper();
 
-  // 거래대금 맵 생성 (스마트 재진입 주도주 필터용)
+  // 거래대금 맵 생성 (스마트 재진입 주도주 필터용, KIS acml_tr_pbmn 공식값 → 원 단위)
   const tradingValues = new Map<string, number>();
   for (const [stockCode, price] of livePrices) {
-    if (price.currentPrice > 0 && price.volume > 0) {
-      tradingValues.set(stockCode, price.currentPrice * price.volume);
+    if (price.tradingValueEok > 0) {
+      tradingValues.set(stockCode, price.tradingValueEok * 100_000_000);
     }
   }
 

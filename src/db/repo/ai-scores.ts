@@ -71,8 +71,8 @@ export async function getLatestScores(stockCodes: string[]): Promise<AIScore[]> 
 
   if (rows.length > 0) return rows;
 
-  // 오늘 없으면 최근 3일 이내 스코어 fallback (주말/공휴일 대비, 7일→3일 축소: 오래된 점수 신뢰도 낮음)
-  const threeDaysAgo = kstDateStr(new Date(getKSTNow().getTime() - 3 * 24 * 60 * 60 * 1000));
+  // 오늘 없으면 최근 7일 이내 스코어 fallback (설날/추석 등 장기 연휴 5일+ 대비)
+  const threeDaysAgo = kstDateStr(new Date(getKSTNow().getTime() - 7 * 24 * 60 * 60 * 1000));
   const { rows: fallbackRows } = await queryWithRetry(
     `SELECT DISTINCT ON (stock_code) * FROM ai_scores
      WHERE stock_code IN (${placeholders}) AND score_date >= $${validCodes.length + 1}

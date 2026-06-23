@@ -3,6 +3,7 @@ export interface UsHolding {
   avg_price: number;
   quantity: number;
   last_price?: number;
+  bought_at?: string;
   tp_pct?: number;
   sl_pct?: number;
   is_scalp?: boolean;

@@ -11,6 +11,7 @@ export const WatchlistItemSchema = z.object({
   added_at: z.string(),
   notes: z.string().nullable(),
   source: z.string().default('MANUAL'), // 009: MANUAL | KIS_SYNC | AUTO
+  long_term_hold: z.boolean().default(false), // 100: LTH 플래그 — 일반 SL/TP 무시
 });
 export type WatchlistItem = z.infer<typeof WatchlistItemSchema>;
 

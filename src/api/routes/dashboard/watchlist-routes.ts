@@ -297,6 +297,34 @@ watchlistRoutes.get('/flow', async (c) => {
   }
 });
 
+// ── 종목 속성 수정 (LTH 플래그 등) ──
+watchlistRoutes.patch('/watchlist/:stockCode', async (c) => {
+  const stockCode = c.req.param('stockCode');
+  const body = await c.req.json().catch(() => ({}));
+  const allowed = ['long_term_hold', 'notes'] as const;
+  const updates: string[] = [];
+  const values: unknown[] = [];
+  for (const key of allowed) {
+    if (key in body) {
+      values.push(body[key]);
+      updates.push(`${key} = $${values.length}`);
+    }
+  }
+  if (updates.length === 0) return c.json({ error: 'no valid fields' }, 400);
+  values.push(stockCode);
+  try {
+    await getPool().query(
+      `UPDATE watchlist SET ${updates.join(', ')} WHERE stock_code = $${values.length}`,
+      values,
+    );
+    // 캐시 무효화
+    import('../../../cache/memory.js').then((m) => m.cacheSet('db:watchlist:active', null, 0));
+    return c.json({ ok: true });
+  } catch (err: any) {
+    return c.json({ error: 'Internal server error' }, 500);
+  }
+});
+
 watchlistRoutes.delete('/watchlist/:stockCode', async (c) => {
   const stockCode = c.req.param('stockCode');
   try {
