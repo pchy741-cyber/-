@@ -1,5 +1,5 @@
 import { logger } from '../../utils/logger.js';
-import { callVertexGemini } from '../../utils/vertex-gemini.js';
+import { logTokenUsage, calcGptCost } from '../../utils/ai-token-logger.js';
 
 export interface OverseasStockInput {
   code: string;
@@ -108,7 +108,7 @@ JSON 배열로만 응답 (HOLD는 생략, code 대소문자 정확히):
 confidence: 0.0~1.0`;
 
 /**
- * Gemini 2.0 Flash로 미국주식 매매 판단 (Claude Sonnet 대체 — 무료 티어)
+ * GPT-4o-mini 기반 미국주식 매매 판단 (Gemini 대체 — 안정적 API)
  */
 export async function analyzeOverseasWithAI(
   stocks: OverseasStockInput[],
@@ -127,39 +127,76 @@ export async function analyzeOverseasWithAI(
 ): Promise<OverseasAIDecision[]> {
   const context = buildContext(stocks, availableCash, holdingCount, perfSummary, userInsights, marketContext);
 
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    logger.warn('해외 AI 분석 스킵: OPENAI_API_KEY 미설정', { component: 'OVERSEAS_AI' });
+    return [];
+  }
+
   const MAX_RETRIES = 2;
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
-      const text = await callVertexGemini(SYSTEM_PROMPT, context, { temperature: 0.1, label: '해외-분석', useVertex: true });
+      const { default: OpenAI } = await import('openai');
+      const client = new OpenAI({ apiKey, timeout: 60_000 });
 
-      const jsonMatch = text.match(/\[[\s\S]*\]/);
-      if (!jsonMatch) throw new Error('JSON 배열 없음');
+      const res = await client.chat.completions.create({
+        model: 'gpt-4o-mini',
+        temperature: 0.1,
+        max_tokens: 2000,
+        messages: [
+          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'user', content: context },
+        ],
+      });
 
-      const raw = JSON.parse(jsonMatch[0]) as unknown[];
-      const decisions: OverseasAIDecision[] = raw
-        .filter((d): d is Record<string, unknown> => typeof d === 'object' && d !== null)
-        .map((d) => ({
-          code: String(d.code ?? ''),
-          action: (['BUY', 'SELL', 'HOLD'].includes(String(d.action)) ? String(d.action) : 'HOLD') as
-            | 'BUY'
-            | 'SELL'
-            | 'HOLD',
-          confidence: Math.min(1, Math.max(0, Number(d.confidence ?? 0.5))),
-          reasoning: String(d.reasoning ?? ''),
-        }))
-        .filter((d) => d.code);
+      const text = res.choices[0]?.message?.content ?? '';
+      const inputTokens = res.usage?.prompt_tokens ?? 0;
+      const outputTokens = res.usage?.completion_tokens ?? 0;
+      logTokenUsage({
+        provider: 'gpt', model: 'gpt-4o-mini',
+        inputTokens, outputTokens,
+        costUsd: calcGptCost(inputTokens, outputTokens),
+        label: '해외-분석',
+      });
 
-      logger.info(
-        `🤖 AI 미국주식 판단: ${decisions.map((d) => `${d.code}=${d.action}(${(d.confidence * 100).toFixed(0)}%)`).join(', ')}`,
-        { component: 'OVERSEAS_AI' },
-      );
-      return decisions;
+      const decisions = parseAIResponse(text);
+      if (decisions.length > 0) return decisions;
     } catch (e) {
-      logger.warn(`AI 분석 실패 (${attempt}/${MAX_RETRIES}): ${(e as Error).message}`, { component: 'OVERSEAS_AI' });
+      const msg = (e as Error).message;
+      logger.warn(`GPT 분석 실패 (${attempt}/${MAX_RETRIES}): ${msg}`, { component: 'OVERSEAS_AI' });
+      if (attempt < MAX_RETRIES && (msg.includes('timeout') || msg.includes('ECONNRESET'))) {
+        await new Promise((r) => setTimeout(r, 3000));
+        continue;
+      }
     }
   }
 
   return [];
+}
+
+/** JSON 응답 파싱 */
+function parseAIResponse(text: string): OverseasAIDecision[] {
+  const jsonMatch = text.match(/\[[\s\S]*\]/);
+  if (!jsonMatch) {
+    logger.warn('GPT: JSON 배열 없음', { component: 'OVERSEAS_AI' });
+    return [];
+  }
+  const raw = JSON.parse(jsonMatch[0]) as unknown[];
+  const decisions: OverseasAIDecision[] = raw
+    .filter((d): d is Record<string, unknown> => typeof d === 'object' && d !== null)
+    .map((d) => ({
+      code: String(d.code ?? ''),
+      action: (['BUY', 'SELL', 'HOLD'].includes(String(d.action)) ? String(d.action) : 'HOLD') as 'BUY' | 'SELL' | 'HOLD',
+      confidence: Math.min(1, Math.max(0, Number(d.confidence ?? 0.5))),
+      reasoning: String(d.reasoning ?? ''),
+    }))
+    .filter((d) => d.code);
+
+  logger.info(
+    `🤖 AI 미국주식 판단 [GPT]: ${decisions.map((d) => `${d.code}=${d.action}(${(d.confidence * 100).toFixed(0)}%)`).join(', ')}`,
+    { component: 'OVERSEAS_AI' },
+  );
+  return decisions;
 }
 
 function buildContext(
