@@ -6,6 +6,7 @@ import { getKillSwitchStatusAll } from '../../risk/kill-switch.js';
 import { isWaking, tryWakeIfNeeded } from '../../utils/cloud-sql-wake.js';
 import { getActiveLocks } from '../../utils/lock.js';
 import { getRecentEvents } from '../../utils/system-events.js';
+import { isUSDST } from '../../scheduler/overseas/session.js';
 
 // 역호환: 기존 import 경로 유지
 export { logSystemEvent, getRecentEvents } from '../../utils/system-events.js';
@@ -29,7 +30,11 @@ healthDetailRoutes.get('/health/detail', async (c) => {
   const now = new Date();
   const kst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
   const hour = kst.getUTCHours();
-  const usMarketOpen = hour >= 23 || hour < 6;
+  const mins = hour * 60 + kst.getUTCMinutes();
+  const shift = isUSDST() ? 0 : 60; // 서머타임: 0, 겨울: +60분
+  const usOpen = 22 * 60 + 30 + shift;  // 서머 22:30 / 겨울 23:30
+  const usClose = 5 * 60 + shift;       // 서머 05:00 / 겨울 06:00
+  const usMarketOpen = mins >= usOpen || mins <= usClose;
 
   const kstStr = `${kst.getUTCFullYear()}-${String(kst.getUTCMonth() + 1).padStart(2, '0')}-${String(kst.getUTCDate()).padStart(2, '0')} ${String(hour).padStart(2, '0')}:${String(kst.getUTCMinutes()).padStart(2, '0')}:${String(kst.getUTCSeconds()).padStart(2, '0')} KST`;
   const checks: Record<string, unknown> = {

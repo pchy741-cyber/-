@@ -140,7 +140,7 @@ export function useDashboardData() {
       // 핵심 데이터 + trades 동시 로딩 (초기 표시 속도 개선)
       const fetchTrades = !tradesLoadedRef.current || forceStatic;
       const [h, d, k, t] = await Promise.allSettled([
-        api('/health'), api(`/dashboard?viewMode=${vm}`), api('/kill-switch'),
+        api('/health/detail'), api(`/dashboard?viewMode=${vm}`), api('/kill-switch'),
         fetchTrades ? api(`/trades?limit=500&viewMode=${vm}`) : Promise.resolve(null),
       ]);
       if (gen !== loadGenRef.current) return;
