@@ -85,11 +85,14 @@ export async function getDefenseParkState(): Promise<DefenseParkState> {
 async function activateDefensePark(reason: string): Promise<void> {
   if (isMemoryMode()) return;
   const isPaper = getCtxIsPaper();
+  // v10.11: 실제 파킹 자산(인버스 ETF) 코드 기록 (기존: 폐기된 SOFR 코드 기록 → DB 불일치)
+  const actualParkCode = INVERSE_ETFS[0]?.code ?? PARK_STOCK_CODE;
+  const actualParkName = INVERSE_ETFS[0]?.name ?? PARK_STOCK_NAME;
   await getPool().query(
     `INSERT INTO defense_park_state (is_active, is_paper, park_stock_code, park_stock_name, entry_reason, entered_at)
      VALUES (TRUE, $1, $2, $3, $4, NOW())
      ON CONFLICT (is_paper) WHERE is_active = TRUE DO NOTHING`,
-    [isPaper, PARK_STOCK_CODE, PARK_STOCK_NAME, reason],
+    [isPaper, actualParkCode, actualParkName, reason],
   );
 }
 

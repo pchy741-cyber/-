@@ -251,6 +251,34 @@ async function buildMetaPayload(viewIsPaper: boolean): Promise<string> {
   // ── calcTotalAssets — FX는 FALLBACK_FX_RATE 통일 ──
   const fxRate = await getFxRate().catch(() => 0) || FALLBACK_FX_RATE;
 
+  // v10.11: 전일 스냅샷 + 실현손익 조회 (기존: 하드코딩 0 → 전일대비 수익률 항상 0%)
+  let ssePrevDayTotalValue = 0;
+  let ssePrevDayUnrealizedPnl = 0;
+  let sseLiveRealizedPnl = 0;
+  try {
+    const p = getPool();
+    const [snapRes, realizedRes] = await Promise.all([
+      p.query<{ total_value: string; unrealized_pnl: string }>(
+        `SELECT total_value, unrealized_pnl FROM portfolio_snapshots
+         WHERE is_paper = $1 AND total_value > 0
+           AND snapshot_at < (NOW() AT TIME ZONE 'Asia/Seoul')::DATE
+         ORDER BY snapshot_at DESC LIMIT 1`,
+        [viewIsPaper],
+      ),
+      viewIsPaper ? Promise.resolve({ rows: [] as any[] }) :
+        p.query<{ total: string }>(
+          `SELECT COALESCE(SUM(realized_pnl),0) AS total FROM transaction_chains
+           WHERE is_paper = $1 AND status = 'CLOSED'`,
+          [viewIsPaper],
+        ),
+    ]);
+    if (snapRes.rows[0]) {
+      ssePrevDayTotalValue = Number(snapRes.rows[0].total_value);
+      ssePrevDayUnrealizedPnl = Number(snapRes.rows[0].unrealized_pnl ?? 0);
+    }
+    sseLiveRealizedPnl = Number(realizedRes.rows[0]?.total ?? 0);
+  } catch { /* 스냅샷 조회 실패 → 0 유지 (기존 동작) */ }
+
   // 체인 집계: 국내 투자원가 + 미실현PnL
   let totalChainInvested = 0;
   let totalChainPnl = 0;
@@ -281,9 +309,9 @@ async function buildMetaPayload(viewIsPaper: boolean): Promise<string> {
     overseasMaxUsd: 0,
     fxRate,
     paperInitialCapital: PAPER_INITIAL_CAPITAL,
-    liveRealizedPnl: 0,
-    prevDayTotalValue: 0,
-    prevDayUnrealizedPnl: 0,
+    liveRealizedPnl: sseLiveRealizedPnl,
+    prevDayTotalValue: ssePrevDayTotalValue,
+    prevDayUnrealizedPnl: ssePrevDayUnrealizedPnl,
   });
 
   const chainPrices = buildChainPrices(chains, assets.grandTotalValue);

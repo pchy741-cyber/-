@@ -25,7 +25,6 @@ tradingStatusRoutes.get('/trading-status', async (c) => {
       killSwitch,
       defensePark,
       strategy,
-      scores,
       watchlist,
       recentLossCodes,
       kospiRegime,
@@ -35,11 +34,7 @@ tradingStatusRoutes.get('/trading-status', async (c) => {
       Promise.resolve(getKillSwitchStatusAll()),
       getDefenseParkState().catch(() => ({ isActive: false, entryReason: null })),
       getActiveStrategy().catch(() => null),
-      (async () => {
-        const wl = await getActiveWatchlist().catch(() => []);
-        const codes = wl.map((w: any) => w.stock_code);
-        return getScoresWithFallback(codes);
-      })(),
+      // v10.11: watchlist 1회만 조회 (기존: 2회 중복 DB 쿼리)
       getActiveWatchlist().catch(() => []),
       (async () => {
         const { getRecentLossStocks } = await import('../../../db/client.js');
@@ -65,6 +60,8 @@ tradingStatusRoutes.get('/trading-status', async (c) => {
         return isEodOnlyMode().catch(() => false);
       })(),
     ]);
+    // v10.11: watchlist 결과로 scores 계산 (중복 DB 쿼리 제거)
+    const scores = await getScoresWithFallback((watchlist as any[]).map((w: any) => w.stock_code)).catch(() => []);
 
     const mode = (strategy?.mode ?? 'SWING') as string;
     const { STRATEGY_PARAMS } = await import('../../../config/constants.js');

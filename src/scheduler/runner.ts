@@ -670,7 +670,8 @@ export function startScheduler(): void {
   cron.schedule(
     '15,45 9-15 * * 1-5',
     () => {
-      analyzeCapitalFlow().catch((e) => logger.error(`자금흐름 실패: ${e}`, { component: 'SCHEDULER' }));
+      // v10.11: runDomesticDual로 감싸기 (기존: getCtxIsPaper() 컨텍스트 없이 호출 → paper/live 구분 불가)
+      runDomesticDual('자금흐름', () => analyzeCapitalFlow()).catch((e) => logger.error(`자금흐름 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );

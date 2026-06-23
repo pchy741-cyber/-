@@ -536,7 +536,7 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
     // 5-0. 앙상블 모드 분기
     let scores: ScoringResult[] = [];
     let geminiResult: Awaited<ReturnType<typeof runGeminiAnalysis>> | null = null;
-    let scoringSource: 'gemini' | 'flash' | 'technical' = 'technical';
+    let scoringSource: 'ensemble' | 'gpt' | 'flash' | 'technical' = 'technical';
 
     const { config: appConfig } = await import('../../config/index.js');
     const ensembleEnabled = strategy?.ai_scoring_mode === 'ensemble';
@@ -575,10 +575,12 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
         strategy,
         regimeHint,
         ensembleConfig: strategy?.ensemble_config ?? undefined,
+        // v10.11: GPT/Claude에 시장 인텔리전스 전달 (기존: Gemini만 수신 → 60% 가중치 눈먼 스코어링)
+        additionalSources: combinedSources || undefined,
         topGainerCodes: topGainerSet,
         topVolumeCodes: topVolumeSet,
       });
-      if (scores.length > 0) scoringSource = 'gemini'; // 앙상블 성공 → 최우선 source
+      if (scores.length > 0) scoringSource = 'ensemble'; // v10.11: 'gemini' → 'ensemble' (정확한 소스 표기)
       // 앙상블 실패 시 scores=[] → 아래 폴백 체인으로 자연스럽게 진입
     }
 
@@ -590,7 +592,7 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
         const gptPrimary = await runGPTScoring(mode, allStocks, chartData, regimeHint, strategy?.gpt_prompt ?? undefined, combinedSources || undefined);
         if (gptPrimary.length > 0) {
           scores = gptPrimary;
-          scoringSource = 'gemini'; // Track B 호환성 유지
+          scoringSource = 'gpt'; // v10.11: 정확한 소스 표기 (기존 'gemini' 거짓 라벨)
           logger.info(`✅ GPT 1차 스코어링 완료: ${scores.length}개 종목 (Gemini 강등됨)`, { component: 'TRACK_A' });
 
           // GPT 85+ 종목 → Claude 2차 검증
@@ -750,7 +752,9 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
     // 폴백(Flash / 기술적) 시 오늘 이미 스코어가 있는 종목은 덮어쓰지 않음
     // 07:30 정식 Gemini 점수 → 12:00/14:00 폴백이 덮어쓰는 버그 방지
     let existingTodayCodes = new Set<string>();
-    if (scoringSource !== 'gemini' && !isMemoryMode()) {
+    // v10.11: ensemble/gpt도 정식 AI 스코어 → 덮어쓰기 허용
+    const isAiPrimary = scoringSource === 'ensemble' || scoringSource === 'gpt';
+    if (!isAiPrimary && !isMemoryMode()) {
       try {
         const { rows } = await getPool().query(`SELECT stock_code FROM ai_scores WHERE score_date = $1`, [today]);
         existingTodayCodes = new Set(rows.map((r: Record<string, unknown>) => String(r.stock_code)));
@@ -767,7 +771,7 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
 
     await Promise.all(
       scores
-        .filter((s) => scoringSource === 'gemini' || !existingTodayCodes.has(s.stock_code))
+        .filter((s) => isAiPrimary || !existingTodayCodes.has(s.stock_code))
         .map((score) =>
           upsertAIScore({
             stock_code: score.stock_code,

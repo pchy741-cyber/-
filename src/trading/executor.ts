@@ -972,6 +972,18 @@ export class TradeExecutor {
       const avgBuy = Number(chain.avg_buy_price) || 0;
       const pnlPct = avgBuy > 0 ? ((fill.filledPrice - avgBuy) / avgBuy) * 100 : 0;
       await chainManager.partialProfit(chain.id, soldQty, fill.filledPrice, chain);
+
+      // v10.11: 분할TP 스테이지 카운터 — 체결 확인 후 증가 (기존: 결정 생성시 미리 증가 → 실패시 영구 스킵)
+      if (reasoning.includes('분할TP') || reasoning.includes('Partial TP')) {
+        try {
+          const stageMatch = reasoning.match(/(\d+)단계/);
+          if (stageMatch) {
+            const { setKrPartialTpStageNum } = await import('../ai/track-b/partial-tp.js');
+            await setKrPartialTpStageNum(chain.id, Number(stageMatch[1]));
+          }
+        } catch { /* non-critical */ }
+      }
+
       invalidateStockCache(stockCode).catch(() => {});
       invalidateBalanceCache();
       hardInvalidateDashboardCache();

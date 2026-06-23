@@ -90,7 +90,7 @@ export async function resetPool(): Promise<void> {
 
 function createPool(): pg.Pool {
   const poolDefaults = {
-    max: 20,
+    max: 8, // v10.11: Cloud Run 인스턴스당 커넥션 제한 (기존 20 → Cloud SQL 100 한도 초과 위험)
     idleTimeoutMillis: 60_000,
     connectionTimeoutMillis: 15_000,
     keepAlive: true,

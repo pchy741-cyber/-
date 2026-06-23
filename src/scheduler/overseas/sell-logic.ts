@@ -103,6 +103,8 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
   const paperMode = ctx.isPaper;
   let { cash } = ctx;
   const sellOrders: string[] = [];
+  // v10.11: O(1) lookup Map
+  const techByCode = new Map(techResults.map((t) => [t.code, t]));
   // 동적 파라미터 1회 캐싱 (루프 밖)
   const _allocRisk = await getAllocRisk(ctx.isPaper ?? false).catch(() => ({ positionCapPct: 25 }));
   const dynP = getOverseasDynamic(ctx.portfolioValue ?? 5000, ctx.isPaper, _allocRisk.positionCapPct / 100);
@@ -122,7 +124,8 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
       logger.info(`⏳ 미체결 주문 존재 → ${code} 추가 주문 스킵`, { component: 'OVERSEAS' });
       continue;
     }
-    const tech = techResults.find((t) => t.code === code);
+    // v10.11: O(1) Map 조회 (기존: O(n) find per holding)
+    const tech = techByCode.get(code);
     if (!tech) continue;
 
     const curPrice = tech.price.currentPrice;
@@ -224,7 +227,8 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
     // v10.10.5c: trailTighten/profitTighten은 양수값 — 음수 trail에 더해야 0에 가까워져 타이트해짐
     // 예: trail=-4.0 + tighten=2.0 → -2.0 (2%드롭에서 트리거 = 더 빨리 보호)
     // 기존 버그: 빼면 -6.0 → 6%드롭까지 허용 = VIX 위기 시 오히려 더 느슨해짐
-    const effectiveTrailDropPct = dynamicTrailDrop + vixRegime.trailTighten + profitTighten;
+    // v10.11: 클램핑 추가 — 양수 되면 트레일 비활성화 (VIX+고수익 동시 → 무방비)
+    const effectiveTrailDropPct = Math.min(-0.5, dynamicTrailDrop + vixRegime.trailTighten + profitTighten);
     // v10.9: 트레일 활성화 대폭 하향 (기존 5~10% → 2~4%) — 소액 계좌 수익 보호
     const baseTrailActivate = isHighBeta ? 4.0 : isMediumBeta ? 3.0 : 2.0;
     const trailActivatePct = tunerOverrides.trail_activate_pct ?? baseTrailActivate;
@@ -298,9 +302,10 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
 
       // ── 1b. 하락장 빠른 정리 ──
       // score<=-20 조건으로 강화 — 시장 전체 급락 시 전종목 동시 발동 방지
+    // v10.11: -2.5% → -3.5% (기존: 너무 빨리 손절 → 일시 하락에도 청산)
     } else if (
       vixRegime.regime !== 'CALM' &&
-      pnlPct < -2.5 &&
+      pnlPct < -3.5 &&
       pnlPct > stopLossPct &&
       tech.score <= -20 &&
       !tech.aboveMA20 &&
@@ -410,11 +415,12 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
       sellReason = `시간손절(${holdingDays.toFixed(0)}일/${pnlPct.toFixed(1)}%): score=${tech.score} MA20↓ → 조기정리`;
     } else if (holdingDays >= 7 && pnlPct <= -2.0 && pnlPct > -5.5 && tech.adx < 18) {
       sellReason = `횡보손절(${holdingDays.toFixed(0)}일/${pnlPct.toFixed(1)}%): ADX=${tech.adx.toFixed(0)} 추세없음 → 정리`;
-    } else if (holdingDays > effectiveMaxHold && pnlPct < 3.0) {
-      sellReason =
-        pnlPct < 0
-          ? `보유기한 초과(${holdingDays.toFixed(0)}일/손실): ${pnlPct.toFixed(1)}% → 청산`
-          : `보유기한 초과(${holdingDays.toFixed(0)}일/미미한 수익): ${pnlPct.toFixed(1)}% → 청산`;
+    // v10.11: 보유기한 초과 — 손실 포지션은 추가 20% 유예 (기존: 모든 <3% 즉시 청산 → 반등 기회 없이 손실 확정)
+    } else if (holdingDays > effectiveMaxHold && pnlPct < 3.0 && pnlPct >= 0) {
+      sellReason = `보유기한 초과(${holdingDays.toFixed(0)}일/미미한 수익): ${pnlPct.toFixed(1)}% → 청산`;
+    } else if (holdingDays > effectiveMaxHold * 1.2 && pnlPct < 0) {
+      // 손실 포지션: 20% 추가 유예 후에도 마이너스면 손절 (반등 기회 부여)
+      sellReason = `보유기한 초과(${holdingDays.toFixed(0)}일/손실): ${pnlPct.toFixed(1)}% → 유예 후 청산`;
     } else if (isWeakStock(tech, holdingDays, pnlPct)) {
       sellReason = `약세종목 정리: ADX=${tech.adx.toFixed(0)} 횡보${holdingDays.toFixed(0)}일 ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%`;
     }
@@ -523,10 +529,12 @@ function calcDynamicHoldDays(baseMaxHold: number, tech: TechResult, _holdingDays
   return Math.max(1, Math.round(baseMaxHold * mult)); // 최소 1일 보장 (음수/0 방어)
 }
 
-/** 약세 종목 조기 정리 — ADX < 15 + 5일 이상 횡보 + 수익 미미 */
+/** 약세 종목 조기 정리 — ADX < 15 + 7일 이상 횡보 + 수익 미미 */
 function isWeakStock(tech: TechResult, holdingDays: number, pnlPct: number): boolean {
-  if (holdingDays < 5) return false;
-  if (pnlPct > 5 || pnlPct < -5) return false; // ±5% 범위로 확장
+  // v10.11: 5→7일 (기존: 너무 일찍 정리 → 손실 빈도 증가)
+  if (holdingDays < 7) return false;
+  // v10.11: 손실 범위 -3%까지만 (기존 -5%: 깊은 손실까지 약세로 분류 → 반등전 정리)
+  if (pnlPct > 5 || pnlPct < -3) return false;
   // ADX < 15 = 추세 없음 + 횡보 + 미미한 수익/손실
   return tech.adx < 15 && Math.abs(tech.price.changePct) < 1.5;
 }

@@ -441,8 +441,8 @@ export async function runRSSScoring(
 
     // 눌림목 보너스
     const pullbackBonus = tech.pullbackSignal ? PULLBACK_BONUS : 0;
-    // 과매수 감점
-    const overextendedPenalty = !tech.pullbackSignal && baseScore < OVEREXTENDED_BASE_THRESHOLD && tech.volumeRatio < OVEREXTENDED_VOL_THRESHOLD ? OVEREXTENDED_PENALTY : 0;
+    // 과매수 감점 — v10.11: 비교연산자 수정 (기존 < → >= : 과매수=높은점수+높은거래량)
+    const overextendedPenalty = !tech.pullbackSignal && baseScore >= OVEREXTENDED_BASE_THRESHOLD && tech.volumeRatio >= OVEREXTENDED_VOL_THRESHOLD ? OVEREXTENDED_PENALTY : 0;
     // 시장 감성 반영 (±10 → ±5점으로 축소 적용, 개별 종목보다 영향 낮게)
     const marketBonus = Math.round(marketSentiment * 0.5);
     // 유튜브 인플루언서 감성 (±5, 시장 레짐 보정)

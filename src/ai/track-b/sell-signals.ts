@@ -27,23 +27,27 @@ function _getPeakMap(): Map<string, number> {
 export function restorePreTpPeakMap(
   chains: Array<{ stock_code: string; avg_buy_price: number | string | null; peak_price_since_open?: number | null }>,
 ): void {
-  // v10.9.4: paper 맵도 함께 복원 (기존: live만 복원 → paper 피크 유실 → 연습/실전 괴리)
+  // v10.11: paper+live 양쪽 맵 모두 복원 (기존: live만 복원 → paper 피크 유실)
   if (!_preTpPeakMap.has('live')) _preTpPeakMap.set('live', new Map());
   if (!_preTpPeakMap.has('paper')) _preTpPeakMap.set('paper', new Map());
   const liveMap = _preTpPeakMap.get('live')!;
+  const paperMap = _preTpPeakMap.get('paper')!;
   for (const c of chains) {
     const avg = Number(c.avg_buy_price ?? 0);
     const peak = Number(c.peak_price_since_open ?? 0);
     if (avg > 0 && peak > 0) {
       const peakPnlPct = ((peak - avg) / avg) * 100;
       if (peakPnlPct > 0) {
+        // paper/live 구분 정보 없으므로 양쪽 모두 복원 (각 모드에서 실제 체인과 매칭)
         liveMap.set(c.stock_code, peakPnlPct);
+        paperMap.set(c.stock_code, peakPnlPct);
       }
     }
   }
-  if (liveMap.size > 0) {
+  const totalRestored = liveMap.size + paperMap.size;
+  if (totalRestored > 0) {
     logger.info(
-      `📈 Pre-TP peak 복원: ${liveMap.size}종목 (${[...liveMap.entries()].map(([k, v]) => `${k}:+${v.toFixed(1)}%`).join(', ')})`,
+      `📈 Pre-TP peak 복원: live=${liveMap.size}, paper=${paperMap.size}종목`,
       { component: 'TRACK_B' },
     );
   }

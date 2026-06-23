@@ -134,7 +134,8 @@ export async function evaluateKrPartialTp(params: {
   if (!nextStage) return [];
 
   const sellQty = Math.max(1, Math.floor(totalQty * nextStage.sellRatio));
-  await setKrPartialTpStageNum(chainId, nextStage.stage);
+  // v10.11: 스테이지 카운터는 매도 확인 후 호출측에서 증가 (기존: 여기서 미리 증가 → 매도 실패시 영구 스킵)
+  // setKrPartialTpStageNum은 executor의 매도 체결 콜백에서 호출해야 함
 
   logger.info(
     `💰 분할TP ${nextStage.stage}단계: ${stockCode} +${pnlPct.toFixed(1)}% → ${sellQty}주 매도 (${(nextStage.sellRatio * 100).toFixed(0)}%)${trendBonus > 0 ? ' [추세보너스+1.5%]' : ''}`,

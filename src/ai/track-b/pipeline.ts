@@ -364,16 +364,22 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     // ── 차트 데이터 수집 (동일 상위 35 + 보유종목 기준) ─────────────────
     const chartData = new Map<string, import('../../kis/market.js').DailyCandle[]>();
     const allCodesForChart = [...new Set([...sortedWatchlistCodes, ...openChains.map((c) => c.stock_code)])];
-    const CHART_BATCH = 12; // v10.7: 5→12 (차트수집 10초→3초, rate limiter 15/sec에 맞춤)
+    // v10.11: 모든 배치 동시 발사 (기존: 순차 배치 → 2+초 대기. rate limiter가 내부 큐 관리)
+    const CHART_BATCH = 12;
+    const chartDays = mode === 'BREAKOUT' ? 252 : 65;
+    const chartBatches: Promise<PromiseSettledResult<import('../../kis/market.js').DailyCandle[]>[]>[] = [];
+    const batchCodes: string[][] = [];
     for (let i = 0; i < allCodesForChart.length; i += CHART_BATCH) {
       const batch = allCodesForChart.slice(i, i + CHART_BATCH);
-      // BREAKOUT 모드: 252일 (200일 SMA + 52주 고저)
-      // v9-fix: 40→65 역일 (≈45 거래일, MACD 34+ 충족 보장)
-      const chartDays = mode === 'BREAKOUT' ? 252 : 65;
-      const results = await Promise.allSettled(batch.map((code) => getDailyChart(code, chartDays)));
+      batchCodes.push(batch);
+      chartBatches.push(Promise.allSettled(batch.map((code) => getDailyChart(code, chartDays))));
+    }
+    const allBatchResults = await Promise.all(chartBatches);
+    for (let b = 0; b < batchCodes.length; b++) {
+      const batch = batchCodes[b];
+      const results = allBatchResults[b];
       for (let j = 0; j < batch.length; j++) {
         const r = results[j];
-        // v9-fix: MACD slow EMA(26) + signal(9) = 35 최소 필요. 20→40 상향
         if (r.status === 'fulfilled' && r.value.length >= 40) {
           chartData.set(batch[j], r.value);
         } else if (r.status === 'rejected') {

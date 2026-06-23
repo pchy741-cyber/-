@@ -85,7 +85,7 @@ export function buildMonthlyGoal(
   overseasMarketValueKrw: number,
   overseasInvestedKrw: number,
 ): MonthlyGoalResult {
-  const monthlyTargetPct = 50;
+  const monthlyTargetPct = 5; // v10.11: 50→5% (현실적 월간 목표, 기존 50%는 진행률 항상 0%)
   const seedKr = grandTotalValue > 0 ? grandTotalValue : 0;
   const targetAmount = Math.round((seedKr * monthlyTargetPct) / 100);
   // v10.10.5c: totalPnl은 calc.ts에서 이미 overseasUnrealizedPnlKrw 포함

@@ -55,6 +55,8 @@ interface EnsembleParams {
   strategy: any;
   regimeHint: RegimeHint;
   ensembleConfig?: EnsembleConfig;
+  // v10.11: 시장 인텔리전스 — GPT/Claude에도 전달 (기존: Gemini만 수신)
+  additionalSources?: string;
   // RSS 전용
   topGainerCodes?: Set<string>;
   topVolumeCodes?: Set<string>;
@@ -88,13 +90,15 @@ async function runModel(model: keyof EnsembleWeights, params: EnsembleParams): P
       case 'gpt': {
         if (!process.env.OPENAI_API_KEY) break;
         const { runGPTScoring } = await import('./gpt-scorer.js');
-        scores = await runGPTScoring(params.mode, params.watchlist, params.chartData, params.regimeHint, params.strategy?.gpt_prompt ?? undefined);
+        // v10.11: additionalSources 전달 — 기존: 시장 인텔리전스 누락 (60% 가중치 눈먼 스코어링)
+        scores = await runGPTScoring(params.mode, params.watchlist, params.chartData, params.regimeHint, params.strategy?.gpt_prompt ?? undefined, params.additionalSources);
         break;
       }
       case 'claude': {
         if (!process.env.ANTHROPIC_API_KEY) break;
         const { runClaudeScoring } = await import('./claude-scorer.js');
-        scores = await runClaudeScoring(params.mode, params.watchlist, params.chartData);
+        // v10.11: additionalSources 전달 — 기존: 시장 인텔리전스 누락
+        scores = await runClaudeScoring(params.mode, params.watchlist, params.chartData, params.additionalSources);
         break;
       }
       case 'rss': {

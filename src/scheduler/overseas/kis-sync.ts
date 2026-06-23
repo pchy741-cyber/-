@@ -49,10 +49,12 @@ export async function syncHoldingsFromKIS(): Promise<void> {
     const successExchanges = new Set<string>(); // API 성공한 거래소만 추적
     let syncChanged = false; // 매매 변동 감지 시 캐시 무효화
 
-    for (const exch of exchanges) {
-      try {
-        const items = await getOverseasBalance(exch);
-        successExchanges.add(exch); // 성공한 거래소만 기록
+    // v10.11: 5개 거래소 병렬 조회 (기존: 순차 → 1~2.5초. 병렬 → ~500ms)
+    const exchResults = await Promise.allSettled(exchanges.map((exch) => getOverseasBalance(exch).then((items) => ({ exch, items }))));
+    for (const r of exchResults) {
+      if (r.status === 'fulfilled') {
+        const { exch, items } = r.value;
+        successExchanges.add(exch);
         for (const item of items) {
           if (item.quantity > 0 && item.stockCode) {
             if (item.currentPrice > 0) kisPriceMap.set(item.stockCode, item.currentPrice);
@@ -67,9 +69,8 @@ export async function syncHoldingsFromKIS(): Promise<void> {
             });
           }
         }
-      } catch {
-        // API 실패 = 시장 마감 또는 일시 오류 → 해당 거래소는 "확인 불가"로 처리
-        // failedExchanges에 넣으면 ghost 포지션이 영원히 안 지워지는 버그 발생
+      } else {
+        const exch = exchanges[exchResults.indexOf(r)];
         logger.info(`⏭️ KIS잔고조회 실패 (${exch}) — 시장 마감 또는 오류, 이번 사이클 스킵`, { component: 'OVERSEAS' });
       }
     }

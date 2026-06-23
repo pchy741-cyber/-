@@ -265,7 +265,7 @@ export async function dailyMarketRouting(): Promise<void> {
   } else if (level === 'RISK_OFF' && !s.riskOff && !isPaper && s.riskOffStreak === 1) {
     // 첫 Risk-Off 감지: 불감대 대기 시작 알림
     await sendTelegramMessage(
-      `⚠️ *시장라우팅: RISK_OFF 감지 (불감대 대기)*\n${infoLine}\n📅 ${s.riskOffStreak}/${DEAD_BAND.PARK_DAYS}영업일 — ${DEAD_BAND.PARK_DAYS - _state.live.riskOffStreak}일 더 유지 시 파킹`,
+      `⚠️ *시장라우팅: RISK_OFF 감지 (불감대 대기)*\n${infoLine}\n📅 ${s.riskOffStreak}/${DEAD_BAND.PARK_DAYS}영업일 — ${DEAD_BAND.PARK_DAYS - s.riskOffStreak}일 더 유지 시 파킹`,
     ).catch(() => {});
   }
   // NEUTRAL / 불감대 대기 중: 현재 riskOff 상태 유지, 행동 없음

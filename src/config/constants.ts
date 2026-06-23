@@ -658,12 +658,15 @@ export function getOverseasDynamic(portfolioUsd: number, isPaper = false, posCap
   const posPct = tier === 'large' ? Math.min(0.18, posCapPct) : posCapPct;
   const holdDays = tier === 'micro' ? 14 : tier === 'small' ? 21 : 30;
 
+  // v10.11: Paper 15 → 8 (과다 분산 → 70% 현금 잠금 해결)
   const maxPos = isPaper
-    ? 15                                                    // Paper: 15종목 고정 (전수조사)
+    ? Math.max(3, Math.min(8, Math.floor(1 / posPct)))     // Paper: Live와 동일 로직 (기존 15 고정)
     : Math.max(2, Math.min(8, Math.floor(1 / posPct)));
+  // v10.11: $5k 하드캡 → $10k (수천만원 계좌에서 소액만 매수하는 문제 해결)
+  const positionCap = isPaper ? 10000 : 5000;
   return {
     maxPositions: maxPos,
-    positionSizeUsd: Math.round(Math.min(p * posCapPct, 5000)), // Paper/Live 동일 상한
+    positionSizeUsd: Math.round(Math.min(p * posCapPct, positionCap)),
     positionPct: posPct,
     parkingCashBuffer: Math.round(p * 0.05), // 포트폴리오 5%
     maxHoldDays: holdDays,

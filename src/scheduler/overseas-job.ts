@@ -560,6 +560,9 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
       });
     }
 
+    // v10.11: O(n) find → O(1) Map 조회 (5개소 × n종목 반복 제거)
+    const techByCode = new Map(techResults.map((t) => [t.code, t]));
+
     if (techResults.length === 0) {
       logger.warn('해외주식 분석 데이터 없음', { component: 'OVERSEAS' });
       return;
@@ -571,7 +574,7 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
     // ── 1-b. 대시보드용 점수 캐시 갱신 ──
     const regionMap = new Map(GLOBAL_WATCHLIST.map((stock) => [stock.code, stock.region as 'US' | 'JP' | 'TW']));
     for (const [code] of holdings) {
-      const t = techResults.find((r) => r.code === code);
+      const t = techByCode.get(code);
       if (t && t.price.currentPrice > 0) {
         getPool()
           .query(
@@ -852,7 +855,7 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
 
     // ── 3. 포트폴리오 평가 + 동적 파라미터 ──
     const holdingEvalUsd = Array.from(holdings.entries()).reduce((sum, [code, h]) => {
-      const tech = techResults.find((t) => t.code === code);
+      const tech = techByCode.get(code);
       return sum + (tech ? tech.price.currentPrice * h.qty : h.avgPrice * h.qty);
     }, 0);
     let portfolioValue = cash + holdingEvalUsd;
@@ -864,7 +867,7 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
     // ── 3-b. 실시간 뉴스 그라운딩 (Google Search) — 매도 판단 전 악재/호재 감지 ──
     const { checkHoldingsNews, checkMacroEvents } = await import('../ai/grounded-intel.js');
     const holdingsForNews = [...holdings.entries()].map(([code, h]) => {
-      const tech = techResults.find((t) => t.code === code);
+      const tech = techByCode.get(code);
       const pnlPct = tech ? ((tech.price.currentPrice - h.avgPrice) / h.avgPrice) * 100 : 0;
       return { code, name: tech?.name ?? code, pnlPct };
     });
@@ -916,7 +919,7 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
       for (const [k, v] of freshHoldings) holdings.set(k, v);
     }
     let holdingEvalUsdPost = Array.from(holdings.entries()).reduce((sum, [code, h]) => {
-      const tech = techResults.find((t) => t.code === code);
+      const tech = techByCode.get(code);
       return sum + (tech ? tech.price.currentPrice * h.qty : h.avgPrice * h.qty);
     }, 0);
     portfolioValue = cash + holdingEvalUsdPost;
@@ -1654,7 +1657,7 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
     const totalActions = buyOrders.length + sellOrders.length + idleActions.length + rebalanceAlerts.length;
     const finalHoldings = await getHoldings(isPaper());
     const holdingList = Array.from(finalHoldings.entries()).map(([code, h]) => {
-      const tech = techResults.find((t) => t.code === code);
+      const tech = techByCode.get(code);
       const pnl =
         tech && h.avgPrice > 0 ? (((tech.price.currentPrice - h.avgPrice) / h.avgPrice) * 100).toFixed(1) : '?';
       return `${code} x${h.qty} @$${h.avgPrice.toFixed(2)} (${Number(pnl) >= 0 ? '+' : ''}${pnl}%)`;

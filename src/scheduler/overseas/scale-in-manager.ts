@@ -51,7 +51,7 @@ export async function processScaleIns(params: {
       logger.info(`📋 Scale-In 취소: ${code} (2일 초과, 미확인)`, { component: 'OVERSEAS' });
       continue;
     }
-    const tech = techResults.find((t) => t.code === code);
+    const tech = techResults.find((t: TechResult) => t.code === code);
     if (!tech) continue;
     const pnlFromEntry = ((tech.price.currentPrice - info.entryPrice) / info.entryPrice) * 100;
     if (pnlFromEntry >= SCALE_IN_TRIGGER_PCT && cash >= info.remainingQty * tech.price.currentPrice * (1 + OVERSEAS_FEE_PCT)) {
@@ -90,10 +90,15 @@ export async function processScaleIns(params: {
           'OVERSEAS',
           `SCALE-IN ${code} x${exec.filledQty} @$${exec.filledPrice.toFixed(2)} +${pnlFromEntry.toFixed(1)}%`,
         );
+        // v10.11: 체결 성공시에만 예약 삭제 (기존: 무조건 삭제 → 미체결시 분할매수 영구 유실)
+        await getPool()
+          .query(`DELETE FROM overseas_state WHERE key = $1`, [row.key])
+          .catch(() => {});
+      } else if (!exec.submitted) {
+        // 주문 제출 자체 실패 → 다음 사이클에서 재시도 (예약 유지)
+        logger.warn(`📋 Scale-In 주문 실패 (다음 사이클 재시도): ${code}`, { component: 'OVERSEAS' });
       }
-      await getPool()
-        .query(`DELETE FROM overseas_state WHERE key = $1`, [row.key])
-        .catch(() => {});
+      // exec.submitted && filledQty===0: 접수됐지만 미체결 → 다음 사이클 재시도 (예약 유지)
     }
   }
   return { cash };

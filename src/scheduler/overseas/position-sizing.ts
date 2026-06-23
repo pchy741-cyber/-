@@ -43,7 +43,8 @@ const PHI = {
 } as const;
 
 // 최소 포지션: 포트폴리오의 % (고정 $ 폐지)
-const MIN_POSITION_PCT = 0.1; // 포트폴리오의 10% (절대 최소)
+// v10.11: 10% → 5% (buy-loop.ts MIN_POSITION_RATIO와 통일)
+const MIN_POSITION_PCT = 0.05; // 포트폴리오의 5% (절대 최소)
 
 export function calcSizingMultiplier(params: {
   confidence: number;
@@ -147,8 +148,9 @@ export function calcPositionSize(params: SizingParams): SizingResult {
           ? PHI.MAJOR // 38.2% 모멘텀 강세
           : PHI.MEDIUM; // 23.6% 기본
 
-  // v10.9: Kelly 캡 통일 — 소액도 38.2% (기존 61.8%)
-  const kellyCap = PHI.MAJOR;
+  // v10.11: Paper는 50% 캡 허용 (Live는 38.2% 유지 — 실전 리스크 관리)
+  // Paper에서 충분히 매수하면서 학습 데이터 축적
+  const kellyCap = isPaper ? 0.50 : PHI.MAJOR;
   const baseSize = portfolioValue * Math.min(kellyPct, kellyCap);
 
   // 현금 활용: 레짐 기반 동적 현금유보 — 장 좋으면 적극, 나쁘면 보수적

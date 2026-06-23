@@ -217,15 +217,13 @@ export async function executeBuyDecisions(
     /* DB 없으면 하드코딩 사용 */
   }
 
-  // Kelly 사이징: 30일 롤링 (10건 미만이면 null → 기존 하드코딩 폴백)
-  // null 반환 시 저승률(<22%) 가능성 → 하드코딩 배분에 0.6x 페널티 적용
-  // v11: Paper도 Kelly 페널티 동일 적용 (실전과 같은 조건으로 학습)
-  const kellyResult = await calcDomesticKelly(30);
-  const kellyNullPenalty = kellyResult ? 1.0 : 0.6;
-
-  // 종목별 EV 계산 (90일 롤링, 해외 calcStockEVMultipliers 패턴)
+  // v10.11: Kelly + EV 병렬 실행 (기존: 순차 → 2 DB round-trip. 병렬 → 1 round-trip)
   const candidateCodes = candidates.map((c) => c.stock_code);
-  const domesticStockEV = await calcDomesticStockEV(candidateCodes, 90);
+  const [kellyResult, domesticStockEV] = await Promise.all([
+    calcDomesticKelly(30),
+    calcDomesticStockEV(candidateCodes, 90),
+  ]);
+  const kellyNullPenalty = kellyResult ? 1.0 : 0.6;
   const evEntries = [...domesticStockEV.entries()].filter(([, v]) => v.sampleCount >= 5);
   if (evEntries.length > 0) {
     logger.info(

@@ -506,7 +506,8 @@ export async function executeBuyLoop(params: BuyLoopParams): Promise<BuyLoopResu
       winRateSamples: wrData?.sampleCount,
       marketBreadth: freshBreadth,
     });
-    const MIN_POSITION_RATIO = 0.10; // 10% of portfolio
+    // v10.11: 10% → 5% (기존: 소액 포지션 전부 SKIP → 70% 현금 유휴)
+    const MIN_POSITION_RATIO = 0.05; // 5% of portfolio
     const minPositionSize = portfolioValue * MIN_POSITION_RATIO;
     if (positionSize < minPositionSize) {
       logger.info(
@@ -520,7 +521,8 @@ export async function executeBuyLoop(params: BuyLoopParams): Promise<BuyLoopResu
     const isHighBetaEntry = SECTOR_CLASS.HIGH_BETA.includes(targetWatchItem?.sector ?? '');
     const isDefenseEntry = SECTOR_CLASS.DEFENSE.includes(targetWatchItem?.sector ?? '');
     const slDecimal = isHighBetaEntry ? 0.08 : isDefenseEntry ? 0.04 : 0.05;
-    const riskPct = portfolioValue < SMALL_ACCOUNT_USD ? 0.10 : portfolioValue < MID_ACCOUNT_USD ? 0.05 : isPaperMode ? 0.025 : 0.02;
+    // v10.11: Paper riskPct 2.5%→5% (기존: $500주식 2주만 허용 → 소액 매수 병목)
+    const riskPct = portfolioValue < SMALL_ACCOUNT_USD ? 0.10 : portfolioValue < MID_ACCOUNT_USD ? 0.05 : isPaperMode ? 0.05 : 0.02;
     const maxRiskUSD = portfolioValue * riskPct;
     const qtyBy1PctRule =
       maxRiskUSD > 0 ? Math.floor(maxRiskUSD / (target.price.currentPrice * slDecimal)) : Infinity;
@@ -536,7 +538,8 @@ export async function executeBuyLoop(params: BuyLoopParams): Promise<BuyLoopResu
     const existingQty = existingHolding?.qty ?? 0;
     /** Small account threshold (USD) — below this, relax concentration limits */
     /** Concentration cap: % of portfolio allowed per single position */
-    const CONC_CAP_PCT = portfolioValue < SMALL_ACCOUNT_USD ? 1.0 : 0.25;
+    // v10.11: 집중도 상한 25%→35% Paper (자금 분산 과다 완화)
+    const CONC_CAP_PCT = portfolioValue < SMALL_ACCOUNT_USD ? 1.0 : isPaperMode ? 0.35 : 0.25;
     let maxQtyByConc =
       portfolioValue > 0
         ? Math.max(0, Math.floor((portfolioValue * CONC_CAP_PCT) / priceWithFee) - existingQty)
