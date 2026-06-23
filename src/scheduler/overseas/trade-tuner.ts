@@ -271,7 +271,7 @@ function analyzeBySector(trades: TradeRecord[]): SectorStats[] {
       .map((t) => Math.abs(t.pnl_pct))
       .sort((a, b) => a - b);
     const medianLoss = lossPnls.length > 0 ? lossPnls[Math.floor(lossPnls.length * 0.5)] : 5;
-    const optimalSl = Math.min(15, Math.max(3, medianLoss * 1.2));
+    const optimalSl = Math.min(5, Math.max(3, medianLoss * 1.2)); // v12.3: 15→5% (소액 계좌에 12%+ SL은 치명적)
 
     stats.push({
       sector,
@@ -314,7 +314,7 @@ function generateRecommendations(ctx: {
 
     if (slRatio > 0.35 && avgSlPct < 6) {
       // 손절 비율 35% 초과 + 평균 손절폭 6% 미만 → 너무 타이트
-      const recommended = Math.min(12, avgSlPct * 1.5);
+      const recommended = Math.min(5, avgSlPct * 1.3); // v12.3: 12→5%, 1.5→1.3 (SL 과도한 확장 방지)
       recs.push({
         param: 'sl_base_pct',
         current: avgSlPct,

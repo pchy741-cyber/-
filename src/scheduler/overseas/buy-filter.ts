@@ -161,9 +161,14 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         }
         return true;
       })
-      // 2. 손절 쿨다운
+      // 2. 손절 쿨다운 — RECOVERY_BUY AI 판단 시 쿨다운 바이패스 (4h 이후)
       .filter((t) => {
         if (lossCooldownSet.has(t.code)) {
+          const ai = aiMap.get(t.code);
+          if (ai?.action === 'RECOVERY_BUY' && ai.confidence >= 0.72) {
+            logger.info(`🔄 손절 쿨다운 바이패스(RECOVERY_BUY): ${t.code} AI=${(ai.confidence * 100).toFixed(0)}%`, { component: 'OVERSEAS' });
+            return true;
+          }
           logger.info(`🚫 손절 쿨다운 차단: ${t.code} (24h 재매수 금지)`, { component: 'OVERSEAS' });
           return false;
         }
@@ -364,17 +369,17 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         const breadthBonus = freshBreadth >= 0.65 ? 0.02 : 0;
         const breadthAdj = breadthPenalty - breadthBonus;
         const isBigMoverTarget = t.isBigMover;
-        // 신뢰도 바닥: Gemini 출력 0.68-0.72 현실 반영
-        // v12.1: 신뢰도 바닥 하향 — 기존 0.63-0.68은 Gemini 정상 분포의 80% 차단
+        // v12.3: 실전모드 신뢰도 바닥 상향 — 저확신 진입이 손실 원인 1위
+        // Paper는 학습용이므로 기존 유지, Live만 강화
         const baseMinConf = recoveryMode
-          ? 0.72 // v12.1: 0.78→0.72
+          ? 0.75 // v12.3: 0.72→0.75
           : mq === 'GREAT'
-            ? 0.58 // v12.1: 0.63→0.58
+            ? (isPaper ? 0.58 : 0.65) // v12.3: Live 0.58→0.65
             : mq === 'CAUTIOUS'
-              ? 0.63 // v12.1: 0.68→0.63
+              ? (isPaper ? 0.63 : 0.68) // v12.3: Live 0.63→0.68
               : mq === 'DANGER'
-                ? 0.72 // v12.1: 0.78→0.72
-                : 0.60; // v12.1: 0.65→0.60
+                ? 0.75 // v12.3: 0.72→0.75
+                : (isPaper ? 0.60 : 0.65); // v12.3: Live 0.60→0.65
         const minConf =
           (isBigMoverTarget
             ? Math.max(isPaper ? 0.5 : 0.6, baseMinConf - 0.05 + breadthAdj)

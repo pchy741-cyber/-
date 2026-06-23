@@ -29,10 +29,11 @@ export function calcDynamicTrailDrop(params: {
   const isHighBeta = SECTOR_CLASS.HIGH_BETA.includes(sector);
   const isDefense = SECTOR_CLASS.DEFENSE.includes(sector);
 
-  // v10.9.4: ATR × 2.0 기반 (기존 2.5 → 2.0) + 트레일 범위 축소 (수익 반납 최소화)
-  const atrTrail = -(atrPct * 2.0);
-  const minTrail = isHighBeta ? -8.0 : isDefense ? -4.0 : -6.0;
-  const maxTrail = isHighBeta ? -4.0 : isDefense ? -2.5 : -3.0;
+  // v12.3: ATR × 1.5 기반 (기존 2.0 → 1.5) — 수익 반납 추가 축소, 타이트 트레일
+  const atrTrail = -(atrPct * 1.5);
+  // v12.3: HIGH_BETA minTrail -8→-6% (기존: -8%까지 허용 = 수익 전부 반납)
+  const minTrail = isHighBeta ? -6.0 : isDefense ? -3.5 : -5.0;
+  const maxTrail = isHighBeta ? -3.0 : isDefense ? -2.0 : -2.5;
   let trail = atrTrail;
 
   // 트렌드 강도 기반 동적 조정 (강한 추세 → 넓은 트레일, 약한 추세 → 타이트)
@@ -260,31 +261,32 @@ export function getPartialTpStages(sector: string, bucket?: string): PartialTpSt
   const isHighBeta = SECTOR_CLASS.HIGH_BETA.includes(sector);
   const isDefense = SECTOR_CLASS.DEFENSE.includes(sector);
 
-  // v10.9: 부분익절 현실화 — 1단계 빠른 수익 확정 (25~30%), 트리거 하향
+  // v12.3: 부분익절 1단계 트리거 상향 — 기존 +1.5~2%에서 조기 확정 → 위너 라이딩 방해
+  // 승자 종목이 +5~10% 가는데 +2%에서 25% 확정 → 수익 잠식
   if (isHighBeta) {
     return [
-      { stage: 1, triggerPct: 2.0, sellRatio: 0.25 }, // v10.9: +2%→25% (기존 3.5%→15%)
-      { stage: 2, triggerPct: 4.0, sellRatio: 0.20 },
-      { stage: 3, triggerPct: 7.0, sellRatio: 0.20 },
+      { stage: 1, triggerPct: 3.5, sellRatio: 0.20 }, // v12.3: +2→+3.5%, 25→20%
+      { stage: 2, triggerPct: 5.0, sellRatio: 0.20 },
+      { stage: 3, triggerPct: 8.0, sellRatio: 0.20 },
       { stage: 4, triggerPct: 12.0, sellRatio: 0.20 },
-      { stage: 5, triggerPct: 18.0, sellRatio: 0.15 },
+      { stage: 5, triggerPct: 18.0, sellRatio: 0.20 },
     ];
   }
   if (isDefense) {
     return [
-      { stage: 1, triggerPct: 1.5, sellRatio: 0.30 }, // v10.9: +1.5%→30% (방어주 빠른 확정)
-      { stage: 2, triggerPct: 3.0, sellRatio: 0.25 },
-      { stage: 3, triggerPct: 5.0, sellRatio: 0.25 },
-      { stage: 4, triggerPct: 8.0, sellRatio: 0.20 },
+      { stage: 1, triggerPct: 2.5, sellRatio: 0.25 }, // v12.3: +1.5→+2.5%, 30→25%
+      { stage: 2, triggerPct: 4.0, sellRatio: 0.25 },
+      { stage: 3, triggerPct: 6.0, sellRatio: 0.25 },
+      { stage: 4, triggerPct: 9.0, sellRatio: 0.25 },
     ];
   }
   // 일반 종목
   return [
-    { stage: 1, triggerPct: 1.5, sellRatio: 0.25 }, // v10.9: +1.5%→25% (기존 3.0%→15%)
-    { stage: 2, triggerPct: 3.0, sellRatio: 0.20 },
-    { stage: 3, triggerPct: 5.0, sellRatio: 0.20 },
-    { stage: 4, triggerPct: 8.0, sellRatio: 0.20 },
-    { stage: 5, triggerPct: 13.0, sellRatio: 0.15 },
+    { stage: 1, triggerPct: 3.0, sellRatio: 0.20 }, // v12.3: +1.5→+3.0%, 25→20%
+    { stage: 2, triggerPct: 5.0, sellRatio: 0.20 },
+    { stage: 3, triggerPct: 7.0, sellRatio: 0.20 },
+    { stage: 4, triggerPct: 10.0, sellRatio: 0.20 },
+    { stage: 5, triggerPct: 15.0, sellRatio: 0.20 },
   ];
 }
 
@@ -416,10 +418,10 @@ export function calcDynamicTpSl(params: {
       // 저변동성(ATR<1.5%): SL 타이트닝 — 최대 2.5% (불필요한 자본 노출 축소)
       slPct = Math.min(slPct, 2.5);
     } else {
-      // 고변동성: 최소 1.5×ATR% (기존 2x → 1.5x — 노이즈 방어와 손실 제한 균형)
+      // v12.3: ATR SL 상한 축소 (HIGH_BETA 8→6%, 기타 5→4%) — 과도한 SL 확대 방지
       const atrFloor = Math.round(atrPct * 1.5 * 10) / 10;
       if (atrFloor > slPct) {
-        slPct = Math.min(atrFloor, isHighBeta ? 8.0 : 5.0); // 안전 상한: HIGH_BETA 8%, 기타 5%
+        slPct = Math.min(atrFloor, isHighBeta ? 6.0 : 4.0); // v12.3: 안전 상한 축소
       }
     }
   }

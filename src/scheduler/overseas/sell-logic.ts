@@ -136,9 +136,9 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
     // AI Loop forceHold: Claude Code가 매도 보류 지시 (실적 발표 대기 등)
     const aiForceHold = getOverride<boolean>(`${code}_forceHold`);
     const nasdaqCrash = ctx.nasdaqChange1d != null && ctx.nasdaqChange1d <= -4;
-    // v10.11.4: flat -8% → 동적 SL×1.2 (국내 forceHold 공식과 통일)
-    // 기존: -8% 고정 → 국내(-3%) 대비 2.5배 느슨하여 대형 손실 허용
-    const forceHoldLimit = (holding.slPct ?? -5) * 1.2;
+    // v12.3: 동적 SL×1.0 (기존 1.2x → SL 그대로 적용, 추가 여유 불필요)
+    // 기존: SL -5% × 1.2 = -6% 허용 → 소액 계좌에서 과도한 손실
+    const forceHoldLimit = (holding.slPct ?? -5) * 1.0;
     if (aiForceHold && pnlPct > forceHoldLimit && !nasdaqCrash) {
       // 동적 SL 기반 한도 이상 + NASDAQ 급락(-4%+) 아닐 때만 AI 홀드 존중
       logger.info(`🤖 AI Loop forceHold(해외): ${code} 매도 보류 (pnl=${pnlPct.toFixed(1)}%)`, {
@@ -192,6 +192,8 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
 
     // ATR 동적 트레일링 스톱 + VIX 레짐 타이트닝
     const atrPctValue = tech.atrPct ?? DEFAULT_ATR_PCT;
+    // 🛡️ 과매도 바닥 판단 (Smart Hold) — 이후 손절 로직에서 참조
+    const isOversoldBottom = tech.rsi < 30 && tech.adx < 20 && tech.trendStrength !== 'STRONG';
     // TP/SL: 매 사이클마다 현재 조건으로 재계산 (DB 저장값은 참고용)
     // 기존 문제: DB에 20~25% TP가 박혀서 사실상 익절 불가 → 항상 현재 조건 반영
     const dyn = calcDynamicTpSl({
@@ -212,7 +214,24 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
     // SL: 매 사이클마다 현재 조건으로 재계산 (tuner 반영, 시장 변화 적응)
     // 단, 기존 DB값이 더 타이트(덜 음수)하면 보수적으로 유지
     const dynamicSl = -dyn.slPct;
-    const stopLossPct = holding.slPct != null ? Math.max(holding.slPct, dynamicSl) : dynamicSl;
+    let stopLossPct = holding.slPct != null ? Math.max(holding.slPct, dynamicSl) : dynamicSl;
+    // ── 브레이크이븐 스톱 프로그레션 (ATR 기반) ──
+    // 고점 도달 → SL 자동 상향 (수익 보호, 손실 방지)
+    // Phase A: maxPnl >= 2.5 ATR → SL을 0.5 ATR로 (수익 확보)
+    // Phase B: maxPnl >= 1.5 ATR → SL을 본절(-0.3%)로 (수수료 감안)
+    if (maxPnlPct >= atrPctValue * 2.5) {
+      const lockPct = atrPctValue * 0.5;
+      if (lockPct > stopLossPct) {
+        logger.debug(`📈 SL프로그레션: ${code} 2.5ATR도달 → SL ${stopLossPct.toFixed(1)}%→+${lockPct.toFixed(1)}%`, { component: 'OVERSEAS' });
+        stopLossPct = lockPct;
+      }
+    } else if (maxPnlPct >= atrPctValue * 1.5) {
+      const breakeven = -0.3; // 수수료 감안 본절
+      if (breakeven > stopLossPct) {
+        logger.debug(`📈 SL프로그레션: ${code} 1.5ATR도달 → SL ${stopLossPct.toFixed(1)}%→본절`, { component: 'OVERSEAS' });
+        stopLossPct = breakeven;
+      }
+    }
     // DB 동기화 (대시보드 표시용) — v10.8: 루프 밖 static import 사용
     updateHoldingTpSl(code, hardTpPct, stopLossPct, paperMode).catch(() => {});
     const dynamicTrailDrop = calcDynamicTrailDrop({
@@ -296,12 +315,24 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
       }
       // sellReason 비어있으면: HOLD가 아닌 경우에만 손절 평가
       if (!sellReason && pnlPct <= stopLossPct && tws.action !== 'HOLD') {
-        sellReason = `손절(${stopLossPct}%): ${pnlPct.toFixed(1)}%`;
+        // 🛡️ 스마트 홀드: SWING도 과매도 바닥에서 SL 완화
+        // v12.3: 1.5x→1.2x (기존: -5%SL→-7.5% 허용 = 대형 손실 트랩)
+        if (isOversoldBottom && pnlPct > stopLossPct * 1.2) {
+          logger.info(`🛡️ 스마트홀드(SWING): ${code} PnL=${pnlPct.toFixed(1)}% RSI=${tech.rsi.toFixed(0)} ADX=${tech.adx.toFixed(0)} → 과매도 반등 대기`, { component: 'OVERSEAS' });
+        } else {
+          sellReason = `손절(${stopLossPct}%): ${pnlPct.toFixed(1)}%`;
+        }
       }
 
       // ── 1. 손절 (SWING 외) ──
     } else if (pnlPct <= stopLossPct) {
-      sellReason = `손절(${stopLossPct}%): ${pnlPct.toFixed(1)}%`;
+      // 🛡️ 스마트 홀드: 과매도 바닥(RSI<30 + ADX<20)에서 SL 1.2배까지 완화
+      // v12.3: 1.5x→1.2x (기존: -5%SL→-7.5% 허용 = 소액 계좌에 치명적)
+      if (isOversoldBottom && pnlPct > stopLossPct * 1.2) {
+        logger.info(`🛡️ 스마트홀드: ${code} PnL=${pnlPct.toFixed(1)}% RSI=${tech.rsi.toFixed(0)} ADX=${tech.adx.toFixed(0)} → 과매도 반등 대기 (SL완화 ${stopLossPct}%→${(stopLossPct * 1.2).toFixed(1)}%)`, { component: 'OVERSEAS' });
+      } else {
+        sellReason = `손절(${stopLossPct}%): ${pnlPct.toFixed(1)}%`;
+      }
 
       // ── 1b. 하락장 빠른 정리 ──
       // score<=-20 조건으로 강화 — 시장 전체 급락 시 전종목 동시 발동 방지
@@ -318,13 +349,15 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
 
       // ── 1c. 약세 조기 탈출 ──
       // 시장 전체 하락과 개별 종목 약세를 구분하기 위해 임계값 강화
+      // 🛡️ 스마트 홀드: 과매도 바닥(RSI<30, ADX<20)에서는 약세 탈출 안함 (반등 대기)
     } else if (
       pnlPct < -3.0 &&
       pnlPct > stopLossPct &&
       tech.score <= -25 &&
       !tech.aboveMA20 &&
       tech.rsi < 40 &&
-      holdingDays >= 1
+      holdingDays >= 1 &&
+      !isOversoldBottom
     ) {
       sellReason = `약세조기탈출(${pnlPct.toFixed(1)}%): score=${tech.score} RSI=${tech.rsi.toFixed(0)} MA20↓ → SL전 정리`;
 

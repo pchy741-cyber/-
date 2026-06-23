@@ -410,8 +410,13 @@ export async function executeBuyLoop(params: BuyLoopParams): Promise<BuyLoopResu
   // ── 물타기(평균단가 하향) — AI가 AVERAGE_DOWN 판단한 보유 종목 ──
   const MAX_AVG_DOWN = 2; // 최대 2회
   const AVG_DOWN_SIZE_RATIO = 0.5; // 기존 포지션의 50% 규모로 추가매수
+  const AVG_DOWN_MIN_CONF = 0.70; // v12.3: 물타기 최소 신뢰도 (기존: 없음 → 저확신 물타기로 손실 증폭)
   for (const [code, aiDec] of aiMap) {
     if (aiDec.action !== 'AVERAGE_DOWN') continue;
+    if (aiDec.confidence < AVG_DOWN_MIN_CONF) {
+      logger.info(`🔻 ${code}: 물타기 AI 신뢰도 부족 (${(aiDec.confidence * 100).toFixed(0)}% < ${(AVG_DOWN_MIN_CONF * 100).toFixed(0)}%) — SKIP`, { component: 'OVERSEAS' });
+      continue;
+    }
     const holding = updatedHoldings.get(code);
     if (!holding || holding.qty <= 0) continue;
 
@@ -484,6 +489,48 @@ export async function executeBuyLoop(params: BuyLoopParams): Promise<BuyLoopResu
       );
       logger.info(
         `🔻 물타기 성공: ${code} x${exec.filledQty} @$${exec.filledPrice.toFixed(2)} → 평단가 $${newAvg.toFixed(2)} (${avgCount + 1}/${MAX_AVG_DOWN})`,
+        { component: 'OVERSEAS' },
+      );
+    }
+  }
+
+  // ── 회복 재진입 (RECOVERY_BUY) — 손절 후 반등 감지 시 50% 사이즈 재진입 ──
+  const RECOVERY_SIZE_RATIO = 0.5; // 일반 매수의 50% 사이즈
+  const RECOVERY_MIN_CONF = 0.72;
+  for (const [code, aiDec] of aiMap) {
+    if (aiDec.action !== 'RECOVERY_BUY') continue;
+    if (aiDec.confidence < RECOVERY_MIN_CONF) continue;
+    if (updatedHoldings.has(code)) continue; // 이미 보유 중이면 스킵
+    if (pendingOrderStocks.has(code)) continue;
+
+    const tech = techByCode.get(code);
+    if (!tech) continue;
+    const currentPrice = tech.price.currentPrice;
+    if (currentPrice <= 0) continue;
+
+    // 포지션 사이징: 일반 매수의 50%
+    const normalQty = Math.floor((cash * 0.08) / currentPrice); // 8% 포지션
+    const recoveryQty = Math.max(1, Math.floor(normalQty * RECOVERY_SIZE_RATIO));
+    const cost = recoveryQty * currentPrice * (1 + OVERSEAS_FEE_PCT);
+    if (cost > cash * 0.3) continue; // 현금 30% 초과 시 스킵
+
+    const exec = await executeOverseasOrder(
+      code, 'BUY', recoveryQty, currentPrice, tech.exchange,
+      `RECOVERY_BUY 손절후반등 AI=${(aiDec.confidence * 100).toFixed(0)}%: ${aiDec.reasoning}`,
+      0, 0,
+      { isPaper: isPaperMode },
+    );
+
+    if (exec.submitted && exec.filledQty > 0) {
+      cash -= exec.filledQty * exec.filledPrice * (1 + OVERSEAS_FEE_PCT);
+      buyOrders.push(
+        `🔄 회복재진입 ${code} x${exec.filledQty} @$${exec.filledPrice.toFixed(2)} (50%사이즈) AI=${(aiDec.confidence * 100).toFixed(0)}%`,
+      );
+      await logSystem('TRADE', 'OVERSEAS',
+        `RECOVERY_BUY ${code} x${exec.filledQty} @$${exec.filledPrice.toFixed(2)} | ${aiDec.reasoning}`,
+      );
+      logger.info(
+        `🔄 회복재진입: ${code} x${exec.filledQty} @$${exec.filledPrice.toFixed(2)} (손절후반등 50%사이즈)`,
         { component: 'OVERSEAS' },
       );
     }

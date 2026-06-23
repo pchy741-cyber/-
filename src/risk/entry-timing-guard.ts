@@ -270,8 +270,8 @@ export function getTimeWeightedStop(params: {
   const { holdingHours, pnlPct, baseSlPct, belowMa20, belowPrevLow } = params;
   const absBase = Math.abs(baseSlPct);
 
-  // Phase 1: 0~12h 초기 휩소 방어 (v10.3: 48h→12h — 손실 종목 빨리 자르기)
-  if (holdingHours < 12) {
+  // Phase 1: 0~24h 초기 휩소 방어 (v12.3: 12h→24h — 미국장 프리마켓 갭 커버)
+  if (holdingHours < 24) {
     // 구조적 위반: MA20 이탈 또는 전저점 이탈 → 무조건 매도
     if (belowMa20 || belowPrevLow) {
       return {
@@ -299,8 +299,8 @@ export function getTimeWeightedStop(params: {
     };
   }
 
-  // Phase 2: 12~24h 본절 이동 (v10.3: 48~72h→12~24h — 손실 종목 빨리 판단)
-  if (holdingHours < 24) {
+  // Phase 2: 24~48h 본절 이동 (v12.3: 12~24h→24~48h — 충분한 관찰 후 판단)
+  if (holdingHours < 48) {
     // 수익권 충분 진입 시 본절
     if (pnlPct >= 3.0) {
       return {
