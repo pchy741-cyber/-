@@ -615,7 +615,7 @@ export const OVERSEAS = {
   UNIFIED_MARGIN: true, // 통합증거금 모드 (별도 USD 환전 불필요)
   TOP_COUNT: 20, // 세션 캐시 상위 종목 수 (35종목 풀 → 상위 20 AI 분석)
   ASIA_TOP_COUNT: 6, // 아시아장 세션 캐시 상위 종목 수
-  AI_INTERVAL_MS: 25 * 60_000, // AI 호출 최소 간격: 25분 (비용 절감, 15→25분)
+  AI_INTERVAL_MS: 15 * 60_000, // AI 호출 최소 간격: 15분 (GPT-4o-mini 전환으로 비용↓ → 간격 단축)
   PARKING_MIN_ORDER: 20, // 파킹 최소 주문 금액 ($)
   CONCENTRATION_MIN_PNL_PCT: 4.0, // 집중 대상 최소 수익률 (위너에 일찍 집중)
   // 고정형 상수 제거 완료 — 모든 동적 파라미터는 getOverseasDynamic() 사용
