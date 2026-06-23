@@ -1,4 +1,2 @@
-/** Rate-limit 및 대기 헬퍼 — awaitable delay */
-export function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
-}
+// v10.11.4: time.ts로 병합됨 — 하위 호환 re-export
+export { sleep } from './time.js';

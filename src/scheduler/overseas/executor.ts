@@ -21,8 +21,11 @@ import { resolveOverseasStockName } from './watchlist.js';
 const PAPER_SLIPPAGE_PCT = 0.001;
 /** Milliseconds per day — used for holding day calculation */
 const MS_PER_DAY = 86_400_000;
-/** PnL threshold for WIN/LOSS/BREAK_EVEN classification */
-const PNL_BREAKEVEN_THRESHOLD = 0.1;
+/** PnL threshold for WIN/LOSS/BREAK_EVEN classification
+ * v10.11.3: 0.1% → 0.4% (해외 수수료 0.35% 이상이어야 실질 수익)
+ * 기존: 0.1% 수익도 "WIN" → 수수료 0.35% 차감 후 실질 -0.25% 손실인데 WIN 분류
+ */
+const PNL_BREAKEVEN_THRESHOLD = 0.4;
 
 /** 해외 SELL 체결 후 score_accuracy 기록 */
 async function recordOverseasScoreAccuracy(params: {

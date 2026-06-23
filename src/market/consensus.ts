@@ -191,7 +191,7 @@ export function getConsensusTrend(code: string): ConsensusSignal | null {
  * - BEARISH: -0.15 (매수 자제)
  * - NEUTRAL/없음: 0
  */
-export function getConsensusConfidenceAdj(code: string): number {
+function getConsensusConfidenceAdj(code: string): number {
   const signal = getConsensusTrend(code);
   if (!signal) return 0;
   if (signal.trend === 'BULLISH') return 0.1;

@@ -95,9 +95,9 @@ export function computeFingerprint(params: {
   };
 }
 
-/** 핑거프린트를 짧은 키 문자열로 변환 (DB 저장/로그용) */
+/** 핑거프린트 → DB 저장/조회용 문자열 키 */
 export function fingerprintKey(fp: EntryFingerprint): string {
-  return `${fp.rsiZone}|${fp.volZone}|${fp.trendState}|${fp.macd}|${fp.adx}`;
+  return `${fp.rsiZone}|${fp.volZone}|${fp.trendState}|${fp.regime}|${fp.adx}|${fp.macd}`;
 }
 
 // ── 패턴 피드백 조회 ──

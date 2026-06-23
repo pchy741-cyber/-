@@ -4,10 +4,16 @@
  * 매일 19:30 실행 — 각 전략 모드별로 백테스트 엔진을 활용하여
  * 최적 TP/SL 파라미터를 탐색.
  *
+ * v10.11.3: 데이터 스누핑 방지 대폭 강화
+ *   - Train(60%)/Test(40%) 시간순 분리 (동일 데이터 사용 금지)
+ *   - Walk-Forward WFE >= 0.5 필수 (OOS 검증 통과 시만 적용)
+ *   - -Infinity currentSharpe 가드 (빈 데이터→아무거나 적용 방지)
+ *   - 벤치마크 차트 병렬 로드 (Promise.all)
+ *
  * 토큰 비용: $0 (DB + 결정론적 백테스트만 사용)
  */
 
-import { type BacktestConfig, runBacktest } from '../backtest/engine.js';
+import { type BacktestConfig, runBacktest, runWalkForward } from '../backtest/engine.js';
 import { STRATEGY_PARAMS, type StrategyMode } from '../config/constants.js';
 import { getPool } from '../db/client.js';
 import { getDailyChart } from '../kis/market.js';
@@ -26,6 +32,11 @@ const SL_STEPS = [-0.5, -0.25, 0, 0.25, 0.5]; // 현재값 기준 ±0.5%
 // 백테스트 대상 종목 (대형주 대표)
 const BENCHMARK_CODES = ['005930', '000660', '035420', '005380', '051910']; // 삼성전자, SK하이닉스, NAVER, 현대차, LG화학
 
+/** Train/Test 분리 비율 — 시간순 앞 60% = train, 뒤 40% = test */
+const TRAIN_RATIO = 0.6;
+/** Walk-Forward 최소 효율 — OOS 성과가 IS의 50% 이상이어야 적용 */
+const MIN_WFE = 0.5;
+
 interface OptimizerResult {
   mode: StrategyMode;
   currentTp: number;
@@ -38,6 +49,7 @@ interface OptimizerResult {
   currentSharpe: number;
   improved: boolean;
   applied: boolean;
+  wfeValidated?: boolean;
 }
 
 /**
@@ -49,14 +61,19 @@ export async function runStrategyOptimizer(): Promise<OptimizerResult[]> {
 
   logger.info('📈 ═══ 전략 최적화기 시작 ═══', { component: COMP });
 
-  // 벤치마크 종목 차트 데이터 사전 로드 (90일)
+  // 벤치마크 종목 차트 데이터 병렬 로드 (120일)
   const chartMap = new Map<string, Awaited<ReturnType<typeof getDailyChart>>>();
-  for (const code of BENCHMARK_CODES) {
-    try {
+  const chartLoadResults = await Promise.allSettled(
+    BENCHMARK_CODES.map(async (code) => {
       const candles = await getDailyChart(code, 120);
-      if (candles.length >= 60) chartMap.set(code, candles);
-    } catch (e) {
-      logger.warn(`📈 차트 로드 실패 ${code}: ${e}`, { component: COMP });
+      return { code, candles };
+    }),
+  );
+  for (const r of chartLoadResults) {
+    if (r.status === 'fulfilled' && r.value.candles.length >= 60) {
+      chartMap.set(r.value.code, r.value.candles);
+    } else if (r.status === 'rejected') {
+      logger.warn(`📈 차트 로드 실패: ${r.reason}`, { component: COMP });
     }
   }
 
@@ -76,7 +93,26 @@ export async function runStrategyOptimizer(): Promise<OptimizerResult[]> {
       // Paper 성과 조회 (30일)
       const paperPerf = await getStrategyPerformance(mode, 30, true);
 
-      // 그리드 서치: TP × SL 조합별 백테스트
+      // ═══ Train/Test 시간순 분리 ═══
+      // 각 벤치마크 차트를 시간순으로 앞 60% = train, 뒤 40% = test
+      // Train에서 최적 파라미터 탐색 → Test에서 검증 (데이터 스누핑 방지)
+      type ChartData = Awaited<ReturnType<typeof getDailyChart>>;
+      const trainChartMap = new Map<string, ChartData>();
+      const testChartMap = new Map<string, ChartData>();
+      for (const [code, fullCandles] of chartMap) {
+        const sorted = [...fullCandles].sort((a, b) => a.date.localeCompare(b.date));
+        const splitIdx = Math.floor(sorted.length * TRAIN_RATIO);
+        if (splitIdx < 40 || sorted.length - splitIdx < 20) continue; // 최소 train 40봉, test 20봉
+        trainChartMap.set(code, sorted.slice(0, splitIdx));
+        testChartMap.set(code, sorted.slice(splitIdx));
+      }
+
+      if (trainChartMap.size === 0) {
+        logger.info(`  ⚠️ ${mode}: train 데이터 부족 — 스킵`, { component: COMP });
+        continue;
+      }
+
+      // 그리드 서치: TP × SL 조합별 백테스트 (Train 데이터만 사용)
       let bestSharpe = -Infinity;
       let bestTp: number = currentTp;
       let bestSl: number = currentSl;
@@ -89,20 +125,19 @@ export async function runStrategyOptimizer(): Promise<OptimizerResult[]> {
           const testTp = Math.max(0.5, currentTp + tpDelta);
           const testSl = Math.min(-0.3, currentSl + slDelta); // SL은 음수
 
-          // 각 벤치마크 종목에 대해 백테스트
+          // 각 벤치마크 종목에 대해 Train 백테스트
           let totalSharpe = 0;
           let totalPF = 0;
           let totalWR = 0;
           let validCount = 0;
 
-          for (const [code, candles] of chartMap) {
+          for (const [code, trainCandles] of trainChartMap) {
             const config: BacktestConfig = {
               mode,
-              initialCapital: 100_000_000, // 백테스트 시뮬레이션 기준 (비교용, 실계좌 무관)
+              initialCapital: 100_000_000,
               maxPositionPct: 25,
             };
 
-            // TP/SL 오버라이드를 위해 복사본 사용 (전역 파라미터 변이 방지)
             const testConfig: BacktestConfig = {
               ...config,
               overrideTp: testTp,
@@ -110,7 +145,7 @@ export async function runStrategyOptimizer(): Promise<OptimizerResult[]> {
             };
 
             try {
-              const result = runBacktest(candles, code, testConfig);
+              const result = runBacktest(trainCandles, code, testConfig);
               if (result.totalTrades >= 3) {
                 totalSharpe += result.sharpeRatio;
                 totalPF += result.profitFactor;
@@ -142,8 +177,92 @@ export async function runStrategyOptimizer(): Promise<OptimizerResult[]> {
         }
       }
 
+      // ═══ -Infinity 가드: 현재 파라미터로 유효 거래가 없으면 적용 금지 ═══
+      if (!Number.isFinite(currentSharpe)) {
+        logger.info(
+          `  ⚠️ ${mode}: 현재 파라미터 유효거래 0건 (currentSharpe=N/A) → 변경 보류`,
+          { component: COMP },
+        );
+        results.push({
+          mode, currentTp, currentSl, bestTp, bestSl,
+          bestSharpe: Number.isFinite(bestSharpe) ? bestSharpe : 0,
+          bestPF, bestWinRate, currentSharpe: 0, improved: false, applied: false,
+        });
+        continue;
+      }
+
       const improved = bestSharpe > currentSharpe * 1.05; // 5% 이상 개선 시만 적용
-      const applied = improved && paperPerf.totalTrades >= 10; // 10건 이상 거래 데이터 있을 때만
+      let applied = improved && paperPerf.totalTrades >= 10; // 10건 이상 거래 데이터 있을 때만
+      let wfeValidated = false;
+
+      // ═══ OOS 검증: Test 데이터에서 best 파라미터 성과 확인 ═══
+      if (applied) {
+        let oosValid = true;
+        let oosSharpeSum = 0;
+        let oosValidCount = 0;
+
+        for (const [code, testCandles] of testChartMap) {
+          try {
+            const oosResult = runBacktest(testCandles, code, {
+              mode,
+              initialCapital: 100_000_000,
+              maxPositionPct: 25,
+              overrideTp: bestTp,
+              overrideSl: bestSl,
+            });
+            if (oosResult.totalTrades >= 2) {
+              oosSharpeSum += oosResult.sharpeRatio;
+              oosValidCount++;
+            }
+          } catch { /* skip */ }
+        }
+
+        if (oosValidCount > 0) {
+          const avgOosSharpe = oosSharpeSum / oosValidCount;
+          // OOS Sharpe가 Train Sharpe의 50% 미만 = 과적합
+          if (avgOosSharpe < bestSharpe * MIN_WFE) {
+            logger.info(
+              `  ⚠️ ${mode}: OOS 검증 실패 (Train Sharpe=${bestSharpe.toFixed(2)}, OOS Sharpe=${avgOosSharpe.toFixed(2)}, WFE=${(avgOosSharpe / bestSharpe).toFixed(2)} < ${MIN_WFE}) → 적용 보류`,
+              { component: COMP },
+            );
+            oosValid = false;
+          } else {
+            wfeValidated = true;
+            logger.info(
+              `  ✅ ${mode}: OOS 검증 통과 (WFE=${(avgOosSharpe / bestSharpe).toFixed(2)})`,
+              { component: COMP },
+            );
+          }
+        } else {
+          // OOS에서 유효 거래 없으면 적용 보류
+          oosValid = false;
+          logger.info(`  ⚠️ ${mode}: OOS 유효거래 0건 → 적용 보류`, { component: COMP });
+        }
+
+        if (!oosValid) applied = false;
+      }
+
+      // ═══ Walk-Forward 최종 검증 (전체 데이터) ═══
+      if (applied) {
+        // 적용 직전 — 전체 데이터로 Walk-Forward 검증 (추가 안전장치)
+        for (const [code, fullCandles] of chartMap) {
+          const wfResult = runWalkForward(fullCandles, code, {
+            mode,
+            initialCapital: 100_000_000,
+            maxPositionPct: 25,
+            overrideTp: bestTp,
+            overrideSl: bestSl,
+          });
+          if (wfResult.isOverfit) {
+            logger.info(
+              `  ⚠️ ${mode}/${code}: Walk-Forward 과적합 감지 (WFE=${wfResult.walkForwardEfficiency}) → 적용 보류`,
+              { component: COMP },
+            );
+            applied = false;
+            break;
+          }
+        }
+      }
 
       // Paper strategy_config에 최적 값 기록
       if (applied) {
@@ -156,7 +275,7 @@ export async function runStrategyOptimizer(): Promise<OptimizerResult[]> {
           .catch(() => {});
 
         logger.info(
-          `  🎯 ${mode}: TP ${currentTp}→${bestTp.toFixed(1)}% SL ${currentSl}→${bestSl.toFixed(1)}% (Sharpe ${currentSharpe.toFixed(2)}→${bestSharpe.toFixed(2)})`,
+          `  🎯 ${mode}: TP ${currentTp}→${bestTp.toFixed(1)}% SL ${currentSl}→${bestSl.toFixed(1)}% (Sharpe ${currentSharpe.toFixed(2)}→${bestSharpe.toFixed(2)}, OOS+WF 검증 통과)`,
           { component: COMP },
         );
       } else {
@@ -184,6 +303,7 @@ export async function runStrategyOptimizer(): Promise<OptimizerResult[]> {
               bestWinRate,
               improved,
               applied,
+              wfeValidated,
               paperTrades: paperPerf.totalTrades,
               runAt: new Date().toISOString(),
             }),
@@ -203,6 +323,7 @@ export async function runStrategyOptimizer(): Promise<OptimizerResult[]> {
         currentSharpe,
         improved,
         applied,
+        wfeValidated,
       });
     } catch (e) {
       logger.warn(`📈 ${mode} 최적화 실패: ${e}`, { component: COMP });
@@ -216,9 +337,9 @@ export async function runStrategyOptimizer(): Promise<OptimizerResult[]> {
       const { sendTelegramMessage } = await import('../notifications/telegram.js');
       const lines = appliedResults.map(
         (r) =>
-          `• ${r.mode}: TP ${r.currentTp}→${r.bestTp.toFixed(1)}% SL ${r.currentSl}→${r.bestSl.toFixed(1)}% (Sharpe +${(((r.bestSharpe - r.currentSharpe) / Math.abs(r.currentSharpe || 1)) * 100).toFixed(0)}%)`,
+          `• ${r.mode}: TP ${r.currentTp}→${r.bestTp.toFixed(1)}% SL ${r.currentSl}→${r.bestSl.toFixed(1)}% (Sharpe +${(((r.bestSharpe - r.currentSharpe) / Math.abs(r.currentSharpe || 1)) * 100).toFixed(0)}%, WFE✓)`,
       );
-      await sendTelegramMessage(`📈 *전략 최적화 완료*\n\n${lines.join('\n')}\n\n적용: Paper only`).catch(() => {});
+      await sendTelegramMessage(`📈 *전략 최적화 완료*\n\n${lines.join('\n')}\n\n적용: Paper only (OOS+WF 검증 통과)`).catch(() => {});
     } catch (e) {
       logger.warn(`📈 텔레그램 알림 실패: ${e}`, { component: COMP });
     }

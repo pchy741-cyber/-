@@ -71,31 +71,3 @@ export function getActiveLocks(): Array<{ stockCode: string; owner: string; elap
   return result;
 }
 
-/**
- * 파이프라인 실행 가드 (Track A/B 중복 실행 방지)
- * 타임아웃 포함 — 크래시 시 영구 잠김 방지
- */
-const pipelineLocks = new Map<string, number>(); // name → lockedAt timestamp
-
-const PIPELINE_LOCK_TIMEOUT_MS = 15 * 60_000; // 15분 (Track A 최대 실행 시간)
-
-export function acquirePipelineLock(name: string): boolean {
-  const lockedAt = pipelineLocks.get(name);
-  if (lockedAt !== undefined) {
-    const elapsed = Date.now() - lockedAt;
-    if (elapsed < PIPELINE_LOCK_TIMEOUT_MS) {
-      return false;
-    }
-    // 타임아웃 초과 → 강제 해제
-    logger.warn(`🔓 파이프라인 락 타임아웃 강제 해제: ${name} (${Math.round(elapsed / 60000)}분)`, {
-      component: 'LOCK',
-    });
-    pipelineLocks.delete(name);
-  }
-  pipelineLocks.set(name, Date.now());
-  return true;
-}
-
-export function releasePipelineLock(name: string): void {
-  pipelineLocks.delete(name);
-}

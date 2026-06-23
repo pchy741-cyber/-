@@ -92,7 +92,7 @@ function getKSTDateStr(date: Date): string {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Seoul' }).format(date);
 }
 
-export function isKoreanHoliday(date: Date = new Date()): boolean {
+function isKoreanHoliday(date: Date = new Date()): boolean {
   const dateStr = getKSTDateStr(date);
   const year = Number(dateStr.split('-')[0]);
 

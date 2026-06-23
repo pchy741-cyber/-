@@ -80,20 +80,30 @@ export async function getGradualCooldown(isPaper?: boolean): Promise<GradualCool
       [mode],
     );
     const lossCount = Number(rows[0]?.loss_count ?? 0);
+    const stockCount = Number(rows[0]?.stock_count ?? 0);
 
-    if (lossCount >= 3) {
+    // v12.2: 쿨다운 임계값 완화 (기존 2/3건 → 4/6건)
+    // 근거: 조정장에서 2-3건 손절은 상관관계 손실(시장 전체 하락)이지 전략 실패가 아님
+    // 추가: 섹터 집중도 감지 — 손절 종목이 2개 이하(동일 섹터 집중)면 전체 쿨다운 대신 완화
+    const isSectorConcentrated = stockCount <= 2 && lossCount >= 3; // 같은 1-2종목 반복 손절
+
+    if (lossCount >= 6) {
       return {
         level: 3,
-        cooldownMs: 12 * 60 * 60_000,
+        cooldownMs: 8 * 60 * 60_000, // 12h→8h (기회비용 감소)
         sizingPenalty: 0.65,
-        message: `3연속 손절 → 12h 쿨다운 + 포지션 65%`,
+        message: `${lossCount}건 손절 → 8h 쿨다운 + 포지션 65%`,
       };
     }
-    if (lossCount >= 2) {
-      return { level: 2, cooldownMs: 6 * 60 * 60_000, sizingPenalty: 0.8, message: `2연속 손절 → 6h 전체 쿨다운` };
+    if (lossCount >= 4) {
+      // 섹터 집중 손실이면 Lv1로 완화 (전체 차단 불필요)
+      if (isSectorConcentrated) {
+        return { level: 1, cooldownMs: 4 * 60 * 60_000, sizingPenalty: 0.9, message: `섹터집중 ${lossCount}건 → 해당종목만 4h 쿨다운` };
+      }
+      return { level: 2, cooldownMs: 4 * 60 * 60_000, sizingPenalty: 0.8, message: `${lossCount}건 손절 → 4h 전체 쿨다운` };
     }
-    if (lossCount >= 1) {
-      return { level: 1, cooldownMs: 4 * 60 * 60_000, sizingPenalty: 1.0, message: `1회 손절 → 해당 종목 4h 쿨다운` };
+    if (lossCount >= 2) {
+      return { level: 1, cooldownMs: 2 * 60 * 60_000, sizingPenalty: 1.0, message: `${lossCount}건 손절 → 해당 종목 2h 쿨다운` };
     }
     return { level: 0, cooldownMs: 0, sizingPenalty: 1.0, message: '' };
   } catch (e) {

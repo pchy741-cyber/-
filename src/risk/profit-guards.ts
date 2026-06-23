@@ -87,18 +87,6 @@ export function checkExpectedValue(params: {
   };
 }
 
-/** 레거시 호환 — 기존 checkRiskReward 호출처가 있으면 EV로 동작 */
-export interface RrCheck {
-  passed: boolean;
-  rrRatio: number;
-  reason: string;
-}
-export function checkRiskReward(takeProfitPct: number, stopLossPct: number, _minRr = 1.5): RrCheck {
-  // EV 게이트로 위임 (승률 미지정 = 50% 가정)
-  const ev = checkExpectedValue({ takeProfitPct, stopLossPct });
-  return { passed: ev.passed, rrRatio: ev.rrRatio, reason: ev.reason };
-}
-
 // ── 가드 #2: 종목별 승률 기반 사이징 (Half-Kelly 통합) ─────
 // 학술 근거 (Kelly 1956, Substack 2025):
 //   - Full Kelly f* = (bp - q) / b 는 장기 최적이지만 단기 변동성 극대
@@ -321,7 +309,8 @@ export async function checkBuyGate(params: {
     import('./diversification-guard.js').then((m) => m.checkDiversification(params.stockCode, isPaper)),
   ]);
   // EV 게이트: 종목 실제 승률로 계산 (없으면 50% 보수적)
-  const wr = sizing.sampleCount >= 3 ? sizing.recentWinRate : 0.5;
+  // v10.11.4: >= 3 → >= 5 (hard-gates/auto-pilot/overseas 모듈과 최소 샘플 수 통일)
+  const wr = sizing.sampleCount >= 5 ? sizing.recentWinRate : 0.5;
   const ev = checkExpectedValue({
     takeProfitPct: params.takeProfitPct,
     stopLossPct: params.stopLossPct,

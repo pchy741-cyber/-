@@ -198,7 +198,7 @@ export async function getTradeReviewInsights(): Promise<string> {
  * - 3연패 이상 → +0.05 (더 보수적)
  * - 3연승 이상 → -0.03 (약간 공격적)
  */
-export async function getSectorConfidenceAdj(sector: string): Promise<number> {
+async function getSectorConfidenceAdj(sector: string): Promise<number> {
   // 캐시 체크
   const cached = _sectorAdjCache.get(sector);
   if (cached && Date.now() - cached.fetchedAt < SECTOR_ADJ_CACHE_TTL) {

@@ -92,7 +92,7 @@ export const STRATEGY_PARAMS = {
     // │ splitCount 1: 분할매수 제거 (고확신 일괄진입)                         │
     // │ maxDailyTrades 2: 3→2 (양보다 질)                                    │
     // └─────────────────────────────────────────────────────────────────────┘
-    buyThreshold: 83, // v11: 78→83 (고확신 필터 강화)
+    buyThreshold: 80, // v12.1: 83→80 (기존 95% 후보 차단 → 진입 기회 +20%)
     splitCount: 1, // v11: 2→1 (분할 제거, 일괄 진입)
     averageDownPct: 0,
     maxAveragingCount: 0,
@@ -100,7 +100,7 @@ export const STRATEGY_PARAMS = {
     takeProfitPct: 7.0, // v11: 5.0%→7.0% (손익분기 WR 29.1% — 실전WR30% 초과 → 흑자)
     takeProfitRatio: 0.5,
     stopLossPct: -2.5, // v10.7: -3.5%→-2.5% (손실 빨리 차단, 소액계좌 드로다운 축소)
-    maxHoldingDays: 15, // v11.0: 10→15 (실증: 21봉 71.79% WR, 2.64× PF — 보수적 15일 채택)
+    maxHoldingDays: 20, // v12.1: 15→20 (21바 사이클 완주 허용, 15일은 사이클 직전 조기 청산)
     maxDailyTrades: 3, // v10.3: 5→3 (과잉거래=구조적 적자의 주범, 수수료 절감)
   },
 
@@ -364,26 +364,27 @@ export function getDynamicDomesticTpSl(h: DomesticTpSlHints): {
   // ── 1. AI 점수 베이스 (5단계) ──
   let tp: number;
   let sl: number;
+  // v12.1: TP 상향 — buyThreshold 80 하향에 맞춰 수익 여유 확대
   if (h.score >= 93) {
+    tp = 10.5;
+    sl = -3.0;
+  } // 최고확신: 3.5:1 R:R (러너 확률 높음, 충분한 여유)
+  else if (h.score >= 88) {
     tp = 9.0;
     sl = -3.0;
-  } // 최고확신: 3.0:1 R:R (KOSPI 노이즈 여유)
-  else if (h.score >= 88) {
-    tp = 8.0;
-    sl = -3.3;
-  } // 초고확신: 2.42:1 R:R
+  } // 초고확신: 3.0:1 R:R
   else if (h.score >= 83) {
+    tp = 8.0;
+    sl = -3.5;
+  } // 고확신: 2.29:1 R:R
+  else if (h.score >= 80) {
     tp = 7.0;
     sl = -3.5;
-  } // 고확신: 2.0:1 R:R
-  else if (h.score >= 80) {
-    tp = 6.0;
-    sl = -3.8;
-  } // 중확신: 1.58:1 R:R
+  } // 중확신: 2.0:1 R:R (기존 진입 기준선)
   else {
-    tp = 5.0;
+    tp = 6.0;
     sl = -4.0;
-  } // 저확신: 1.25:1 → RR<1.5→TP자동조정
+  } // 저확신: 1.5:1 R:R
 
   // ── 1b. 자기학습 피드백 블렌딩 (30% 학습 + 70% 점수기반) ──
   // 확률싸움: 내역 쌓일수록 학습된 최적 TP/SL이 점수기반을 점진 보정

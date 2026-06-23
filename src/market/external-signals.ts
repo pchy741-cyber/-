@@ -170,7 +170,7 @@ export async function getUpcomingEarnings(codes: string[]): Promise<EarningsEven
 // ──────────────────────────────────────────────────────────────
 // 3. Finnhub — 뉴스 감성분석 (미국 종목)
 // ──────────────────────────────────────────────────────────────
-export async function getNewsSentiment(code: string): Promise<NewsSentiment | null> {
+async function getNewsSentiment(code: string): Promise<NewsSentiment | null> {
   const key = process.env.FINNHUB_API_KEY;
   if (!key) return null;
 

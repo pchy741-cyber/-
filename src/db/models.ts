@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 // ── 감시 목록 ──
-export const WatchlistItemSchema = z.object({
+const WatchlistItemSchema = z.object({
   id: z.string().uuid(),
   stock_code: z.string().min(1).max(10),
   stock_name: z.string(),
@@ -16,7 +16,7 @@ export const WatchlistItemSchema = z.object({
 export type WatchlistItem = z.infer<typeof WatchlistItemSchema>;
 
 // ── AI 스코어 (Track A 산출물) ──
-export const AIScoreSchema = z.object({
+const AIScoreSchema = z.object({
   id: z.string().uuid(),
   stock_code: z.string(),
   score_date: z.string(),
@@ -35,7 +35,7 @@ export const AIScoreSchema = z.object({
 export type AIScore = z.infer<typeof AIScoreSchema>;
 
 // ── 트랜잭션 체인 ──
-export const TransactionChainSchema = z.object({
+const TransactionChainSchema = z.object({
   id: z.string().uuid(),
   stock_code: z.string(),
   status: z.enum(['OPEN', 'AVERAGING', 'PROFIT_TAKING', 'CLOSED']),
@@ -73,7 +73,7 @@ export const TransactionChainSchema = z.object({
 export type TransactionChain = z.infer<typeof TransactionChainSchema>;
 
 // ── 주문 ──
-export const OrderSchema = z.object({
+const OrderSchema = z.object({
   id: z.string().uuid(),
   chain_id: z.string().uuid().nullable(),
   stock_code: z.string(),
@@ -99,10 +99,10 @@ export const OrderSchema = z.object({
 export type Order = z.infer<typeof OrderSchema>;
 
 /** INSERT/UPDATE 시 사용 — GENERATED 컬럼(is_paper) 제외 */
-export const OrderInsertSchema = OrderSchema.omit({ is_paper: true, created_at: true, updated_at: true });
+const OrderInsertSchema = OrderSchema.omit({ is_paper: true, created_at: true, updated_at: true });
 
 // ── 포트폴리오 스냅샷 ──
-export const PortfolioSnapshotSchema = z.object({
+const PortfolioSnapshotSchema = z.object({
   id: z.string().uuid(),
   snapshot_at: z.string(),
   total_value: z.number().nullable(),
@@ -118,7 +118,7 @@ export const PortfolioSnapshotSchema = z.object({
 export type PortfolioSnapshot = z.infer<typeof PortfolioSnapshotSchema>;
 
 // ── CEO 전략 설정 ──
-export const StrategyConfigSchema = z.object({
+const StrategyConfigSchema = z.object({
   id: z.string().uuid(),
   mode: z.enum(['SWING', 'DEFENSE', 'SCALPING', 'DIVIDEND', 'SNIPER', 'BOTTOM_FISHING', 'EOD_BETTING', 'BREAKOUT']),
   is_active: z.boolean(),
@@ -170,7 +170,7 @@ export type TradeDecision = z.infer<typeof TradeDecisionSchema>;
 // ── 해외주식 보유 현황 ──
 // DDL: 011 (생성) + 018 (scalp) + 026/035 (is_paper PK) + 043 (tp/sl) + 050 (bucket)
 // PK: (exchange, stock_code, is_paper)
-export const OverseasHoldingSchema = z.object({
+const OverseasHoldingSchema = z.object({
   stock_code: z.string(),
   exchange: z.string().default('NASDAQ'),
   is_paper: z.boolean().default(false),

@@ -479,12 +479,14 @@ export function runBacktest(candles: OHLCV[], stockCode: string, backtestConfig:
   const tradingDays = dailyPnl.length;
   const annualized = tradingDays > 0 ? ((finalCapital / initialCapital) ** (252 / tradingDays) - 1) * 100 : 0;
 
-  // Sharpe Ratio
+  // Sharpe Ratio (sample stdDev — N-1 분모)
   const dailyReturns = dailyPnl.map((d, i) =>
     i === 0 ? 0 : (d.equity - dailyPnl[i - 1].equity) / dailyPnl[i - 1].equity,
   );
   const avgReturn = dailyReturns.reduce((s, r) => s + r, 0) / dailyReturns.length;
-  const stdDev = Math.sqrt(dailyReturns.reduce((s, r) => s + (r - avgReturn) ** 2, 0) / dailyReturns.length);
+  const stdDev = dailyReturns.length > 1
+    ? Math.sqrt(dailyReturns.reduce((s, r) => s + (r - avgReturn) ** 2, 0) / (dailyReturns.length - 1))
+    : 0;
   const sharpe = stdDev > 0 ? (avgReturn / stdDev) * Math.sqrt(252) : 0;
 
   const maxDD = dailyPnl.length > 0 ? Math.max(...dailyPnl.map((d) => d.drawdown)) : 0;
@@ -509,10 +511,12 @@ export function runBacktest(candles: OHLCV[], stockCode: string, backtestConfig:
             (trades
               .filter((t) => t.side === 'BUY' && t.reason.startsWith('진입'))
               .reduce((sum, buyTrade) => {
-                const matchingSell = trades.find(
+                // 마지막 매도(전량 청산)를 기준으로 보유일수 계산 (부분매도 아닌 최종 청산)
+                const sellsAfter = trades.filter(
                   (t) => t.side === 'SELL' && t.stockCode === buyTrade.stockCode && t.date >= buyTrade.date,
                 );
-                return sum + (matchingSell ? countDaysBetween(buyTrade.date, matchingSell.date) : 0);
+                const lastSell = sellsAfter.length > 0 ? sellsAfter[sellsAfter.length - 1] : null;
+                return sum + (lastSell ? countDaysBetween(buyTrade.date, lastSell.date) : 0);
               }, 0) /
               Math.max(1, trades.filter((t) => t.side === 'BUY' && t.reason.startsWith('진입')).length)) *
               10,
@@ -549,12 +553,17 @@ export interface WalkForwardResult {
 }
 
 /**
- * Walk-Forward 백테스트
+ * Walk-Forward 백테스트 (시계열 Anchored Rolling Window)
  *
- * 데이터를 k개 fold로 나눠서 train(60%)/test(40%) 분리 검증.
- * 각 fold에서 train 성과와 test(OOS) 성과를 비교하여 과적합 여부 판단.
+ * ⚠️ v10.11.3: K-Fold → Anchored Rolling Window 전환
+ * 기존 K-Fold는 test 이후 데이터를 train에 포함하여 미래 데이터 유출 발생.
+ * Rolling Window는 항상 과거→미래 순서로 train/test 분리 — 시계열 무결성 보장.
  *
- * @param folds 접기 수 (기본 5)
+ * 구조: [===== train (70%) =====][= test (30%) =]
+ *        → 윈도우가 전체 데이터를 앞에서 뒤로 슬라이딩
+ *        → train은 항상 test 이전 시간대만 포함
+ *
+ * @param folds 슬라이딩 횟수 (기본 5)
  */
 export function runWalkForward(
   candles: OHLCV[],
@@ -575,19 +584,37 @@ export function runWalkForward(
     };
   }
 
-  const foldSize = Math.floor(totalCandles / folds);
+  // Anchored Rolling Window: train 70%, test 30%
+  // 최소 train 120봉, 최소 test 40봉
+  const minTrainSize = 120;
+  const minTestSize = 40;
+  const trainRatio = 0.7;
+
+  // 스텝 계산: folds만큼 균등 분배
+  const usableCandles = totalCandles - minTrainSize - minTestSize;
+  if (usableCandles < 0) {
+    return { folds: [], walkForwardEfficiency: 0, avgOosWinRate: 0, avgOosReturn: 0, isOverfit: true };
+  }
+  const step = Math.max(1, Math.floor(usableCandles / Math.max(1, folds - 1)));
+
   const results: WalkForwardResult['folds'] = [];
 
   for (let i = 0; i < folds; i++) {
-    const testStart = i * foldSize;
-    const testEnd = i === folds - 1 ? totalCandles : (i + 1) * foldSize;
+    // 윈도우 크기: 시작점에서 끝까지 가용 데이터
+    const windowStart = 0; // anchored: 항상 처음부터
+    const windowEnd = Math.min(totalCandles, minTrainSize + minTestSize + i * step);
+    const windowSize = windowEnd - windowStart;
+    if (windowSize < minTrainSize + minTestSize) continue;
 
-    // Train: 나머지 데이터
-    const trainCandles = [...sorted.slice(0, testStart), ...sorted.slice(testEnd)];
-    // Test: 현재 fold
-    const testCandles = sorted.slice(testStart, testEnd);
+    const trainEnd = windowStart + Math.max(minTrainSize, Math.floor(windowSize * trainRatio));
+    const testStart = trainEnd; // train 직후부터 test 시작 (갭 없음)
 
-    if (trainCandles.length < 120 || testCandles.length < 40) continue;
+    // Train: 과거 데이터만 (test 이전)
+    const trainCandles = sorted.slice(windowStart, trainEnd);
+    // Test: train 직후 데이터 (미래 유출 없음)
+    const testCandles = sorted.slice(testStart, windowEnd);
+
+    if (trainCandles.length < minTrainSize || testCandles.length < minTestSize) continue;
 
     const trainResult = runBacktest(trainCandles, stockCode, config);
     const testResult = runBacktest(testCandles, stockCode, config);

@@ -13,7 +13,11 @@ export interface StrategyPerformance {
   totalTrades: number;
   wins: number;
   losses: number;
-  winRate: number; // 0-1
+  breakEven: number; // v10.11.3: 수수료 고려 손익분기 건수 (숨겨진 손실 투명화)
+  winRate: number; // 0-1 (v10.11.4: 수수료 차감 후 net 기준으로 변경)
+  grossWinRate: number; // 0-1 (수수료 미차감 원래 승률)
+  /** v10.11.3: 수수료 차감 후 순수익 기준 승률 (실질 승률) */
+  netWinRate: number; // 0-1 — round-trip 수수료 차감 후 기준
   avgWinPct: number; // 평균 수익 %
   avgLossPct: number; // 평균 손실 % (양수)
   totalPnlKrw: number; // 확정 PnL 합계 (KRW)
@@ -115,7 +119,10 @@ function computePerformance(mode: string, rows: ClosedChainRow[]): StrategyPerfo
       totalTrades: 0,
       wins: 0,
       losses: 0,
+      breakEven: 0,
       winRate: 0,
+      grossWinRate: 0,
+      netWinRate: 0,
       avgWinPct: 0,
       avgLossPct: 0,
       totalPnlKrw: 0,
@@ -129,8 +136,16 @@ function computePerformance(mode: string, rows: ClosedChainRow[]): StrategyPerfo
     };
   }
 
+  // v10.11.3: 수수료 고려 승/패 분류
+  // Round-trip 마찰비용: 매수 0.015% + 매도 0.015% + 세금 0.18% = 0.21%
+  // 이 이하 수익은 실질 손실 → 기존 pnlPct > 0 분류가 수수료 미포함 수익을 "승리"로 계산
+  const ROUND_TRIP_FRICTION_PCT = 0.21;
+
   let wins = 0,
-    losses = 0;
+    losses = 0,
+    breakEven = 0;
+  let netWins = 0, // 수수료 차감 후 순수익 > 0
+    netLosses = 0;
   let totalWinPct = 0,
     totalLossPct = 0;
   let grossProfit = 0,
@@ -150,19 +165,30 @@ function computePerformance(mode: string, rows: ClosedChainRow[]): StrategyPerfo
 
     const pnlPct = buyPrice > 0 ? ((sellPrice - buyPrice) / buyPrice) * 100 : 0;
     const pnlKrw = realizedPnl || (invested > 0 ? invested * (pnlPct / 100) : 0);
+    // 수수료 차감 후 순수익률
+    const netPnlPct = pnlPct - ROUND_TRIP_FRICTION_PCT;
 
     totalPnlKrw += pnlKrw;
     pnlSequence.push(pnlPct);
 
+    // 기존 분류 (pnlPct 기준 — 호환성 유지)
     if (pnlPct > 0) {
       wins++;
       totalWinPct += pnlPct;
       grossProfit += Math.abs(pnlKrw);
-    } else {
+    } else if (pnlPct < 0) {
       losses++;
       totalLossPct += Math.abs(pnlPct);
       grossLoss += Math.abs(pnlKrw);
+    } else {
+      // pnlPct === 0: 수수료만큼 실질 손실 → 별도 카운트 (이전: losses로 일괄)
+      breakEven++;
+      grossLoss += Math.abs(pnlKrw) || invested * (ROUND_TRIP_FRICTION_PCT / 100);
     }
+
+    // v10.11.3: 수수료 차감 후 순수익 기준 분류 (실질 승률)
+    if (netPnlPct > 0) netWins++;
+    else netLosses++;
 
     if (!bestTrade || pnlPct > bestTrade.pnlPct) {
       bestTrade = { stockCode: row.stock_code, pnlPct };
@@ -177,12 +203,20 @@ function computePerformance(mode: string, rows: ClosedChainRow[]): StrategyPerfo
     }
   }
 
-  const total = wins + losses;
-  const winRate = total > 0 ? wins / total : 0;
+  const total = wins + losses + breakEven;
+  const grossWinRate = total > 0 ? wins / total : 0;
+  const netTotal = netWins + netLosses;
+  const netWinRate = netTotal > 0 ? netWins / netTotal : 0;
+  // v10.11.4: 기본 winRate을 수수료 차감 후(net) 기준으로 변경
+  // 기존: winRate = gross (pnlPct > 0) → 수수료 차감 전 허위 승리 포함
+  // 호출측에서 winRate만 쓰면 실질 승률 반영
+  const winRate = netWinRate;
   const avgWinPct = wins > 0 ? totalWinPct / wins : 0;
   const avgLossPct = losses > 0 ? totalLossPct / losses : 0;
   const totalPnlPct = total > 0 ? pnlSequence.reduce((s, p) => s + p, 0) / total : 0;
-  const profitFactor = grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? Infinity : 0;
+  // v10.11.3: Infinity → 999 캡 (profitFactor Infinity는 비교 불가, 손실 0건 = 데이터 부족 가능성)
+  const rawPF = grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? 999 : 0;
+  const profitFactor = Math.min(rawPF, 999);
   const avgHoldingDays = total > 0 ? totalHoldingMs / total / (24 * 60 * 60_000) : 0;
 
   // 연속 손실 기반 최대 드로다운
@@ -202,7 +236,10 @@ function computePerformance(mode: string, rows: ClosedChainRow[]): StrategyPerfo
     totalTrades: total,
     wins,
     losses,
+    breakEven,
     winRate,
+    grossWinRate,
+    netWinRate,
     avgWinPct,
     avgLossPct,
     totalPnlKrw: Math.round(totalPnlKrw),
@@ -232,8 +269,12 @@ export async function logStrategyPerformanceSummary(days: number = 30, isPaper: 
     const modeLabel = isPaper ? 'PAPER' : 'LIVE';
     logger.info(`📊 ═══ 전략별 성과 (${modeLabel}, ${days}일) ═══`, { component: 'STRATEGY_PERF' });
     for (const p of perfs) {
+      // v10.11.3: 순승률(수수료 차감 후) 표시 — "보이는 승률 / 실질 승률" 투명화
+      const netWrDiff = p.winRate - p.netWinRate;
+      const netWrLabel = netWrDiff > 0.01 ? ` (순${(p.netWinRate * 100).toFixed(0)}%)` : '';
       logger.info(
-        `  ${p.mode}: ${p.totalTrades}건 승률${(p.winRate * 100).toFixed(0)}% ` +
+        `  ${p.mode}: ${p.totalTrades}건 승률${(p.winRate * 100).toFixed(0)}%${netWrLabel} ` +
+          `${p.breakEven > 0 ? `BE=${p.breakEven}건 ` : ''}` +
           `평균+${p.avgWinPct.toFixed(1)}%/-${p.avgLossPct.toFixed(1)}% ` +
           `PF=${p.profitFactor.toFixed(2)} MDD=${p.maxDrawdownPct.toFixed(1)}% ` +
           `PnL=${(p.totalPnlKrw / 10000).toFixed(0)}만원 보유${p.avgHoldingDays.toFixed(1)}일`,

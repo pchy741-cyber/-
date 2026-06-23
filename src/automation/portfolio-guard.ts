@@ -7,6 +7,9 @@ import { logger } from '../utils/logger.js';
 
 const COMPONENT = 'PORTFOLIO_GUARD';
 
+let _perfMultCache: { data: number; ts: number } | null = null;
+const PERF_MULT_CACHE_MS = 15 * 60 * 1000; // 15분 캐시
+
 // ── 포트폴리오 스트레스 레벨 ──────────────────────────────────────────────
 // 0 = 정상  1 = 주의 (미실현 손실 -2%)  2 = 위험 (미실현 손실 -3.5%)
 export type PortfolioStressLevel = 0 | 1 | 2;
@@ -53,6 +56,11 @@ export function calcPortfolioStressLevel(
  * - 그 외                   → 1.0x (중립)
  */
 export async function getPerformanceMultiplier(): Promise<number> {
+  const now = Date.now();
+  if (_perfMultCache && now - _perfMultCache.ts < PERF_MULT_CACHE_MS) {
+    return _perfMultCache.data;
+  }
+
   try {
     const pool = getPool();
     const cutoff = new Date();
@@ -116,17 +124,18 @@ export async function getPerformanceMultiplier(): Promise<number> {
     } else if (winRate >= 0.55 && totalPnl > 0) {
       mult = 1.1;
       label = '약공격';
-    } else if (winRate < 0.3 || totalPnl < lossThresholdHard) {
-      // v8: 0.7→0.85 완화 (소액계좌 방어모드 고착 방지 — 968K에서 50K 손실로 영구 0.7x 문제)
-      mult = isPaper ? 1.0 : 0.85;
+    } else if (winRate < 0.2 || totalPnl < lossThresholdHard) {
+      // v12.1: WR<30%→WR<20% (기존: 30% 미만이면 0.85x 고착, 정상 분산 구간에서 과도한 페널티)
+      mult = isPaper ? 1.0 : 0.9;
       label = isPaper
         ? '연습모드 보수'
         : `손실주의(WR${(winRate * 100).toFixed(0)}%/${((totalPnl / portfolioValue) * 100).toFixed(1)}%)`;
-    } else if (winRate < 0.4 || totalPnl < lossThresholdSoft) {
-      mult = isPaper ? 1.0 : 0.9;
+    } else if (winRate < 0.35 || totalPnl < lossThresholdSoft) {
+      // v12.1: WR<40%→WR<35% (방어모드 진입 완화)
+      mult = isPaper ? 1.0 : 0.95;
       label = isPaper ? '연습모드 약보수' : '방어';
     } else if (winRate < 0.5) {
-      mult = 0.9;
+      mult = 0.95; // v12.1: 0.9→0.95 (보수모드 완화)
       label = '보수';
     } else {
       mult = 1.0;
@@ -138,6 +147,7 @@ export async function getPerformanceMultiplier(): Promise<number> {
       { component: COMPONENT },
     );
 
+    _perfMultCache = { data: mult, ts: Date.now() };
     return mult;
   } catch (err) {
     logger.warn(`성과배율 조회 실패: ${err}`, { component: COMPONENT });

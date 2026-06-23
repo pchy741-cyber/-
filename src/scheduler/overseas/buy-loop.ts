@@ -505,6 +505,7 @@ export async function executeBuyLoop(params: BuyLoopParams): Promise<BuyLoopResu
       winRate: wrData?.winRate,
       winRateSamples: wrData?.sampleCount,
       marketBreadth: freshBreadth,
+      atrPct: target.atrPct, // v12.2: Moreira-Muir 변동성 역비례 사이징
     });
     // v10.11: 10% → 5% (기존: 소액 포지션 전부 SKIP → 70% 현금 유휴)
     const MIN_POSITION_RATIO = 0.05; // 5% of portfolio

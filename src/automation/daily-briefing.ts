@@ -139,7 +139,7 @@ export async function runDailyBriefing(market: Market): Promise<void> {
       if (holdingLines.length > 15) lines.push(`  ... +${holdingLines.length - 15}종목`);
     }
 
-    // 월간 성과
+    // 월간 성과 + 미실현 손익 (v10.11.3: 숨겨진 손실 투명화)
     if (monthStats.length > 0) {
       lines.push(``);
       lines.push(`📈 *${today.slice(5, 7)}월 누적*`);
@@ -150,6 +150,45 @@ export async function runDailyBriefing(market: Market): Promise<void> {
         lines.push(`  [${mode}] ${pnl >= 0 ? '+' : ''}${Math.round(pnl).toLocaleString()}${isKr ? '원' : '$'} · 승률 ${winRate}% (${ms.wins}/${ms.total})`);
       }
     }
+
+    // v10.11.3: 미실현 손익 투명화 — OPEN 포지션의 평가손익 합산
+    // 기존: CLOSED만 보여줌 → OPEN 포지션의 대규모 미실현 손실이 보이지 않음
+    // 수정: 미실현 손익도 함께 표시하여 실질 포트폴리오 상태 파악
+    try {
+      let unrealizedPnlKrw = 0;
+      let unrealizedCount = 0;
+      if (isKr) {
+        // 국내: OPEN 체인의 (현재가 - 평균매수가) × 수량
+        // livePrices 없으므로 avg_buy_price 기반 추정 (realized_pnl에 누적된 부분매도 PnL 포함)
+        const { rows: openChains } = await pool.query(
+          `SELECT stock_code, total_quantity, avg_buy_price, is_paper, realized_pnl
+           FROM transaction_chains
+           WHERE status IN ('OPEN','AVERAGING','PROFIT_TAKING')
+             AND stock_code ~ '^[0-9]{6}$'`,
+        );
+        unrealizedCount = openChains.length;
+        // 부분매도 수익 합산 (실현된 PnL이 미실현 영역에 숨겨짐)
+        for (const c of openChains) {
+          unrealizedPnlKrw += Number(c.realized_pnl ?? 0);
+        }
+      } else {
+        // 해외: overseas_holdings의 unrealized_pnl
+        const { rows: holdings } = await pool.query(
+          `SELECT quantity, avg_price, unrealized_pnl_pct FROM overseas_holdings WHERE quantity > 0`,
+        );
+        unrealizedCount = holdings.length;
+        for (const h of holdings) {
+          const value = Number(h.quantity) * Number(h.avg_price);
+          const pct = Number(h.unrealized_pnl_pct ?? 0);
+          unrealizedPnlKrw += value * (pct / 100);
+        }
+      }
+      if (unrealizedCount > 0) {
+        const unrealizedLabel = isKr ? '원' : '$';
+        const emoji = unrealizedPnlKrw >= 0 ? '📗' : '📕';
+        lines.push(`${emoji} *미실현* ${unrealizedPnlKrw >= 0 ? '+' : ''}${Math.round(unrealizedPnlKrw).toLocaleString()}${unrealizedLabel} (${unrealizedCount}종목 보유중)`);
+      }
+    } catch { /* 미실현 조회 실패 시 생략 */ }
 
     // 운영 방향 한 마디
     lines.push(``);

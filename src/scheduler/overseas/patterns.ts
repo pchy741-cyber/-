@@ -51,7 +51,8 @@ export async function extractTradingPatterns(isPaper?: boolean): Promise<Trading
           confidence: wr,
           actionable: true,
         });
-      } else if (wr <= 0.25 && Number(r.total) >= 4) {
+      // v10.11.4: >= 4 → >= 5 (전체 모듈 최소 샘플 수 통일)
+    } else if (wr <= 0.25 && Number(r.total) >= 5) {
         patterns.push({
           pattern: `${code} 저승률 종목 — 제외 검토`,
           evidence: `승률 ${(wr * 100).toFixed(0)}% (${r.total}건), 평균손실 ${r.avg_loss_pct ?? 0}%`,
@@ -127,7 +128,7 @@ export async function getMemoryBlockedStocks(isPaper?: boolean): Promise<Set<str
         AND avg_buy_price > 0 AND filled_price > 0
         AND created_at >= NOW() - INTERVAL '60 days'
       GROUP BY stock_code
-      HAVING COUNT(*) >= 4
+      HAVING COUNT(*) >= 5
         AND (COUNT(*) FILTER (WHERE filled_price > avg_buy_price))::float / COUNT(*) <= 0.25
     `,
       [mode],

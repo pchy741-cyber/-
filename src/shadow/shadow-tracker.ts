@@ -6,8 +6,8 @@
  *
  * 파라미터:
  *   TP  +5.0% / SL -2.5%
- *   KR friction 0.25% (수수료 0.03% + 세금 0.18% + 슬리피지 0.04%)
- *   US friction 0.03% (수수료 0.015% × 2)
+ *   KR friction 0.21% (매수 0.015% + 매도 0.015% + 세금 0.18%)
+ *   US friction 0.70% (수수료 0.25%×2 + 환전스프레드)
  */
 
 import { getPool } from '../db/client.js';
@@ -17,8 +17,8 @@ const TP_PCT = 0.05; // +5%
 const SL_PCT = 0.025; // -2.5% (손절, 양수로 저장)
 
 const FRICTION_PCT: Record<'KR' | 'US', number> = {
-  KR: 0.25, // %
-  US: 0.03, // %
+  KR: 0.21, // % (buy 0.015% + sell 0.015% + tax 0.18%)
+  US: 0.70, // % (수수료 0.25%×2 + 환전스프레드 — OVERSEAS_FEE_PCT×2 기준)
 };
 
 // 시장별 마지막 Shadow 진입 시각 (메모리 캐시)

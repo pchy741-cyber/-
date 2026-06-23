@@ -130,6 +130,18 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
     trailingStopMultipliers: {},
   }));
 
+  // ── analyzeTechnicals 캐시 (사이클당 종목별 1회만 계산) ──
+  // 기존: 러너판정/동적TP/SL/매도체크/기술매도 = 종목당 최대 4회 중복 호출
+  // 수정: 종목당 1회 계산 후 캐시 재사용 → ~75% 연산 절감
+  const _techCache = new Map<string, ReturnType<typeof analyzeTechnicals> | null>();
+  function getCachedTech(stockCode: string): ReturnType<typeof analyzeTechnicals> | null {
+    if (_techCache.has(stockCode)) return _techCache.get(stockCode)!;
+    const candles = chartData.get(stockCode);
+    const tech = candles && candles.length >= 20 ? analyzeTechnicals(candles) : null;
+    _techCache.set(stockCode, tech);
+    return tech;
+  }
+
   // 포트폴리오 전체 PnL 계산 (급락 보호용 — 매 사이클 1회)
   let _portfolioCost = 0;
   let _portfolioValue = 0;
@@ -160,10 +172,7 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
 
     // ── 러너 모멘텀 감지 (모든 매도 트리거보다 선행) ──
     // 거래량 2x+ / ADX 25+ / RSI 45~75 / 정배열 중 3개 이상 (수익 7%+ 시 2개)
-    const _rTech = (() => {
-      const c = chartData.get(chain.stock_code);
-      return c && c.length >= 20 ? analyzeTechnicals(c) : null;
-    })();
+    const _rTech = getCachedTech(chain.stock_code);
     const isRunner = (() => {
       if (!_rTech) return false;
       let s = 0;
@@ -171,7 +180,7 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
       if (_rTech.adx14 >= 25) s++;
       if (_rTech.rsi14 >= 45 && _rTech.rsi14 <= 75) s++;
       if (price.currentPrice > _rTech.sma5 && _rTech.sma5 > _rTech.sma20) s++;
-      return s >= (pnlPct >= 7.0 ? 2 : 3);
+      return s >= 2; // v12.1: 3→2 (기존: 80% 모멘텀 미감지, 수익 기회 상실)
     })();
     if (isRunner && pnlPct >= 2.0) {
       logger.info(
@@ -214,7 +223,8 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
     // v10.3: 개별 종목 최소 +2.0% 이상만 선제 청산 (기존 +0.5%는 수수료 차감 후 실질 손실)
     if (
       portfolioPnlPct >= 2.0 &&
-      (params.macroSizingMult ?? 1.0) < 0.8 &&
+      // v10.11.4: < 0.8 → <= 0.8 (isDowntrendMode 정의와 통일 — 조정장(0.8) 포함)
+      (params.macroSizingMult ?? 1.0) <= 0.8 &&
       pnlPct >= 2.0 &&
       chain.total_quantity > 0 &&
       !isRunner
@@ -254,7 +264,7 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
         const _revCurPeak = Math.max(_revPrevPeak, pnlPct);
         _revPeakMap.set(chain.stock_code, _revCurPeak);
 
-        const REVERSAL_ACTIVATE_PCT = 1.5; // 이 수익률 이상 도달 후에만 발동
+        const REVERSAL_ACTIVATE_PCT = 3.0; // v12.1: 1.5→3.0 (정상 조정 구간에서 과민 반응 방지)
         if (_revCurPeak >= REVERSAL_ACTIVATE_PCT) {
           const _revDropFromPeak = pnlPct - _revCurPeak;
           const _revChart = chartData.get(chain.stock_code);
@@ -265,7 +275,7 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
           // RSI < 45 + MA20 이탈: 강한 하락 반전 → 민감하게
           // 그 외: 느슨하게 (잠깐 눌림일 수 있음)
           const _isStrongReversal = _revRsi < 45 && !_revAboveSma20;
-          const _revDropThreshold = _isStrongReversal ? -1.0 : -1.8;
+          const _revDropThreshold = _isStrongReversal ? -1.5 : -2.5; // v12.1: 완화 (-1.0/-1.8 → -1.5/-2.5, 정상 눌림 구간 보존)
 
           if (_revDropFromPeak <= _revDropThreshold && chain.total_quantity > 0) {
             const _sellAll = pnlPct < 0.5 || _isStrongReversal;
@@ -310,7 +320,7 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
         const chainSniperType = sniperTypeMatch?.[1] ?? null;
         const learnedMult = chainSniperType ? learnedParams.trailingStopMultipliers[chainSniperType] : undefined;
         // 안전 범위 확장: 0.5%~5.0% (기존 2.5% 상한 → 상한가 모멘텀 종목 조기 청산 방지)
-        const baseTrailDrop = learnedMult != null ? -Math.max(0.5, Math.min(5.0, learnedMult)) : isRunner ? -3.0 : -1.5;
+        const baseTrailDrop = learnedMult != null ? -Math.max(0.5, Math.min(5.0, learnedMult)) : isRunner ? -3.0 : -2.0; // v12.1: -1.5→-2.0 (일반 리트레이스먼트 휩소 방지)
         // 고점 수익률 비례 숨고르기 허용폭 확장 (부국철강 +30% 상한가 조기 매도 재발 방지)
         const momentumBonus = curPeak >= 15 ? 4.5 : curPeak >= 10 ? 3.0 : curPeak >= 5 ? 1.5 : 0;
         const trailingDrop = Math.max(baseTrailDrop - momentumBonus, -10.0);
@@ -551,8 +561,7 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
     let effectiveTp: number;
     let effectiveSl: number;
 
-    const holdingChart = chartData.get(chain.stock_code);
-    const holdTech = holdingChart && holdingChart.length >= 20 ? analyzeTechnicals(holdingChart) : null;
+    const holdTech = getCachedTech(chain.stock_code);
 
     const { getDynamicDomesticTpSl } = await import('../../config/constants.js');
     // 자기학습 TP/SL 로드 (캐시 3분 — 매 사이클 DB 조회 방지)
@@ -590,7 +599,14 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
     //   +3~5%: 35~50% 익절(ScaleOut) → 나머지에 BEG+Trailing 계속 적용
     // 러너: 강한 모멘텀 종목은 ScaleOut 지연 + 비율 축소 → 수익 극대화
     const _scaleOutPct = isRunner ? 5.0 : 3.0;
-    const _scaleOutRatio = isRunner ? 0.35 : 0.5;
+    // v12.1: 확신도 기반 동적 스케일아웃 (기존: 정적 35%/50%)
+    // 고점수 → 적게 팔아 런 유지, 저점수 → 많이 팔아 수익 확보
+    const _scaleOutRatio = isRunner
+      ? 0.25
+      : realtimeAiScore >= 90 ? 0.20
+      : realtimeAiScore >= 80 ? 0.30
+      : realtimeAiScore >= 70 ? 0.40
+      : 0.50;
     if (
       chain.status !== 'PROFIT_TAKING' &&
       !isDowntrendMode &&
@@ -637,7 +653,12 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
         _getPeakMap().delete(chain.stock_code);
         continue;
       }
-      const _stage1Ratio = isRunner ? 0.25 : 0.35;
+      // v12.1: 확신도 기반 1단계 익절 비율 (기존: 러너25%/일반35%)
+      const _stage1Ratio = isRunner
+        ? 0.15 // 러너: 15%만 익절 → 85% 런 유지
+        : realtimeAiScore >= 90 ? 0.15
+        : realtimeAiScore >= 80 ? 0.25
+        : 0.35;
       const sellQty = Math.ceil(chain.total_quantity * _stage1Ratio);
       if (sellQty > 0 && sellQty < chain.total_quantity) {
         decisions.push({
@@ -667,8 +688,7 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
     }
 
     // 차트 지표 (트레일링 스톱 + 손절 공통 사용)
-    const sellCheckCandles = chartData.get(chain.stock_code);
-    const sellTech = sellCheckCandles && sellCheckCandles.length >= 30 ? analyzeTechnicals(sellCheckCandles) : null;
+    const sellTech = getCachedTech(chain.stock_code);
 
     // 2~3단계: PROFIT_TAKING 상태에서 추가 익절 + 트레일링 스톱
     if (chain.status === 'PROFIT_TAKING') {
@@ -791,8 +811,9 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
     // 시그널 보정: 체결강도 < 80(매도세 압도) → 손절 타이트닝 (0.85x), 체결강도 > 120(매수세) → 1.1x 완화
     const sigIntensity = marketSignals?.get(chain.stock_code)?.tradingIntensity?.intensity ?? 0;
     const signalStopMult = sigIntensity > 0 ? (sigIntensity < 80 ? 0.85 : sigIntensity >= 120 ? 1.1 : 1.0) : 1.0;
-    // v10.9.4: 멀티플라이어 적용 후에도 -8% 하한 캡 보장 (기존: 1.2*1.1=-10.56%까지 무제한 확장)
-    const effectiveStop = Math.max(-8.0, Math.max(effectiveSl, dynamicStop) * stopWidenMultiplier * signalStopMult);
+    // v10.11.4: -8% → -6% (risk-guard.ts HARD_FLOOR=-6%과 통일)
+    // 기존: sell-signals -8%, risk-guard -6% → 두 시스템 불일치로 보호 사각지대
+    const effectiveStop = Math.max(-6.0, Math.max(effectiveSl, dynamicStop) * stopWidenMultiplier * signalStopMult);
     if (pnlPct <= effectiveStop) {
       // v4: 패닉매도 억제 & 대형포지션 부분손절 폐지
       // 이전: RSI<35+거래량급증 시 손절 스킵, 대형포지션 50% 부분손절 → 나머지 50% 추가 하락 → 손실 확대
@@ -811,9 +832,8 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
     }
 
     // 기술적 지표 기반 매도 판단 (대형 포지션은 STRONG_SELL도 완화)
-    const candles = chartData.get(chain.stock_code);
-    if (candles && candles.length >= 60) {
-      const tech = analyzeTechnicals(candles);
+    {
+      const tech = getCachedTech(chain.stock_code);
       if (tech && tech.overallSignal === 'STRONG_SELL') {
         const positionValueSell = price.currentPrice * Number(chain.total_quantity);
         const positionWeightSell = (totalAssets ?? 0) > 0 ? positionValueSell / totalAssets! : 0;
@@ -893,37 +913,31 @@ export function generatePartialTpDecisions(
     if (avgBuy <= 0) continue;
     const pnlPct = ((price.currentPrice - avgBuy) / avgBuy) * 100;
 
+    // v10.11.4: SWING TP=7%이므로 단계익절은 TP 미만에서만 동작
+    // 기존: stage3=10%(도달불가, SWING TP=7%에서 전량매도 먼저 발동)
+    // 수정: stage1=2.5%/20%, stage2=5.0%/30%, 전량은 generateSellDecisions TP에 위임
     if (chain.strategy_mode === 'SWING') {
-      if (pnlPct >= 10.0) {
-        decisions.push({
-          action: 'SELL',
-          stock_code: chain.stock_code,
-          quantity: chain.total_quantity,
-          price_type: 'MARKET',
-          reasoning: `SWING 단계익절3(전량): +${pnlPct.toFixed(1)}% — 10% 최종목표 달성`,
-          confidence: 0.92,
-        });
-      } else if (pnlPct >= 6.5) {
-        const qty = Math.ceil(chain.total_quantity * 0.35);
+      if (pnlPct >= 5.0) {
+        const qty = Math.ceil(chain.total_quantity * 0.30);
         if (qty > 0 && qty < chain.total_quantity) {
           decisions.push({
             action: 'PARTIAL_SELL',
             stock_code: chain.stock_code,
             quantity: qty,
             price_type: 'MARKET',
-            reasoning: `SWING 단계익절2(35%): +${pnlPct.toFixed(1)}% — 나머지 65% 10% 목표`,
+            reasoning: `SWING 단계익절2(30%): +${pnlPct.toFixed(1)}% — 나머지 70% TP(7%) 대기`,
             confidence: 0.88,
           });
         }
-      } else if (pnlPct >= 3.5) {
-        const qty = Math.ceil(chain.total_quantity * 0.25);
+      } else if (pnlPct >= 2.5) {
+        const qty = Math.ceil(chain.total_quantity * 0.20);
         if (qty > 0 && qty < chain.total_quantity) {
           decisions.push({
             action: 'PARTIAL_SELL',
             stock_code: chain.stock_code,
             quantity: qty,
             price_type: 'MARKET',
-            reasoning: `SWING 단계익절1(25%): +${pnlPct.toFixed(1)}% — 나머지 75% 6.5% 목표`,
+            reasoning: `SWING 단계익절1(20%): +${pnlPct.toFixed(1)}% — 나머지 80% 5% 목표`,
             confidence: 0.85,
           });
         }

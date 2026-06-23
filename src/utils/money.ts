@@ -26,11 +26,6 @@ export function calcPnlPct(avgBuyPrice: number, currentPrice: number): number {
   return Math.round(((currentPrice - avgBuyPrice) / avgBuyPrice) * 10000) / 100;
 }
 
-/** 실현 손익 계산 (원) */
-export function calcRealizedPnl(sellPrice: number, avgBuyPrice: number, quantity: number): number {
-  return roundKrw((sellPrice - avgBuyPrice) * quantity);
-}
-
 /** 분할 매수 수량 계산 — 예산을 n등분하여 주식 수량으로 변환 */
 export function calcSplitQuantity(
   budget: number,
@@ -57,51 +52,3 @@ export function adjustToTickSize(price: number): number {
   return Math.floor(p / 1000) * 1000;
 }
 
-/**
- * 목표 가격 계산 (호가 단위 적용)
- * @param basePrice 기준 가격 (e.g. 평단가)
- * @param changePct 변경 비율 (e.g. -10%는 -10, +15%는 15)
- */
-function calcTriggerPrice(basePrice: number, changePct: number): number {
-  return adjustToTickSize(basePrice * (1 + changePct / 100));
-}
-
-/** 물타기 트리거 가격 계산 (e.g. -10% 하락 시) */
-export function calcAverageDownTrigger(avgBuyPrice: number, dropPct: number): number {
-  return calcTriggerPrice(avgBuyPrice, dropPct);
-}
-
-/** 익절 트리거 가격 계산 (e.g. +15% 상승 시) */
-export function calcTakeProfitTrigger(avgBuyPrice: number, profitPct: number): number {
-  return calcTriggerPrice(avgBuyPrice, profitPct);
-}
-
-/** 손절 트리거 가격 계산 (e.g. -5% 하락 시) */
-export function calcStopLossTrigger(avgBuyPrice: number, lossPct: number): number {
-  return calcTriggerPrice(avgBuyPrice, lossPct);
-}
-
-/** 총 투자금액 안전 검증 */
-export function validateOrderValue(
-  quantity: number,
-  price: number,
-  maxPositionKrw: number,
-): { valid: boolean; orderValue: number; message: string } {
-  const orderValue = roundKrw(quantity * price);
-
-  if (quantity <= 0) {
-    return { valid: false, orderValue: 0, message: '수량이 0 이하' };
-  }
-  if (price <= 0) {
-    return { valid: false, orderValue: 0, message: '가격이 0 이하' };
-  }
-  if (orderValue > maxPositionKrw) {
-    return {
-      valid: false,
-      orderValue,
-      message: `주문금액 ${orderValue.toLocaleString()}원 > 한도 ${maxPositionKrw.toLocaleString()}원`,
-    };
-  }
-
-  return { valid: true, orderValue, message: 'OK' };
-}

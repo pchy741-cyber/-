@@ -275,7 +275,8 @@ export class ChainManager {
     this.recordScoreAccuracy(chainId, chain, Number(pnlPct), reason).catch(() => {});
 
     // 연속손실 트래커 업데이트 — 포지션 사이징 배율 자동 조정
-    const isWin = Number(pnlPct) > 0.1;
+    // v10.11.4: 0.1% → 0.25% (KR 수수료 0.21% 차감 후 실질 수익 기준, score_accuracy 임계값과 통일)
+    const isWin = Number(pnlPct) > 0.25;
     recordTradeOutcome(isWin, chain.is_paper ?? false).catch(() => {});
   }
 
@@ -302,7 +303,9 @@ export class ChainManager {
       const holdingDays = chain.opened_at
         ? Math.round((Date.now() - new Date(chain.opened_at).getTime()) / 86400000)
         : null;
-      const outcome = pnlPct > 0.1 ? 'WIN' : pnlPct < -0.1 ? 'LOSS' : 'BREAK_EVEN';
+      // v10.11.3: 국내 round-trip 0.21% → 0.25% 기준으로 상향
+      // 기존 0.1%: 수수료(0.21%) 미만 수익도 "WIN" 분류 → 실질 손실 은닉
+      const outcome = pnlPct > 0.25 ? 'WIN' : pnlPct < -0.25 ? 'LOSS' : 'BREAK_EVEN';
 
       // 진입 핑거프린트 추출 — 첫 BUY 주문의 ai_reasoning에서 fp= 태그 또는 RSI/vol 파싱
       let entryFingerprint: string | null = null;

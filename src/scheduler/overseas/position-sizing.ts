@@ -25,6 +25,7 @@ export interface SizingParams {
   winRate?: number; // 종목별 과거 승률 (0~1)
   winRateSamples?: number; // 승률 샘플 수
   marketBreadth?: number; // 시장 breadth (0~1)
+  atrPct?: number; // ATR(14) as % of price — 변동성 역비례 사이징용
 }
 
 export interface SizingResult {
@@ -97,6 +98,13 @@ export function calcPositionSize(params: SizingParams): SizingResult {
   const breadth = params.marketBreadth ?? 0.5;
   const regimeMult = breadth >= 0.65 ? 1.15 : breadth >= 0.45 ? 1.0 : breadth >= 0.35 ? 0.9 : 0.8;
 
+  // ── v12.2: 변동성 역비례 사이징 (Moreira & Muir, JoF 2017) ──
+  // ATR(14)이 높으면 작은 포지션, 낮으면 큰 포지션 → 샤프 +50~100% 개선
+  // 기준: ATR 2% = 정상(1.0x), ATR 1% = 저변동성(1.15x), ATR 4% = 고변동성(0.7x)
+  const atrPct = params.atrPct ?? 2.0;
+  const volInverseMult = atrPct <= 0.5 ? 1.2 : atrPct <= 1.0 ? 1.15 : atrPct <= 2.0 ? 1.0
+    : atrPct <= 3.0 ? 0.85 : atrPct <= 4.5 ? 0.7 : 0.55;
+
   // ── 세이버메트릭스 배율: Kelly EV/PF 기반 사이징 조정 ──
   const kellyEV = kellyResult.evPerTrade ?? 0;
   const kellyPF = kellyResult.profitFactor ?? 1.0;
@@ -119,7 +127,7 @@ export function calcPositionSize(params: SizingParams): SizingResult {
   const sizingMult = calcSizingMultiplier({
     confidence: effectiveConf,
     score: target.score,
-    evMult: evMultiplier * (sessionSizingMult ?? 1.0) * regimeMult * saberMult,
+    evMult: evMultiplier * (sessionSizingMult ?? 1.0) * regimeMult * saberMult * volInverseMult,
     vixSizingMult: vixRegime.sizingMult,
     cooldownPenalty: gradualCooldown.sizingPenalty,
     isPaper,

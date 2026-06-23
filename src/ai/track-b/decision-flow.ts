@@ -189,10 +189,11 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
       const { getPool } = await import('../../db/client.js');
       const { SECTOR_MAP_KR } = await import('../../config/constants.js');
       // 해외 테크 섹터 보유금액 조회
+      // v10.11.4: trading_mode 컬럼은 orders 테이블에만 존재 — transaction_chains는 is_paper BOOLEAN
       const { rows: osRows } = await getPool().query(`
         SELECT stock_code, total_quantity, avg_buy_price
         FROM transaction_chains
-        WHERE status = 'OPEN' AND trading_mode = 'live'
+        WHERE status = 'OPEN' AND is_paper = FALSE
           AND stock_code ~ '^[A-Z]'
       `);
       const US_TECH_SECTORS = new Set(['AI_SEMI', 'TECH', 'CLOUD', 'GROWTH']);
@@ -424,19 +425,24 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
   // ── 9.6. 실적발표 7일 매수 차단 — 어닝스 변동성 회피 ──────────────
   {
     const { checkKrEarnings } = await import('../../automation/earnings-sentinel.js');
-    const earningsBlocked: string[] = [];
-    for (const d of decisions) {
-      if (d.action === 'BUY' || d.action === 'AVERAGE_DOWN') {
-        const er = await checkKrEarnings(d.stock_code);
+    const buyDecisions = decisions.filter((d) => d.action === 'BUY' || d.action === 'AVERAGE_DOWN');
+    if (buyDecisions.length > 0) {
+      const results = await Promise.allSettled(
+        buyDecisions.map(async (d) => ({ d, er: await checkKrEarnings(d.stock_code) })),
+      );
+      const earningsBlocked: string[] = [];
+      for (const r of results) {
+        if (r.status !== 'fulfilled') continue;
+        const { d, er } = r.value;
         if (er.hasUpcomingEarnings) {
           earningsBlocked.push(`${d.stock_code}(D-${er.daysUntil})`);
           d.action = 'HOLD';
           d.reasoning = `[실적발표 D-${er.daysUntil}일 차단] ${d.reasoning}`;
         }
       }
-    }
-    if (earningsBlocked.length > 0) {
-      logger.info(`📅 실적발표 매수차단: ${earningsBlocked.join(', ')}`, { component: 'EARNINGS_SENTINEL' });
+      if (earningsBlocked.length > 0) {
+        logger.info(`📅 실적발표 매수차단: ${earningsBlocked.join(', ')}`, { component: 'EARNINGS_SENTINEL' });
+      }
     }
   }
 

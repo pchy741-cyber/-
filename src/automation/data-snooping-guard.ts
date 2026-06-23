@@ -268,6 +268,78 @@ JSON으로 반환:
   };
 }
 
+/** 7. 전략 최적화기(strategy-optimizer) 순환 과적합 감사
+ *
+ * strategy_config 변경 이력을 system_state에서 조회하여:
+ *   - 같은 모드가 3일 연속 적용됨 = 매일 다른 TP/SL → 파라미터 진동
+ *   - OOS 검증 없이 적용 = wfeValidated=false (v10.11.3 이전 데이터)
+ *   - 적용 후 Paper 성과 악화 = 최적화→악화 순환
+ */
+async function auditOptimizerLoop(): Promise<string> {
+  try {
+    const { rows } = await getPool().query(
+      `SELECT key, value, updated_at
+       FROM system_state
+       WHERE key LIKE 'optimizer_%'
+       ORDER BY updated_at DESC
+       LIMIT 30`,
+    );
+
+    if (rows.length === 0) return '### 최적화기 감사\n최적화 이력 없음';
+
+    const findings: string[] = [];
+
+    // 모드별 적용 이력 집계
+    const modeHistory = new Map<string, Array<{ applied: boolean; wfeValidated?: boolean; date: string; bestSharpe: number; currentSharpe: number }>>();
+    for (const r of rows) {
+      const mode = String(r.key).replace('optimizer_', '');
+      const v = typeof r.value === 'string' ? JSON.parse(r.value) : r.value;
+      if (!modeHistory.has(mode)) modeHistory.set(mode, []);
+      modeHistory.get(mode)!.push({
+        applied: v.applied === true,
+        wfeValidated: v.wfeValidated,
+        date: v.runAt ?? r.updated_at,
+        bestSharpe: Number(v.bestSharpe ?? 0),
+        currentSharpe: Number(v.currentSharpe ?? 0),
+      });
+    }
+
+    for (const [mode, history] of modeHistory) {
+      // 3회 연속 적용 = 파라미터 진동
+      const recentApplied = history.slice(0, 5).filter((h) => h.applied);
+      if (recentApplied.length >= 3) {
+        findings.push(`⚠️ ${mode}: 최근 5회 중 ${recentApplied.length}회 TP/SL 변경 — 파라미터 진동 의심`);
+      }
+
+      // OOS 검증 없는 적용 감지 (v10.11.3 이전 데이터)
+      const noWfe = history.filter((h) => h.applied && h.wfeValidated !== true);
+      if (noWfe.length > 0) {
+        findings.push(`⚠️ ${mode}: OOS 미검증 적용 ${noWfe.length}건 (순환 과적합 위험)`);
+      }
+
+      // Sharpe 하락 추세 (3회+ 적용 후 currentSharpe 하락 = 최적화 역효과)
+      const appliedHistory = history.filter((h) => h.applied).slice(0, 4);
+      if (appliedHistory.length >= 3) {
+        const sharpes = appliedHistory.map((h) => h.currentSharpe);
+        const declining = sharpes.every((s, i) => i === 0 || s <= sharpes[i - 1]);
+        if (declining && sharpes[sharpes.length - 1] < sharpes[0]) {
+          findings.push(`🔴 ${mode}: 최적화 적용 후 Sharpe 하락세 (${sharpes.map((s) => s.toFixed(2)).join('→')}) — 역효과`);
+        }
+      }
+    }
+
+    const lines = rows.slice(0, 10).map((r: any) => {
+      const v = typeof r.value === 'string' ? JSON.parse(r.value) : r.value;
+      const mode = String(r.key).replace('optimizer_', '');
+      return `${mode}: ${v.applied ? '적용' : '유지'} TP=${v.bestTp}% SL=${v.bestSl}% Sharpe=${Number(v.bestSharpe ?? 0).toFixed(2)} WFE=${v.wfeValidated ? '✓' : '✗'}`;
+    });
+
+    return `### 최적화기 감사 (${findings.length}건 발견)\n${lines.join('\n')}${findings.length > 0 ? '\n\n' + findings.join('\n') : ''}`;
+  } catch (e) {
+    return `최적화기 감사 실패: ${e}`;
+  }
+}
+
 /** 통계 기반 자체 감사 (Claude CLI 없을 때) */
 async function runStatisticalAudit(auditData: string): Promise<SnoopingReport> {
   const findings: string[] = [];
@@ -309,6 +381,29 @@ async function runStatisticalAudit(auditData: string): Promise<SnoopingReport> {
     }
   } catch { /* ignore */ }
 
+  // 최적화기 순환 과적합 체크
+  try {
+    const { rows } = await getPool().query(
+      `SELECT key, value FROM system_state WHERE key LIKE 'optimizer_%' ORDER BY updated_at DESC LIMIT 15`,
+    );
+    const appliedCount = rows.filter((r: any) => {
+      const v = typeof r.value === 'string' ? JSON.parse(r.value) : r.value;
+      return v.applied === true;
+    }).length;
+    const noWfeCount = rows.filter((r: any) => {
+      const v = typeof r.value === 'string' ? JSON.parse(r.value) : r.value;
+      return v.applied === true && v.wfeValidated !== true;
+    }).length;
+    if (appliedCount >= 5) {
+      findings.push(`전략 최적화기 최근 15회 중 ${appliedCount}회 적용 — 과빈도 변경`);
+      recommendations.push('최적화 적용 간격을 최소 7일로 제한');
+    }
+    if (noWfeCount > 0) {
+      findings.push(`최적화기 OOS 미검증 적용 ${noWfeCount}건 — 순환 과적합 위험`);
+      recommendations.push('v10.11.3 이상 업데이트 확인 (OOS+WF 검증 필수)');
+    }
+  } catch { /* ignore */ }
+
   const riskLevel = findings.length === 0 ? 'LOW' : findings.length <= 2 ? 'MEDIUM' : 'HIGH';
   if (findings.length === 0) findings.push('통계적 이상 미감지 (정상)');
 
@@ -321,16 +416,17 @@ export async function runDataSnoopingGuard(): Promise<void> {
     logger.info('🔍 데이터스누핑 감시 시작', { component: COMP });
 
     // 감사 데이터 수집 (병렬)
-    const [paramChanges, divergence, ensemble, accuracy, drift, loops] = await Promise.all([
+    const [paramChanges, divergence, ensemble, accuracy, drift, loops, optimizerAudit] = await Promise.all([
       auditParamChanges(),
       auditPaperLiveDivergence(),
       auditEnsembleWeights(),
       auditScoreAccuracy(),
       auditStrategyDrift(),
       auditInsightLoops(),
+      auditOptimizerLoop(),
     ]);
 
-    const auditData = [paramChanges, divergence, ensemble, accuracy, drift, loops].join('\n\n');
+    const auditData = [paramChanges, divergence, ensemble, accuracy, drift, loops, optimizerAudit].join('\n\n');
 
     let report: SnoopingReport;
 

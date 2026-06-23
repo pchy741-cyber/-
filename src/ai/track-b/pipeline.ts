@@ -68,36 +68,9 @@ const _lastDartRefreshAt = new Map<string, number>();
 // 고확신 눌림목 텔레그램 알림 쿨다운 (30분/종목) — paper/live 모드별 분리
 const _alertedHighConviction = new Map<string, Map<string, number>>();
 
-// v10.4: 인메모리 매도 쿨다운 — DB 반영 전에도 재매수 차단 (churning 방지)
-// v10.5: paper/live 모드별 분리 (크로스오염 방지 — Paper 매도가 Live 차단하던 버그 수정)
-const _recentSellTimestamps = new Map<string, Map<string, number>>(); // mode → (stock_code → epoch ms)
-const MEMORY_COOLDOWN_MS = 2 * 60 * 60 * 1000; // 2시간
-
-function _getSellMap(): Map<string, number> {
-  const mode = getCtxIsPaper() ? 'paper' : 'live';
-  if (!_recentSellTimestamps.has(mode)) _recentSellTimestamps.set(mode, new Map());
-  return _recentSellTimestamps.get(mode)!;
-}
-
-/** 매도 실행 시 호출 — 인메모리 쿨다운 기록 */
-export function recordSellForCooldown(stockCode: string): void {
-  _getSellMap().set(stockCode, Date.now());
-}
-
-/** 인메모리 쿨다운 중인 종목 Set 반환 (현재 모드 전용) */
-function getMemoryCooldownCodes(): Set<string> {
-  const now = Date.now();
-  const map = _getSellMap();
-  const result = new Set<string>();
-  for (const [code, ts] of map) {
-    if (now - ts < MEMORY_COOLDOWN_MS) {
-      result.add(code);
-    } else {
-      map.delete(code); // 만료 정리
-    }
-  }
-  return result;
-}
+// v10.11.4: 매도 쿨다운 상태를 sell-cooldown.ts로 완전 이관 (중복 상태 제거)
+// pipeline.ts의 _recentSellTimestamps, recordSellForCooldown, getMemoryCooldownCodes 삭제
+// → sell-cooldown.ts의 동일 함수 사용 (executor, data-loader, manual-buy에서 import)
 
 function getAlertMap(): Map<string, number> {
   const mode = getCtxIsPaper() ? 'paper' : 'live';
@@ -1210,13 +1183,12 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     // stopLossPct: DB는 하향만 가능 (더 넓은 손절 허용만) — 타이트하게 조이는 건 금지
     const resolvedSl = strategy?.stop_loss_pct != null ? Math.min(strategy.stop_loss_pct, adaptSl) : adaptSl;
 
-    // 성과 배율: 최근 5거래일 승률/수익 기반 (0.7x ~ 1.2x)
-    const perfMult = await getPerformanceMultiplier();
-    // 승률 피드백: 최근 30일 실거래 신호별 승률 → 임계값/눌림/거래량 동적 강화
-    const winFeedback = await getWinRateFeedback(getCtxIsPaper());
-    // Paper 모드: buyThresholdOffset 적용 (80→70 등 하향 → 진입 기회 확대)
-    // Live 모드: liveRisk offset(-10) + Paper 실적 기반 크로스 피드백 합산
-    const crossBoost = await getCrossModeBoost();
+    // v10.11.4: 순차 → 병렬 (3개 독립 DB 쿼리, ~50ms → ~20ms)
+    const [perfMult, winFeedback, crossBoost] = await Promise.all([
+      getPerformanceMultiplier(),   // 최근 5거래일 승률/수익 기반 (0.7x ~ 1.2x)
+      getWinRateFeedback(getCtxIsPaper()), // 최근 30일 실거래 신호별 승률
+      getCrossModeBoost(),          // Paper 실적 기반 크로스 피드백
+    ]);
     const liveOffset = !getCtxIsPaper() ? (config.liveRisk?.buyThresholdOffset ?? -10) : 0;
     const paperOffset = getCtxIsPaper()
       ? (config.paperRisk.buyThresholdOffset ?? 0)
@@ -1588,35 +1560,38 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     // AI 손실 조기청산 비활성화 — 정상 조정(-2%)도 강제청산해서 승률 저하 (4월→5월 13%로 하락 원인)
     // 손절은 technical-fallback의 고정 SL(-3%)에만 맡김
 
-    // ── 뉴스 악재 감시: 보유 종목 악재 뉴스 → FORCE_CLOSE ──
-    for (const chain of openChains) {
+    // ── 뉴스 악재 감시: 보유 종목 악재 뉴스 → FORCE_CLOSE (병렬) ──
+    const newsTargets = openChains.filter((chain) => {
       const alreadyExiting = decisions.some(
         (d) => d.stock_code === chain.stock_code && ['SELL', 'FORCE_CLOSE', 'PARTIAL_SELL'].includes(d.action),
       );
-      if (alreadyExiting) continue;
+      if (alreadyExiting) return false;
       const liveP = livePrices.get(chain.stock_code);
-      if (!liveP || !chain.avg_buy_price) continue;
+      return !!(liveP && chain.avg_buy_price);
+    });
+    const newsResults = await Promise.allSettled(
+      newsTargets.map(async (chain) => ({
+        chain,
+        news: await checkNewsForStock(chain.stock_code),
+      })),
+    );
+    for (const r of newsResults) {
+      if (r.status !== 'fulfilled' || !r.value.news.hasBadNews) continue;
+      const { chain, news } = r.value;
+      const liveP = livePrices.get(chain.stock_code)!;
       const pnlPct = ((liveP.currentPrice - Number(chain.avg_buy_price)) / Number(chain.avg_buy_price)) * 100;
-      // 깊은 손실이어도 뉴스 악재 감지 시 즉시 청산 (SL 대기보다 빠른 탈출)
-      try {
-        const news = await checkNewsForStock(chain.stock_code);
-        if (news.hasBadNews) {
-          logger.warn(
-            `📰 뉴스악재청산: ${chain.stock_code} pnl=${pnlPct.toFixed(1)}% → "${news.headline.slice(0, 60)}" → FORCE_CLOSE`,
-            { component: 'TRACK_B' },
-          );
-          decisions.push({
-            action: 'FORCE_CLOSE',
-            stock_code: chain.stock_code,
-            quantity: chain.total_quantity,
-            price_type: 'MARKET',
-            reasoning: `뉴스악재: "${news.headline.slice(0, 50)}"`,
-            confidence: 0.95,
-          });
-        }
-      } catch {
-        /* 뉴스 실패 시 무시 */
-      }
+      logger.warn(
+        `📰 뉴스악재청산: ${chain.stock_code} pnl=${pnlPct.toFixed(1)}% → "${news.headline.slice(0, 60)}" → FORCE_CLOSE`,
+        { component: 'TRACK_B' },
+      );
+      decisions.push({
+        action: 'FORCE_CLOSE',
+        stock_code: chain.stock_code,
+        quantity: chain.total_quantity,
+        price_type: 'MARKET',
+        reasoning: `뉴스악재: "${news.headline.slice(0, 50)}"`,
+        confidence: 0.95,
+      });
     }
 
     // ── 고확신 눌림목 텔레그램 알림 (AI 90점+ + truePullbackPattern, 실전 전용) ──

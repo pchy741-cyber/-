@@ -54,15 +54,16 @@ async function persist(isPaper: boolean): Promise<void> {
 }
 
 /** Streak thresholds and corresponding position size multipliers
- * v10.9.4: 5연패 0.25x 추가, 8연패 거래 중단 (기존: 3+연패 0.5x가 최대 → 무한 손실 누적) */
+ * v12.1: 완화 — 기존 0.5x/0.25x는 회복 불가 나선 유발 (4승 필요 → 현실적 3주+)
+ * 변경: 3연패 0.65x(기존0.5), 5연패 0.4x(기존0.25), 회복 속도 -2→-3 */
 const STREAK_HALT = 8; // 8+ consecutive losses → 거래 중단
-const STREAK_CRITICAL = 5; // 5+ consecutive losses → 25% position
-const STREAK_SEVERE = 3; // 3+ consecutive losses → 50% position
-const STREAK_MODERATE = 2; // 2 consecutive losses → 70% position
+const STREAK_CRITICAL = 5; // 5+ consecutive losses → 40% position
+const STREAK_SEVERE = 3; // 3+ consecutive losses → 65% position
+const STREAK_MODERATE = 2; // 2 consecutive losses → 80% position
 const MULTIPLIER_HALT = 0; // 거래 중단
-const MULTIPLIER_CRITICAL = 0.25;
-const MULTIPLIER_SEVERE = 0.5;
-const MULTIPLIER_MODERATE = 0.7;
+const MULTIPLIER_CRITICAL = 0.4; // v12.1: 0.25→0.4 (회복 가능 수준)
+const MULTIPLIER_SEVERE = 0.65; // v12.1: 0.5→0.65 (2-3승으로 복귀 가능)
+const MULTIPLIER_MODERATE = 0.8; // v12.1: 0.7→0.8 (2연패는 정상 분산)
 const MULTIPLIER_NORMAL = 1.0;
 
 function calcMultiplier(streak: number): number {
@@ -80,8 +81,8 @@ export async function recordTradeOutcome(win: boolean, isPaper: boolean): Promis
   await load();
   if (win) {
     const prev = isPaper ? streakPaper : streakLive;
-    // 3연패 이상 상태에서 1승 → 2단계 낮추기 (점진 회복), 2 이하면 즉시 리셋
-    const next = prev >= STREAK_SEVERE ? Math.max(0, prev - 2) : 0;
+    // v12.1: 1승 = -3 (기존 -2, 회복 가속 — 3연패에서 1승으로 즉시 정상화)
+    const next = prev >= STREAK_SEVERE ? Math.max(0, prev - 3) : 0;
     if (isPaper) streakPaper = next;
     else streakLive = next;
   } else {

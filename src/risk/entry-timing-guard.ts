@@ -373,18 +373,3 @@ export function getTimeWeightedStop(params: {
   };
 }
 
-/** 레거시 호환 — shouldHoldLonger를 getTimeWeightedStop으로 위임 */
-export function shouldHoldLonger(params: {
-  holdingDays: number;
-  pnlPct: number;
-}): { hold: boolean; reason: string } {
-  const stop = getTimeWeightedStop({
-    holdingHours: params.holdingDays * 24,
-    pnlPct: params.pnlPct,
-    baseSlPct: -3.0,
-  });
-  return {
-    hold: stop.action === 'HOLD' || stop.action === 'BREAK_EVEN',
-    reason: stop.reason,
-  };
-}

@@ -55,9 +55,11 @@ export type BuyTarget = TechResult & { ai?: AIDecision; _effectiveConf?: number 
 /** Small account threshold (USD) for relaxed filter bypass */
 const SMALL_ACCOUNT_USD = 500;
 /** AI re-entry threshold for recent loss stocks */
-const REENTRY_CONF_THRESHOLD = 0.8;
-/** RSI threshold for oversold bounce detection */
-const RSI_OVERSOLD = 38;
+const REENTRY_CONF_THRESHOLD = 0.70; // v12.1: 0.80→0.70 (기존: 재진입 70% 차단, 회복 기회 상실)
+/** RSI threshold for oversold bounce detection
+ * v12.2: 33→28 (Connors RSI-2 연구: 승률 76%, Wilder 1978: 30 이하 과매도)
+ * 33은 약한 조정만 포착 → 28로 낮춰 진짜 과매도 반등 포착 */
+const RSI_OVERSOLD = 28;
 /** Sector concentration weight limit */
 const SECTOR_WEIGHT_LIMIT = 0.3;
 
@@ -198,12 +200,15 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         if (vixRegime.regime === 'CRISIS') {
           // VIX CRISIS: 오버솔드 반등 + 고확신 + BigMover만 허용
           const ai = aiMap.get(t.code);
-          const oversoldBounce = t.rsi !== undefined && t.rsi <= 30; // RSI 30 이하 = 과매도 반등 기회
+          // v12.2: RSI 35이하로 완화 (BIS: VIX 30+ 12개월 양수 확률 81.5%)
+          // AI 확신도 0.85→0.75 (confBoost 0.10→0.05 했으므로)
+          const oversoldBounce = t.rsi !== undefined && t.rsi <= 35;
           const crisisOverride =
             isPaper ||
             oversoldBounce ||
-            (ai?.action === 'BUY' && ai.confidence >= 0.85 && t.signal === 'STRONG_BUY') ||
-            (t.isBigMover && t.score >= 30);
+            (ai?.action === 'BUY' && ai.confidence >= 0.75 && (t.signal === 'STRONG_BUY' || t.signal === 'BUY')) ||
+            (t.isBigMover && t.score >= 25) ||
+            (t.price.changePct <= -3.0); // 당일 -3% 급락 = 공포 매도 → 기회
           if (crisisOverride) {
             logger.info(
               `🔥 VIX CRISIS 기회매수: ${t.code} (VIX=${vixValue.toFixed(0)}, RSI=${t.rsi?.toFixed(0) ?? '?'}, ${oversoldBounce ? '과매도반등' : isPaper ? 'PAPER' : t.isBigMover ? 'BigMover' : `AI${((ai?.confidence ?? 0) * 100).toFixed(0)}%`})`,
@@ -218,6 +223,19 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
           return false;
         }
         if (gradualCooldown.level >= 2 && !t.isBigMover) {
+          // Paper: 백테스트 데이터 수집 — 쿨다운 바이패스
+          if (isPaper) return true;
+          // 조정장 급락 매수 (다중 조건 — Connors RSI-2 + Jegadeesh 단기반전):
+          // A) RSI ≤ 30 + 당일 -2.5% (단일일 급락)
+          // B) RSI ≤ 25 + 당일 -1.5% (깊은 과매도, 완만한 하락도 포착)
+          // C) RSI ≤ 20 (극단 과매도 — 어떤 하락폭이든 반등 확률 높음)
+          const isDipBuy = (t.rsi <= 30 && t.price.changePct <= -2.5)
+            || (t.rsi <= 25 && t.price.changePct <= -1.5)
+            || t.rsi <= 20;
+          if (isDipBuy) {
+            logger.info(`🎯 쿨다운 바이패스(급락매수): ${t.code} RSI=${t.rsi.toFixed(0)} 등락=${t.price.changePct.toFixed(1)}%`, { component: 'OVERSEAS' });
+            return true;
+          }
           logger.info(`⏸️ 쿨다운Lv${gradualCooldown.level} 전체 차단: ${t.code}`, { component: 'OVERSEAS' });
           return false;
         }
@@ -286,8 +304,12 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         const isDeveloping = t.rsi >= 38 && t.rsi < 50 && t.adx >= 20 && t.aboveMA20;
         // v10.9: ADX 진입 최소 기준 강화 (13→18 Live) — 횡보장 진입 차단
         const adxThreshold = isPaper ? 15 : 18;
+        // 조정장 급락: RSI ≤ 30 + 당일 -3% → 트렌드 필터 무시 (저점 매수)
+        const isDipBuyEntry = (t.rsi <= 30 && t.price.changePct <= -2.5)
+          || (t.rsi <= 25 && t.price.changePct <= -1.5)
+          || t.rsi <= 20;
         const trendFilterOk =
-          t.isMomentum || t.isBigMover || isOversold || isDeveloping || (isAbove50 && t.adx > adxThreshold);
+          t.isMomentum || t.isBigMover || isOversold || isDeveloping || isDipBuyEntry || (isAbove50 && t.adx > adxThreshold);
         if (!trendFilterOk) {
           logger.info(`  ⛔ 진입 필터 탈락: ${t.code} RSI=${t.rsi.toFixed(0)} ADX=${t.adx.toFixed(0)}`, {
             component: 'OVERSEAS',
@@ -301,11 +323,15 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         // Paper→Live 브릿지: 연습모드 검증 종목도 MA/BB 필터 완화
         const paperBridgePass = paperValidated.has(t.code) && t.score >= 20;
         const signalPass = paperSignalPass || liveSignalPass || paperBridgePass;
-        if (!t.isMomentum && !isOversold && t.aboveMA20 === false && !signalPass) {
+        // 조정장 급락 바이패스: RSI ≤ 30 + 당일 -3% 이상 하락 → MA20/MA60 필터 무시
+        const dipBuyPass = (t.rsi <= 30 && t.price.changePct <= -2.5)
+          || (t.rsi <= 25 && t.price.changePct <= -1.5)
+          || t.rsi <= 20;
+        if (!t.isMomentum && !isOversold && t.aboveMA20 === false && !signalPass && !dipBuyPass) {
           logger.info(`  ⛔ MA20 하방 진입 차단: ${t.code}`, { component: 'OVERSEAS' });
           return false;
         }
-        if (!t.isMomentum && t.aboveMA60 === false && !signalPass) {
+        if (!t.isMomentum && t.aboveMA60 === false && !signalPass && !dipBuyPass) {
           logger.info(`  ⛔ MA60 하방 진입 차단: ${t.code}`, { component: 'OVERSEAS' });
           return false;
         }
@@ -339,15 +365,16 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         const breadthAdj = breadthPenalty - breadthBonus;
         const isBigMoverTarget = t.isBigMover;
         // 신뢰도 바닥: Gemini 출력 0.68-0.72 현실 반영
+        // v12.1: 신뢰도 바닥 하향 — 기존 0.63-0.68은 Gemini 정상 분포의 80% 차단
         const baseMinConf = recoveryMode
-          ? 0.78
+          ? 0.72 // v12.1: 0.78→0.72
           : mq === 'GREAT'
-            ? 0.63
+            ? 0.58 // v12.1: 0.63→0.58
             : mq === 'CAUTIOUS'
-              ? 0.68
+              ? 0.63 // v12.1: 0.68→0.63
               : mq === 'DANGER'
-                ? 0.78
-                : 0.65;
+                ? 0.72 // v12.1: 0.78→0.72
+                : 0.60; // v12.1: 0.65→0.60
         const minConf =
           (isBigMoverTarget
             ? Math.max(isPaper ? 0.5 : 0.6, baseMinConf - 0.05 + breadthAdj)
@@ -447,14 +474,44 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         }
         // 6. 과매도 반등 (RSI ≤ 35 + 트렌드 약하지 않음)
         if (isOversold && t.aboveMA60 && t.score >= 20) return true;
+        // 6b. 조정장 급락 매수 (Connors RSI-2 + Jegadeesh 단기반전 근거)
+        // MA60 하방이어도 허용 — 큰 조정 시 우량주가 MA60 이하로 밀릴 때 매수 기회
+        // 조건 완화: A) RSI≤30 + -2.5% B) RSI≤25 + -1.5% C) RSI≤20 (극단 과매도)
+        if (isDipBuyEntry && t.score >= 10 && !effectiveBadWR) {
+          logger.info(
+            `  🎯 조정장 급락매수: ${t.code} RSI=${t.rsi.toFixed(0)} 등락=${t.price.changePct.toFixed(1)}% score=${t.score}`,
+            { component: 'OVERSEAS' },
+          );
+          return true;
+        }
         // 7. 고승률 종목 완화 진입 (5거래 이상, 승률 55%+)
         if (hasGoodWinRate && t.signal !== 'SELL' && t.score >= 18 && t.rsi >= 35 && t.rsi <= 72 && t.aboveMA20)
           return true;
         // 8. Paper 전용 추가 진입 경로 제거 (낮은 기준이 손실 원인)
 
+        // 6c. Quality + 과매도 평균회귀 (Asness QMJ 2019: Quality는 하락장에서 양의 볼록성)
+        // SEC 펀더멘탈 점수 높은(≥70) 우량주가 RSI 과매도 → 회복 확률 높음
+        const secScore = getCachedSecFundamentalScore(t.code);
+        if (secScore != null && secScore >= 70 && t.rsi <= 35 && !effectiveBadWR) {
+          logger.info(
+            `  🏆 Quality 급락매수: ${t.code} SEC=${secScore} RSI=${t.rsi.toFixed(0)} score=${t.score}`,
+            { component: 'OVERSEAS' },
+          );
+          return true;
+        }
+
         // 개선#7: 어닝 드리프트 진입 — 실적 서프라이즈 후 갭업 +5%+ 고거래량 = 추격 매수
         const drift = ctx.earningsDrift?.find((d) => d.code === t.code && d.direction === 'BULL' && d.strength >= 0.5);
         if (drift && t.score >= 22 && t.rsi <= 75 && !hasBadWinRate) return true;
+        // 어닝 BEAR 드리프트 반전: 실적 미스 후 RSI 과매도 → 평균회귀 반등 (역사적 +5~8%/2주)
+        const bearDrift = ctx.earningsDrift?.find((d) => d.code === t.code && d.direction === 'BEAR' && d.strength >= 0.5);
+        if (bearDrift && t.rsi <= 28 && t.score >= 15 && !effectiveBadWR && secScore != null && secScore >= 60) {
+          logger.info(
+            `  🔄 어닝 BEAR 반전매수: ${t.code} RSI=${t.rsi.toFixed(0)} bearStrength=${bearDrift.strength.toFixed(2)} SEC=${secScore}`,
+            { component: 'OVERSEAS' },
+          );
+          return true;
+        }
 
         // Live 추가: 시장 상황이 좋을 때만 일반 BUY 완화
         if (!isPaper && (mq === 'GREAT' || mq === 'OK')) {

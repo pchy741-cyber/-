@@ -62,8 +62,6 @@ import {
   type OverseasWinRate,
 } from './overseas/analytics.js';
 import { filterAndRankBuyTargets } from './overseas/buy-filter.js';
-// turtle 전략 비활성화 — main buy-filter와 중복, 황금비율 체계로 대체
-// import { calcTurtleSignal, processTurtleExits } from './overseas/turtle.js';
 import { enforceConcentrationCap } from './overseas/concentration-cap.js';
 import { checkCorrelationLimit } from './overseas/correlation-engine.js';
 import { getCrossMarketSignals } from './overseas/cross-market.js';
@@ -81,8 +79,6 @@ import {
   getUserInsights,
   syncPendingOverseasOrders,
 } from './overseas/order-sync.js';
-// rotation-selling 비활성화 — rebalancer에 흡수
-// import { executeRotationSelling } from './overseas/rotation-selling.js';
 import { calcPositionSize } from './overseas/position-sizing.js';
 import { rebalancePortfolio } from './overseas/rebalancer.js';
 import {
@@ -133,9 +129,9 @@ import { GLOBAL_WATCHLIST, WATCHLIST_BY_CODE } from './overseas/watchlist.js';
  * AI(Claude) + 기술적 지표 복합 판단
  * 최대 5종목 동시 보유, 종목당 $1,500 / 20% 중 작은 값
  */
-// ⚡ LUNCH 시간 throttle — 12:00~14:00 ET 구간 30분 간격으로 확대 (paper/live 독립)
-const _lastLunchRunAt = new Map<string, number>();
-const LUNCH_THROTTLE_MS = 30 * 60 * 1000; // 30분
+// v12.1: LUNCH throttle 제거 — 점심 시간은 반전 확률 최고, gap-fill 패턴 다수 (기존: 30분 간격)
+// const _lastLunchRunAt = new Map<string, number>();
+// const LUNCH_THROTTLE_MS = 30 * 60 * 1000;
 
 export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boolean }): Promise<void> {
   // isPaper는 runWithMode(ctx)로 주입 — getCtxIsPaper()로 읽음
@@ -148,20 +144,7 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
     return;
   }
 
-  // ⚡ US LUNCH 시간(12:00~14:00 ET) throttle — 30분 간격으로 확대 (AI 리소스 절감)
-  {
-    const { getUSMarketPhase } = await import('./loop-mode.js');
-    const usPhase = getUSMarketPhase();
-    if (usPhase === 'LUNCH') {
-      const now = Date.now();
-      const lastRun = _lastLunchRunAt.get(modeK) ?? 0;
-      if (now - lastRun < LUNCH_THROTTLE_MS) {
-        logger.debug(`⏭️ 해외 Job 스킵 [${modeK}] — US LUNCH 시간 throttle (30분 간격)`, { component: 'OVERSEAS' });
-        return;
-      }
-      _lastLunchRunAt.set(modeK, now);
-    }
-  }
+  // v12.1: LUNCH throttle 제거 — 정상 3분 간격 실행 (점심 반전 알파 포착)
 
   // Kill Switch: 매도(탈출)는 항상 허용, 매수만 차단 (아래에서 분기)
   const killSwitchBuyBlock = isKillSwitchActive(SCOPE);

@@ -55,8 +55,8 @@ export function positionStateKeys(code: string, isPaper?: boolean): string[] {
   ];
 }
 
-/** overseas_state KV 삭제 */
-export async function deleteOverseasState(key: string): Promise<void> {
+/** overseas_state KV 삭제 (내부 전용) */
+async function deleteOverseasState(key: string): Promise<void> {
   await getPool().query('DELETE FROM overseas_state WHERE key = $1', [key]);
 }
 

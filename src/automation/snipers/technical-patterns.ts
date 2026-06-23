@@ -1,7 +1,7 @@
 import { getActiveWatchlist } from '../../db/client.js';
 import { getDailyChart } from '../../kis/market.js';
 import { logger } from '../../utils/logger.js';
-import { sleep } from '../../utils/sleep.js';
+// sleep import 제거 — getDailyChart 내부 rate limiter가 스로틀링 처리
 import { emitSniperSignal, type SniperSignal } from './index.js';
 
 /**
@@ -59,9 +59,18 @@ export async function scanTechnicalPatterns(): Promise<SniperSignal[]> {
   const watchlist = allWatchlist.slice(0, 60);
   const signals: SniperSignal[] = [];
 
-  for (const stock of watchlist) {
+  // 병렬 차트 조회 (getDailyChart 내부 rate limiter 의존)
+  const chartResults = await Promise.allSettled(
+    watchlist.map(async (stock) => ({
+      stock,
+      chart: await getDailyChart(stock.stock_code, 60),
+    })),
+  );
+
+  for (const r of chartResults) {
+    if (r.status !== 'fulfilled') continue;
+    const { stock, chart } = r.value;
     try {
-      const chart = await getDailyChart(stock.stock_code, 60); // Need 60 for MA60
       if (chart.length < 60) continue;
 
       const prices = chart.map((c) => c.close);
@@ -76,37 +85,28 @@ export async function scanTechnicalPatterns(): Promise<SniperSignal[]> {
       const ma60 = calcMA(prices, 60);
 
       // ── 눌림목 반등 감지 (개선된 로직) ──
-      // 1. 상승 추세 확인 (20일선 > 60일선)
       const isInUptrend = ma20 > ma60;
 
       if (isInUptrend) {
-        // 2. 최근 30일 내 고점 찾기 (오늘 제외)
         const recent30dChart = chart.slice(1, 31);
         const peak = recent30dChart.reduce((p, c) => (c.high > p.high ? c : p), { high: 0, date: '' });
         const peakIndex = recent30dChart.findIndex((c) => c.date === peak.date);
 
-        // 3. 눌림 조건 확인
         const dropFromHigh = ((current - peak.high) / peak.high) * 100;
         const isMeaningfulPullback =
-          peak.high > 0 &&
-          peakIndex >= 3 && // 고점이 최소 3일 전
-          dropFromHigh >= -20 &&
-          dropFromHigh <= -8; // -8% ~ -20% 하락
+          peak.high > 0 && peakIndex >= 3 && dropFromHigh >= -20 && dropFromHigh <= -8;
 
         if (isMeaningfulPullback) {
-          // 4. 반등 조건 확인
           const isBullishCandle = today.close > today.open;
-          const avgVolume20d = calcAvgVolume(volumes.slice(1), 20); // 오늘 제외
+          const avgVolume20d = calcAvgVolume(volumes.slice(1), 20);
           const volumeRatio = avgVolume20d > 0 ? todayVolume / avgVolume20d : 0;
-          const isVolumeSpike = volumeRatio >= 1.8; // 거래량 1.8배 이상
+          const isVolumeSpike = volumeRatio >= 1.8;
 
-          // 5. 강한 반등 신호 확인 (하단 꼬리)
           const candleRange = today.high - today.low;
           const lowerWickRatio = candleRange > 0 ? (Math.min(today.open, today.close) - today.low) / candleRange : 0;
-          const isStrongBounceCandle = lowerWickRatio > 0.4; // 캔들 길이의 40% 이상이 아래 꼬리
+          const isStrongBounceCandle = lowerWickRatio > 0.4;
 
           if (isBullishCandle && isVolumeSpike) {
-            // 6. 신뢰도 및 투자 배수 동적 계산
             let confidence = 0.75;
             let multiplier = 1.2;
             const reasons = [`고점 대비 ${dropFromHigh.toFixed(1)}% 눌림`];
@@ -126,8 +126,7 @@ export async function scanTechnicalPatterns(): Promise<SniperSignal[]> {
               reasons.push(`거래량 ${volumeRatio.toFixed(1)}배 동반`);
             }
 
-            // 지지선 근처에서 반등했는지 확인
-            const isNearMa20 = Math.abs((current - ma20) / ma20) < 0.02; // 20일선 2% 이내
+            const isNearMa20 = Math.abs((current - ma20) / ma20) < 0.02;
             if (isNearMa20) {
               confidence += 0.07;
               reasons.push('20일선 지지');
@@ -160,13 +159,11 @@ export async function scanTechnicalPatterns(): Promise<SniperSignal[]> {
         const avgVolume20d = calcAvgVolume(volumes.slice(1), 20);
         const volumeRatio = avgVolume20d > 0 ? todayVolume / avgVolume20d : 0;
 
-        // 1. 거래량 조건
         if (volumeRatio >= 1.5) {
           let confidence = 0.7;
           let multiplier = 1.1;
           const reasons = [`5일선(${ma5.toFixed(0)})이 20일선(${ma20.toFixed(0)}) 상향 돌파`];
 
-          // 2. 거래량에 따른 가산점
           if (volumeRatio >= 3.0) {
             confidence += 0.1;
             multiplier = 1.3;
@@ -175,13 +172,11 @@ export async function scanTechnicalPatterns(): Promise<SniperSignal[]> {
             reasons.push(`거래량 ${volumeRatio.toFixed(1)}배 동반`);
           }
 
-          // 3. 정배열 초기/진행 확인
           if (ma20 > ma60) {
             confidence += 0.08;
             reasons.push('정배열 추세');
           }
 
-          // 4. RSI 모멘텀 확인
           const rsi = calcRSI(prices, 14);
           if (rsi > 55 && rsi < 75) {
             confidence += 0.05;
@@ -201,8 +196,6 @@ export async function scanTechnicalPatterns(): Promise<SniperSignal[]> {
           await emitSniperSignal(signal);
         }
       }
-
-      await sleep(200);
     } catch (error) {
       logger.warn(`기술적 패턴 스캔 실패 (${stock.stock_name}): ${error}`, { component: 'SNIPER' });
     }

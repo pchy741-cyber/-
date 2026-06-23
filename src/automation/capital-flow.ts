@@ -8,7 +8,7 @@ import { sendTelegramMessage } from '../notifications/telegram.js';
 import { tradeExecutor } from '../trading/executor.js';
 import { logger } from '../utils/logger.js';
 import { calcPnlPct, roundKrw } from '../utils/money.js';
-import { sleep } from '../utils/sleep.js';
+// sleep import 제거 — getDailyChart 내부 rate limiter가 스로틀링 처리
 import { getLearnedParameters } from './self-learning.js';
 
 /**
@@ -141,22 +141,23 @@ export async function analyzeCapitalFlow(): Promise<void> {
 
   // ── 각 포지션 평가 (2-Pass 구조) ──
 
-  // Pass 1: 데이터 수집 및 개별 변동성 계산
+  // Pass 1: 데이터 수집 및 개별 변동성 계산 (병렬 — getDailyChart 내부 rate limiter 의존)
+  const chartResults = await Promise.allSettled(
+    activeChains
+      .filter((chain) => priceMap.has(chain.stock_code))
+      .map(async (chain) => {
+        const chartData = await getDailyChart(chain.stock_code, 20);
+        return { chain, chartData };
+      }),
+  );
   const positionData = [];
-  for (const chain of activeChains) {
-    try {
-      const price = priceMap.get(chain.stock_code);
-      if (!price) continue;
-
-      const chartData = await getDailyChart(chain.stock_code, 20);
-      const atr = calculateATR(chartData, 14);
-      const volatilityPct = price.currentPrice > 0 ? (atr / price.currentPrice) * 100 : 0;
-
-      positionData.push({ chain, price, volatilityPct, chartData });
-      await sleep(100); // rate limit
-    } catch (err) {
-      logger.debug(`자금흐름 개별 종목 데이터 조회 실패: ${err}`, { component: 'FLOW' });
-    }
+  for (const r of chartResults) {
+    if (r.status !== 'fulfilled') continue;
+    const { chain, chartData } = r.value;
+    const price = priceMap.get(chain.stock_code)!;
+    const atr = calculateATR(chartData, 14);
+    const volatilityPct = price.currentPrice > 0 ? (atr / price.currentPrice) * 100 : 0;
+    positionData.push({ chain, price, volatilityPct, chartData });
   }
 
   // 중간 계산: 포트폴리오 전체 변동성 및 목표 현금 비율 계산

@@ -55,7 +55,9 @@ export async function getRecentPerfSummary(isPaper?: boolean): Promise<string> {
       const fillPx = Number(r.filled_price);
       if (avgBuy <= 0 || fillPx <= 0) continue;
       const pnlPct = ((fillPx - avgBuy) / avgBuy) * 100;
-      if (pnlPct >= 0) wins++;
+      // v10.11.3: 수수료(0.35%) 차감 후 순수익 기준 승패 분류
+      const netPnlPct = pnlPct - 0.35;
+      if (netPnlPct > 0) wins++;
       else losses++;
       totalPnlPct += pnlPct;
       counted++;
@@ -81,7 +83,9 @@ export async function getOverseasWinRates(codes: string[], isPaper?: boolean): P
       SELECT
         stock_code,
         COUNT(*)::int AS total,
-        SUM(CASE WHEN realized_pnl_pct >= 0 THEN 1 ELSE 0 END)::int AS wins,
+        -- v10.11.4: > 0.35 → > 0.4 (executor/kis-sync PNL_BREAKEVEN_THRESHOLD=0.4과 통일)
+        -- 0.35%는 편도 수수료 — 왕복 0.7% 중 편도만 반영하면 과대평가
+        SUM(CASE WHEN realized_pnl_pct > 0.4 THEN 1 ELSE 0 END)::int AS wins,
         AVG(realized_pnl_pct)::float AS avg_pnl
       FROM (
         SELECT

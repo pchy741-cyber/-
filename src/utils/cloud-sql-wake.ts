@@ -133,7 +133,7 @@ export function isWaking(): boolean {
 }
 
 /** 한국 장중 여부 확인 — 평일 KST 09:00~15:30 */
-export function isInMarketHours(): boolean {
+function isInMarketHours(): boolean {
   const kst = getKSTNow();
   const day = kst.getUTCDay(); // 0=Sun,6=Sat
   if (day === 0 || day === 6) return false;

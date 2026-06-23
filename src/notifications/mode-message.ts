@@ -43,37 +43,4 @@ export async function sendByPaperFlag(isPaper: boolean, message: string): Promis
   return sendModeMessage(isPaper ? 'paper' : 'live', message);
 }
 
-/**
- * 거래 알림 — 강조 헤더 자동 부착
- *   sendTradeAlert('live', 'BUY', '005930 100주')
- *   → "🔴 *[실전]* 🛒 매수: 005930 100주"
- */
-export async function sendTradeAlert(
-  mode: AlertMode,
-  action: 'BUY' | 'SELL' | 'STOP_LOSS' | 'TAKE_PROFIT',
-  detail: string,
-): Promise<void> {
-  const actionEmoji: Record<typeof action, string> = {
-    BUY: '🛒 매수',
-    SELL: '💰 매도',
-    STOP_LOSS: '🛑 손절',
-    TAKE_PROFIT: '✨ 익절',
-  };
-  return sendModeMessage(mode, `${actionEmoji[action]}: ${detail}`);
-}
-
-/**
- * 경고 알림 — 위험 강도 표시
- */
-export async function sendAlert(
-  mode: AlertMode,
-  level: 'info' | 'warn' | 'danger',
-  message: string,
-): Promise<void> {
-  const levelEmoji: Record<typeof level, string> = {
-    info: 'ℹ️',
-    warn: '⚠️',
-    danger: '🚨',
-  };
-  return sendModeMessage(mode, `${levelEmoji[level]} ${message}`);
-}
+// v10.11.4: sendTradeAlert, sendAlert 삭제 (미사용 — sendModeMessage/sendByPaperFlag만 활성)

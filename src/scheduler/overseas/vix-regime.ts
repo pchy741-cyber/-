@@ -37,21 +37,25 @@ export function getVixRegime(vix: number, isPaper?: boolean): RegimeAdjustment {
   _prevRegime = regime;
 
   if (regime === 'CRISIS') {
+    // v12.2: sizingMult 0.3→0.5 (BIS Bulletin 95: VIX 30+ 진입 시 12개월 양수 확률 높음)
+    // confBoost 0.10→0.05 (기존 10% 부스트는 거의 모든 매수 차단 → 과보호)
+    // VIX 40+: 극단 과매도 영역 — 역사적으로 100% 12개월 양수, 중앙값 +40%
+    // 따라서 CRISIS에서 더 적극적으로 매수 (단, 포지션 사이즈로 리스크 관리)
     return {
       regime: 'CRISIS',
-      confBoost: 0.1,
-      sizingMult: 0.3,
+      confBoost: 0.05,
+      sizingMult: vix >= 40 ? 0.6 : 0.5, // VIX 40+: 패닉 = 기회 (사이징 올림)
       allowNewBuy: true,
-      trailTighten: 2.0,
+      trailTighten: 1.5, // 2.0→1.5 (너무 타이트하면 변동성에 흔들려 조기 익절)
     };
   }
   if (regime === 'STRESS') {
     return {
       regime: 'STRESS',
-      confBoost: 0.03,
-      sizingMult: 0.8,
+      confBoost: 0.02, // 0.03→0.02 (미세 완화)
+      sizingMult: 0.85, // 0.8→0.85
       allowNewBuy: true,
-      trailTighten: 1.0,
+      trailTighten: 0.8, // 1.0→0.8
     };
   }
   return {

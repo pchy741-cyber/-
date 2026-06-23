@@ -71,33 +71,32 @@ export async function runBottomFishingScanner(
 
   if (priceFiltered.length === 0) return [];
 
-  // 4. 일봉 → RSI(14) 과매도 필터
+  // 4. 일봉 → RSI(14) 과매도 필터 (병렬 — getDailyChart 내부 rate limiter 의존)
+  const chartResults = await Promise.allSettled(
+    priceFiltered.map(async (code) => ({ code, candles: await getDailyChart(code, 30) })),
+  );
   const candidates: BottomFishingCandidate[] = [];
+  for (const r of chartResults) {
+    if (r.status !== 'fulfilled') continue;
+    const { code, candles } = r.value;
+    if (candles.length < 15) continue; // RSI 계산에 최소 15일 필요
 
-  for (const code of priceFiltered) {
-    try {
-      const candles = await getDailyChart(code, 30);
-      if (candles.length < 15) continue; // RSI 계산에 최소 15일 필요
+    // getDailyChart는 최신→과거 순서 → RSI 계산은 과거→최신 필요
+    const closes = candles.map((c) => c.close).reverse();
+    const rsiValues = rsi(closes, 14);
+    const rsi14 = rsiValues[rsiValues.length - 1] ?? 50;
 
-      // getDailyChart는 최신→과거 순서 → RSI 계산은 과거→최신 필요
-      const closes = candles.map((c) => c.close).reverse();
-      const rsiValues = rsi(closes, 14);
-      const rsi14 = rsiValues[rsiValues.length - 1] ?? 50; // 50 = RSI 계산 실패 시 기본값 (중립)
+    if (!Number.isFinite(rsi14) || rsi14 >= maxRsi) continue;
 
-      if (!Number.isFinite(rsi14) || rsi14 >= maxRsi) continue;
-
-      const p = prices.get(code)!;
-      candidates.push({
-        stock_code: code,
-        stock_name: codeMap.get(code) ?? code,
-        changePct: p.changePct,
-        rsi14,
-        marketCapEok: p.marketCapEok,
-        score: 40 - rsi14 + Math.abs(p.changePct),
-      });
-    } catch (err) {
-      logger.debug(`바닥낚시 차트 조회 실패 (${code}): ${err}`, { component: 'BOTTOM_FISHING' });
-    }
+    const p = prices.get(code)!;
+    candidates.push({
+      stock_code: code,
+      stock_name: codeMap.get(code) ?? code,
+      changePct: p.changePct,
+      rsi14,
+      marketCapEok: p.marketCapEok,
+      score: 40 - rsi14 + Math.abs(p.changePct),
+    });
   }
 
   // 5. 스코어 내림차순 → 상위 N종목

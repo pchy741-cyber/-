@@ -136,8 +136,11 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
     // AI Loop forceHold: Claude Code가 매도 보류 지시 (실적 발표 대기 등)
     const aiForceHold = getOverride<boolean>(`${code}_forceHold`);
     const nasdaqCrash = ctx.nasdaqChange1d != null && ctx.nasdaqChange1d <= -4;
-    if (aiForceHold && pnlPct > -8 && !nasdaqCrash) {
-      // 손절 한도(-8%) 이상 + NASDAQ 급락(-4%+) 아닐 때만 AI 홀드 존중
+    // v10.11.4: flat -8% → 동적 SL×1.2 (국내 forceHold 공식과 통일)
+    // 기존: -8% 고정 → 국내(-3%) 대비 2.5배 느슨하여 대형 손실 허용
+    const forceHoldLimit = (holding.slPct ?? -5) * 1.2;
+    if (aiForceHold && pnlPct > forceHoldLimit && !nasdaqCrash) {
+      // 동적 SL 기반 한도 이상 + NASDAQ 급락(-4%+) 아닐 때만 AI 홀드 존중
       logger.info(`🤖 AI Loop forceHold(해외): ${code} 매도 보류 (pnl=${pnlPct.toFixed(1)}%)`, {
         component: 'AI_LOOP',
       });
@@ -368,11 +371,11 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
     } else if (pnlPct >= hardTpPct) {
       sellReason = `익절(${hardTpPct}%): +${pnlPct.toFixed(1)}%`;
 
-      // ── 4. 시간 기반 익절 — 5일+ 보유 & +1.5% 이상인데 모멘텀 없음 → 수익 확정 ──
-      // v10.9: 3일→5일, 2%→1.5% (승자에게 더 많은 시간, 수수료 이상 수익만 확보)
+      // ── 4. 시간 기반 익절 — 8일+ 보유 & +3.0% 이상인데 모멘텀 없음 → 수익 확정 ──
+      // v12.1: 5일→8일, 1.5%→3.0% (기존: 5일에 수수료 수준 +1.5%로 조기 청산 → 80% 연속 기회 상실)
     } else if (
-      holdingDays >= 5 &&
-      pnlPct >= 1.5 &&
+      holdingDays >= 8 &&
+      pnlPct >= 3.0 &&
       !tech.isMomentum &&
       !(tech.aboveMA20 && tech.adx >= 25) &&
       tech.rsi < 70

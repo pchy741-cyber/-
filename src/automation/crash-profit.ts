@@ -15,7 +15,9 @@
  *   ④ EOD 블루칩 줍줍 (갭 수익)
  */
 
-import { PARK_STOCK_CODE } from '../ai/track-b/defense-park.js';
+// v10.11.4: PARK_STOCK_CODE 인라인 — defense-park.ts와의 순환참조 해소
+// (crash-profit → defense-park → crash-profit 순환 import 제거)
+const PARK_STOCK_CODE = '449170'; // KODEX 미국달러SOFR금리액티브
 import { getCtxIsPaper } from '../config/context.js';
 import { getPool, isMemoryMode } from '../db/client.js';
 import { logger } from '../utils/logger.js';
@@ -24,7 +26,8 @@ import type { CurrentPrice } from '../kis/market.js';
 
 // ── 인버스 ETF 목록 ───────────────────────────────────────────────────
 
-export const INVERSE_ETF = { code: '114800', name: 'KODEX 인버스' } as const; // 하위 호환
+/** @deprecated v10.11.4: 레거시 — INVERSE_ETFS 사용 권장 */
+const INVERSE_ETF = { code: '114800', name: 'KODEX 인버스' } as const;
 
 interface InverseETFConfig {
   code: string;
