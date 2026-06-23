@@ -6,7 +6,7 @@ import { api } from '../lib/utils';
 import { toDisplayName } from '../lib/helpers';
 import { TodayThemePanel } from './news/TodayThemePanel';
 import { NewsSummaryPanel } from './news/NewsSummaryPanel';
-import { ResearchBotPanel } from './news/ResearchBotPanel';
+
 import type { WatchlistItem } from '../types';
 
 interface RegimeSummary { summary: string; regime: string; score: number; recommended: string; reasons: string[] }
@@ -335,8 +335,7 @@ function NewsView({ watchlist, setWatchlist, viewMode = 'live' }: { watchlist: W
         )}
       </div>
 
-      {/* ═══ 퀀트 리서치 봇 ═══ */}
-      <ResearchBotPanel />
+      {/* 퀀트봇 → 별도 탭(research)으로 이동, 뉴스 중복 제거 */}
     </div>
   );
 }

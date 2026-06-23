@@ -85,7 +85,7 @@ export async function runClaudeScoring(
     const userPrompt = `다음 ${batch.length}개 종목을 분석해 JSON 배열로 반환하세요.
 
 각 항목 형식:
-{"stock_code":"코드","composite_score":숫자,"fundamental_score":숫자,"technical_score":숫자,"sentiment_score":숫자,"signal":"BUY|HOLD|SELL|STRONG_BUY|STRONG_SELL","confidence":0.0-1.0,"reasoning":"핵심 근거 1-2문장"}
+{"stock_code":"코드","composite_score":숫자,"fundamental_score":숫자,"technical_score":숫자,"sentiment_score":숫자,"signal":"BUY|HOLD|SELL|STRONG_BUY|STRONG_SELL","confidence":0.0-1.0,"reasoning":"[재무]PER/ROE/부채비율 핵심 → [기술]추세/지지선 판단 → [뉴스]수익영향 이슈"}
 
 ${isCliMode ? '각 세부 점수(fundamental/technical/sentiment)를 개별 평가하세요. composite_score는 가중 평균입니다.' : '점수 기준: 80+ 강매수, 70-79 매수, 50-69 보유, 50미만 매도'}
 
@@ -173,6 +173,21 @@ JSON 배열만 반환 (설명 없이):`;
         });
       }
 
+      // v12.2: 판정 근거 상세 로그 — 재무/기술/센티먼트 개별 점수 + 핵심 포인트
+      const clampLog = (v: number | undefined, fb: number) => {
+        const n = Number(v); return Number.isFinite(n) ? Math.max(0, Math.min(100, Math.round(n))) : fb;
+      };
+      for (const item of parsed) {
+        const f = clampLog(item.fundamental_score, 50);
+        const t = clampLog(item.technical_score, 50);
+        const s = clampLog(item.sentiment_score, 50);
+        const total = Number(item.composite_score ?? 50);
+        const sig = item.signal ?? 'HOLD';
+        logger.info(
+          `📊 ${item.stock_code}: ${sig} ${total}점 [재무${f}/기술${t}/센티${s}] — ${(item.reasoning ?? '').slice(0, 60)}`,
+          { component: COMP },
+        );
+      }
       logger.info(`Claude 스코어링 배치 ${i + 1}~${i + batch.length}: ${parsed.length}개 완료`, { component: COMP });
     } catch (e) {
       logger.warn(`Claude 배치 ${i + 1} 실패: ${e}`, { component: COMP });
