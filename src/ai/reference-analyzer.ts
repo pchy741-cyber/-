@@ -10,7 +10,7 @@
 import { logger } from '../utils/logger.js';
 import { callVertexGemini } from '../utils/vertex-gemini.js';
 
-const AI_STUDIO_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent';
+const AI_STUDIO_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
 
 export interface RefAction {
   code: string;

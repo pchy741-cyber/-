@@ -6,7 +6,7 @@
  *   - GEMINI_API_KEY 필수
  *
  * grounded: true → Vertex AI + Google Search Grounding (GCP 크레딧 소모)
- *   - Gemini 2.0 Flash with real-time web search
+ *   - Gemini 2.5 Flash with real-time web search
  *   - GOOGLE_CLOUD_PROJECT 필수, Cloud Run ADC 자동 인증
  *   - 비용: ~$0.035/query (GenAI App Builder Trial credit 적용)
  */
@@ -17,7 +17,7 @@ import { logTokenUsage, calcGeminiVertexCost, calcGeminiStudioCost } from './ai-
 
 // ── 모델 설정 ──
 const FREE_MODEL = 'gemini-2.5-flash';
-const GROUNDED_MODEL = 'gemini-2.0-flash-001'; // Vertex AI grounding 지원 모델 (버전 명시 필수)
+const GROUNDED_MODEL = 'gemini-2.5-flash'; // Vertex AI grounding 지원 모델 (2.0-flash-001은 2026-06-01 서비스 종료)
 const VERTEX_LOCATION = 'us-central1';
 
 export interface GeminiCallOptions {
@@ -291,7 +291,7 @@ export async function callVertexGemini(
       const { text, inputTokens, outputTokens } = await callVertexGrounded(systemPrompt, userMessage, opts);
       const durationMs = Date.now() - startMs;
 
-      // 비용 추정: Gemini 2.0 Flash $0.1/1M input + $0.4/1M output + Search grounding $0.035/query
+      // 비용 추정: Gemini 2.5 Flash $0.1/1M input + $0.4/1M output + Search grounding $0.035/query
       const costUsd = calcGeminiVertexCost(inputTokens, outputTokens, true);
 
       _dailyTotals.vertexCalls++;
