@@ -31,6 +31,7 @@ interface UsHoldingsTabProps {
   blacklist?: Set<string>;
   onToggleFavorite?: (code: string) => void;
   onToggleBlacklist?: (code: string) => void;
+  usMarketOpen?: boolean;
 }
 
 export default function UsHoldingsTab({
@@ -38,6 +39,7 @@ export default function UsHoldingsTab({
   insightsDraft, setInsightsDraft, insightsSaving, setInsightsSaving, usInsights, setUsInsights,
   viewMode = 'live', loopStatus,
   favorites, blacklist, onToggleFavorite, onToggleBlacklist,
+  usMarketOpen = false,
 }: UsHoldingsTabProps) {
   const [editingTpSl, setEditingTpSl] = useState<string | null>(null);
   const [editTp, setEditTp] = useState('');
@@ -234,7 +236,6 @@ export default function UsHoldingsTab({
       </div>
       {/* 감시 종목 그리드 */}
       {usW.length > 0 && (() => {
-        const usMarketOpen = !!(dash?.health as any)?.usMarketOpen;
         return (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 p-3.5">
           {usW.map((s: UsWatchlistItem) => {

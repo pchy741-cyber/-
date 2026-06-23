@@ -294,7 +294,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
           </button>
         </div>
         {holdingsTab === 'KR' && <KrHoldingsTab chains={chains} dash={dash} busyAction={busyAction} guard={guard} getStockName={getStockName} onRefresh={onRefresh} toast={toast} confirm={confirm} viewMode={viewMode} />}
-        {holdingsTab === 'US' && <UsHoldingsTab usHoldings={usHoldings} usW={usW} dash={dash} busyAction={busyAction} guard={guard} onRefresh={onRefresh} toast={toast} confirm={confirm} insightsDraft={insightsDraft} setInsightsDraft={setInsightsDraft} insightsSaving={insightsSaving} setInsightsSaving={setInsightsSaving} usInsights={usInsights} setUsInsights={setUsInsights} viewMode={viewMode} loopStatus={loopStatus} favorites={favorites} blacklist={blacklist} onToggleFavorite={handleToggleFavorite} onToggleBlacklist={handleToggleBlacklist} />}
+        {holdingsTab === 'US' && <UsHoldingsTab usHoldings={usHoldings} usW={usW} dash={dash} busyAction={busyAction} guard={guard} onRefresh={onRefresh} toast={toast} confirm={confirm} insightsDraft={insightsDraft} setInsightsDraft={setInsightsDraft} insightsSaving={insightsSaving} setInsightsSaving={setInsightsSaving} usInsights={usInsights} setUsInsights={setUsInsights} viewMode={viewMode} loopStatus={loopStatus} favorites={favorites} blacklist={blacklist} onToggleFavorite={handleToggleFavorite} onToggleBlacklist={handleToggleBlacklist} usMarketOpen={!!health?.usMarketOpen} />}
       </div>
 
       <MemoMoneyStats key={`${viewMode}-${holdingsTab}`} market={holdingsTab} viewMode={viewMode} totalValue={holdingsTab === 'KR' ? totalValue : undefined} />
