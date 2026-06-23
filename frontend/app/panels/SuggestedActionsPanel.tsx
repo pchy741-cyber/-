@@ -126,7 +126,7 @@ export default function SuggestedActionsPanel({
 
       {/* 추천 액션 — 실전 / 연습 분리 */}
       {actions.length > 0 && (() => {
-        const liveActions = actions.filter(a => !a.mode || a.mode === 'live');
+        const liveActions = actions.filter(a => a.mode === 'live');
         const paperActions = actions.filter(a => a.mode === 'paper');
 
         const renderList = (list: SuggestedAction[], label: string, accent: 'emerald' | 'amber') => (

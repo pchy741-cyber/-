@@ -233,7 +233,9 @@ export default function UsHoldingsTab({
         <ReferencePanel toast={toast} viewMode={viewMode} />
       </div>
       {/* 감시 종목 그리드 */}
-      {usW.length > 0 && (
+      {usW.length > 0 && (() => {
+        const usMarketOpen = !!(dash?.health as any)?.usMarketOpen;
+        return (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 p-3.5">
           {usW.map((s: UsWatchlistItem) => {
             const held = usHoldings.find((h: UsHolding) => h.stock_code === s.code);
@@ -241,6 +243,7 @@ export default function UsHoldingsTab({
             const hasPrice = (s.price ?? 0) > 0;
             const isFav = favorites?.has(s.code) ?? false;
             const isBlocked = blacklist?.has(s.code) ?? false;
+            const noDataLabel = usMarketOpen ? '시세 대기' : '장마감';
             return (
               <div key={s.code} className={`relative rounded-xl border p-3 text-center transition-all hover:scale-[1.02] ${isBlocked ? 'opacity-40 border-rose-500/30' : hasPrice ? pbg(s.changePct) : ''} ${held ? 'border-blue-500/40' : isBlocked ? '' : 'border-slate-700/30'}`}>
                 {/* 즐겨찾기 별표 */}
@@ -261,12 +264,13 @@ export default function UsHoldingsTab({
                 </button>
                 <div className="text-xs font-bold text-slate-300 truncate">{usDisplayName} {held ? '\ud83d\udccc' : ''}</div>
                 <div className={`text-base font-bold mt-1 ${!hasPrice ? 'text-slate-600' : ''}`}>{hasPrice ? `$${s.price!.toFixed(1)}` : '-'}</div>
-                <div className={`text-[11px] font-semibold mt-0.5 ${hasPrice ? pc(s.changePct) : 'text-slate-600'}`}>{hasPrice ? fmtPct(s.changePct) : '\uc7a5\ub9c8\uac10'}</div>
+                <div className={`text-[11px] font-semibold mt-0.5 ${hasPrice ? pc(s.changePct) : 'text-slate-600'}`}>{hasPrice ? fmtPct(s.changePct) : noDataLabel}</div>
               </div>
             );
           })}
         </div>
-      )}
+        );
+      })()}
       {usW.length === 0 && usHoldings.length === 0 && (
         <div className="p-8 text-center space-y-2">
           <div className="text-2xl opacity-30">🌏</div>
