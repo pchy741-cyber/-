@@ -47,6 +47,9 @@ export interface BuyFilterContext {
   userFavorites?: Set<string>; // CEO 즐겨찾기 (매수 우선순위 +20)
   kospiPenalty?: number; // 0=정상, 1=조정, 2=하락장 — penalty≥2시 비모멘텀 해외 매수 차단
   sectorMomentumMap?: Map<string, number>; // 섹터별 평균 등락률 (%) — 상위 섹터 매수 점수 가산
+  // v12.3: 뉴스 테마/감성 데이터 (매매 방향성 반영)
+  newsThemeSectors?: Set<string>; // 오늘 뉴스 테마 관련 섹터 코드 (TECH, AI_SEMI 등)
+  newsSentimentScore?: number; // 매크로 뉴스 감성 점수 (-1 ~ +1)
 }
 
 export type BuyTarget = TechResult & { ai?: AIDecision; _effectiveConf?: number };
@@ -649,10 +652,16 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         // Paper→Live 브릿지 보너스: 연습모드 검증 종목 우선 매수 (최대 +15점)
         const paperBridgeA = paperValidated.has(a.code) ? Math.min(15, getPaperSignalScore(a.code) * 0.4) : 0;
         const paperBridgeB = paperValidated.has(b.code) ? Math.min(15, getPaperSignalScore(b.code) * 0.4) : 0;
+        // v12.3: 뉴스 테마 가산점 — 오늘 핫 테마 섹터 종목 +10점
+        const newsThemeA = ctx.newsThemeSectors?.has(a.sector ?? '') ? 10 : 0;
+        const newsThemeB = ctx.newsThemeSectors?.has(b.sector ?? '') ? 10 : 0;
+        // v12.3: 뉴스 감성 가산점 — 긍정(+5) / 부정(-5) 전체 시장 분위기 반영
+        const _nss = ctx.newsSentimentScore ?? 0;
+        const newsSentA = _nss > 0.3 ? 5 : _nss < -0.3 ? -5 : 0;
         const sa =
-          techA + wrScoreA + losspenA + priorityA + favA + sectorBoostA + vwapA + atrEntryA + timeBonus + driftScoreA + sectorMomScoreA + fundAdjA + paperBridgeA;
+          techA + wrScoreA + losspenA + priorityA + favA + sectorBoostA + vwapA + atrEntryA + timeBonus + driftScoreA + sectorMomScoreA + fundAdjA + paperBridgeA + newsThemeA + newsSentA;
         const sb =
-          techB + wrScoreB + losspenB + priorityB + favB + sectorBoostB + vwapB + atrEntryB + timeBonus + driftScoreB + sectorMomScoreB + fundAdjB + paperBridgeB;
+          techB + wrScoreB + losspenB + priorityB + favB + sectorBoostB + vwapB + atrEntryB + timeBonus + driftScoreB + sectorMomScoreB + fundAdjB + paperBridgeB + newsThemeB + newsSentA;
         return sb - sa;
       })
   );

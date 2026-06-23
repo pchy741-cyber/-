@@ -367,6 +367,19 @@ ${headlines}
   }
 });
 
+// ── 뉴스 테마/감성 데이터 export (overseas-job에서 사용) ──
+/** 캐시된 뉴스 테마 반환 (2h TTL, 없으면 null) */
+export function getCachedNewsTheme(): NewsTheme | null {
+  if (Date.now() - _newsThemeCache.fetchedAt > NEWS_THEME_TTL) return null;
+  return _newsThemeCache.data;
+}
+
+/** 캐시된 뉴스 요약 반환 */
+export function getCachedNewsSummary(): string | null {
+  if (Date.now() - _newsSummaryCache.fetchedAt > NEWS_SUMMARY_TTL) return null;
+  return _newsSummaryCache.summary || null;
+}
+
 // ── 스케줄러용 프리페치 (08:00 캐시 워밍) ──
 export async function prefetchAllNews(): Promise<void> {
   try {

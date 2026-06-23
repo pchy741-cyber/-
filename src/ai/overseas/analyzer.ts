@@ -21,11 +21,12 @@ export interface OverseasStockInput {
   aboveMA20?: boolean; // 현재가 > 21일 이평선 여부 (캔들 안착 확인)
   bollingerSqueeze?: boolean; // BB 밴드 수축 중 (에너지 응축, 돌파 방향 미확정)
   bollingerBreakout?: 'UP' | 'DOWN' | 'NONE'; // 스퀴즈 후 돌파 방향
+  recentlySold?: boolean; // 최근 7일 내 손절 매도된 종목 (RECOVERY_BUY 대상)
 }
 
 export interface OverseasAIDecision {
   code: string;
-  action: 'BUY' | 'SELL' | 'HOLD' | 'AVERAGE_DOWN';
+  action: 'BUY' | 'SELL' | 'HOLD' | 'AVERAGE_DOWN' | 'RECOVERY_BUY';
   confidence: number; // 0~1
   reasoning: string;
 }
@@ -101,6 +102,14 @@ const SYSTEM_PROMPT = `당신은 글로벌 주식(미국 주력 + 일본·대만
 - PnL > -3%: 물타기 불필요 (아직 정상 범위)
 - action="AVERAGE_DOWN"으로 응답 (BUY와 구분)
 
+【RECOVERY_BUY — 손절 후 회복 재진입 (비보유 최근손실 종목만)】
+- 대상: 최근 7일 이내 손절 매도된 종목 (recentlySold=true 표시)
+- 조건 A: RSI가 30 이하였다가 30 이상으로 반등 (RSI hook) + score > 0
+- 조건 B: 손절 이후 +3% 이상 반등 + ADX ≥ 15 (반등 추세 형성)
+- confidence 0.72 이상 필요 (신중한 재진입)
+- action="RECOVERY_BUY"로 응답 (BUY와 구분 — 50% 사이즈로 실행됨)
+- reasoning에 반드시 "손절 후 반등" 근거 포함
+
 【절대 금지】
 - 비보유 종목에 SELL / 비보유 종목에 AVERAGE_DOWN
 - VIX > 40: 신규 매수 금지 (패닉 구간)
@@ -121,7 +130,7 @@ const SYSTEM_PROMPT = `당신은 글로벌 주식(미국 주력 + 일본·대만
 - 뉴스 헤드라인에 특정 종목 언급 시 재료 반영 (실적·정책·제재 등)
 
 JSON 배열로만 응답 (HOLD는 생략, code 대소문자 정확히):
-[{"code":"NVDA","action":"BUY","confidence":0.78,"reasoning":"모멘텀 브레이크아웃 RSI=55 ADX=32 당일+4.1%"},{"code":"PLTR","action":"AVERAGE_DOWN","confidence":0.68,"reasoning":"PnL-4.2% RSI=32 과매도 반등 기대 물타기1회차"},{"code":"TSLA","action":"SELL","confidence":0.72,"reasoning":"PnL+6.2% RSI하락 score-18 모멘텀 소진"}]
+[{"code":"NVDA","action":"BUY","confidence":0.78,"reasoning":"모멘텀 브레이크아웃 RSI=55 ADX=32 당일+4.1%"},{"code":"PLTR","action":"AVERAGE_DOWN","confidence":0.68,"reasoning":"PnL-4.2% RSI=32 과매도 반등 기대 물타기1회차"},{"code":"AAPL","action":"RECOVERY_BUY","confidence":0.73,"reasoning":"손절 후 반등 RSI=38(30↑hook) +3.5% 회복 ADX=22"},{"code":"TSLA","action":"SELL","confidence":0.72,"reasoning":"PnL+6.2% RSI하락 score-18 모멘텀 소진"}]
 confidence: 0.0~1.0`;
 
 /**
@@ -149,6 +158,13 @@ export async function analyzeOverseasWithAI(
     macroReasons?: string[];
     // 뉴스 센티먼트
     topHeadlines?: string[];
+    // v12.3: 뉴스 테마/감성 AI 프롬프트 주입
+    newsSentiment?: string;
+    newsSentimentScore?: number;
+    newsTheme?: string;
+    newsThemeReason?: string;
+    newsThemeStocks?: string[];
+    newsSummary?: string;
   },
 ): Promise<OverseasAIDecision[]> {
   const context = buildContext(stocks, availableCash, holdingCount, perfSummary, userInsights, marketContext);
@@ -212,7 +228,7 @@ function parseAIResponse(text: string): OverseasAIDecision[] {
     .filter((d): d is Record<string, unknown> => typeof d === 'object' && d !== null)
     .map((d) => ({
       code: String(d.code ?? ''),
-      action: (['BUY', 'SELL', 'HOLD', 'AVERAGE_DOWN'].includes(String(d.action)) ? String(d.action) : 'HOLD') as 'BUY' | 'SELL' | 'HOLD' | 'AVERAGE_DOWN',
+      action: (['BUY', 'SELL', 'HOLD', 'AVERAGE_DOWN', 'RECOVERY_BUY'].includes(String(d.action)) ? String(d.action) : 'HOLD') as OverseasAIDecision['action'],
       confidence: Math.min(1, Math.max(0, Number(d.confidence ?? 0.5))),
       reasoning: String(d.reasoning ?? ''),
     }))
@@ -245,6 +261,13 @@ function buildContext(
     macroRiskScore?: number;
     macroReasons?: string[];
     topHeadlines?: string[];
+    // v12.3: 뉴스 테마/감성 AI 프롬프트 주입
+    newsSentiment?: string;
+    newsSentimentScore?: number;
+    newsTheme?: string;
+    newsThemeReason?: string;
+    newsThemeStocks?: string[];
+    newsSummary?: string;
   },
 ): string {
   const now = new Date();
@@ -256,6 +279,7 @@ function buildContext(
     const softZone = s.isHolding && (s.holdingPnlPct ?? 0) >= 5 ? ' ⚠️소프트익절구간' : '';
     const avgInfo = s.isHolding && s.averagingCount != null ? ` 물타기${s.averagingCount}/2` : '';
     const holding = s.isHolding ? ` [보유 PnL=${pnl}%${softZone}${avgInfo}]` : '';
+    const recentSold = !s.isHolding && s.recentlySold ? ' 🔄최근손절(RECOVERY_BUY가능)' : '';
     const bigMover = s.isBigMover ? ' 🔥빅무버' : '';
     const momentum = s.isMomentum && !s.isBigMover ? ' 🚀모멘텀' : '';
     const range = s.dayRangePct != null ? ` 일중${s.dayRangePct.toFixed(0)}%` : '';
@@ -267,7 +291,7 @@ function buildContext(
           ? ' 💥BB↓'
           : ' 🔧BBsq'
       : '';
-    return `${s.code}: $${s.currentPrice} ${s.changePct >= 0 ? '+' : ''}${s.changePct.toFixed(2)}%${range} | RSI=${s.rsi.toFixed(0)} ADX=${s.adx.toFixed(0)} score=${s.score} signal=${s.signal}${maPos}${bbTag}${bigMover}${momentum}${holding}`;
+    return `${s.code}: $${s.currentPrice} ${s.changePct >= 0 ? '+' : ''}${s.changePct.toFixed(2)}%${range} | RSI=${s.rsi.toFixed(0)} ADX=${s.adx.toFixed(0)} score=${s.score} signal=${s.signal}${maPos}${bbTag}${bigMover}${momentum}${holding}${recentSold}`;
   });
 
   // 동적 최소 매수 게이트: 포트폴리오의 2% 또는 $50 중 큰 값
@@ -312,6 +336,24 @@ function buildContext(
     // 뉴스 헤드라인
     if (marketContext.topHeadlines?.length) {
       parts.push(`📰 주요뉴스: ${marketContext.topHeadlines.slice(0, 5).join(' / ')}`);
+    }
+
+    // v12.3: 뉴스 감성 분석 결과 주입 — AI가 시장 분위기를 반영하여 판단
+    if (marketContext.newsSentiment) {
+      const sentLabel = marketContext.newsSentiment;
+      const sentScore = marketContext.newsSentimentScore ?? 0;
+      const sentEmoji = sentScore > 0.3 ? '🟢' : sentScore < -0.3 ? '🔴' : '🟡';
+      parts.push(`${sentEmoji} 뉴스감성: ${sentLabel} (${sentScore >= 0 ? '+' : ''}${sentScore.toFixed(2)}) — 매수/매도 판단에 시장 분위기 반영`);
+    }
+
+    // v12.3: 뉴스 테마 주입 — 오늘의 핫 테마 종목 우선 고려
+    if (marketContext.newsTheme) {
+      parts.push(`🔥 오늘 테마: ${marketContext.newsTheme} — ${marketContext.newsThemeReason ?? ''}`);
+    }
+
+    // v12.3: AI 뉴스 요약 주입 — 전체 시장 흐름 파악
+    if (marketContext.newsSummary) {
+      parts.push(`📋 시장요약: ${marketContext.newsSummary}`);
     }
   }
   if (userInsights) parts.push(`\n💡 운영자 인사이트: ${userInsights}`);

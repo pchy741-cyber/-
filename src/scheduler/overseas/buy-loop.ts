@@ -72,6 +72,9 @@ export interface BuyLoopParams {
   earningsDrift: EarningsDriftSignal[];
   freshBreadth: number;
   allocRisk: { positionCapPct: number };
+  // v12.3: 뉴스 테마/감성 데이터
+  newsThemeSectors?: Set<string>;
+  newsSentimentScore?: number;
 }
 
 export interface BuyLoopResult {
@@ -344,6 +347,8 @@ export async function executeBuyLoop(params: BuyLoopParams): Promise<BuyLoopResu
     userFavorites,
     kospiPenalty: kospiRegime.penalty,
     sectorMomentumMap,
+    newsThemeSectors: params.newsThemeSectors,
+    newsSentimentScore: params.newsSentimentScore,
   });
 
   if (buyTargets.length === 0) {
