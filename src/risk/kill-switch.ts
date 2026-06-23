@@ -102,6 +102,9 @@ export async function activateKillSwitch(
   const s = getState(scope, isPaper);
   if (s.active || updatingKeys.has(key)) return;
 
+  // v10.11.2: updatingKeys를 grace period 체크 전에 추가 (기존: 조기 return 시 미추가 → 동시 발동 가능)
+  updatingKeys.add(key);
+
   // 수동 해제 후 grace period 내 자동 재발동 차단 (MDD re-trigger 방지)
   if (!manual && s.forcedDeactivatedAt) {
     const elapsed = Date.now() - s.forcedDeactivatedAt.getTime();
@@ -110,6 +113,7 @@ export async function activateKillSwitch(
       logger.info(`⏳ Kill Switch 자동 재발동 차단 [${scope}]: 수동 해제 후 grace period ${remainMin}분 남음`, {
         component: 'KILL_SWITCH',
       });
+      updatingKeys.delete(key);
       return;
     }
   }
@@ -127,7 +131,6 @@ export async function activateKillSwitch(
     },
     isPaper,
   );
-  updatingKeys.add(key);
 
   const mode = isPaper ? 'paper' : 'live';
   const scopeLabel = scope === 'OVERSEAS' ? '해외' : '국내';

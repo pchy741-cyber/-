@@ -57,9 +57,10 @@ export function adjustPositionSizes(params: {
       const regimeScale = d.regime_position_scale ?? 1.0;
       const rawBudget = Math.floor(baseBudget * convMult * regimeScale);
       // 단일 캡 포인트: 절대상한(25%), 1회손실한도(1.5%÷SL), 원본예산 중 최소값
-      const slPct = Math.abs(_params.stopLossPct) / 100;
+      // v10.11.2: slPct=0 시 Infinity 방지 — 최소 1% SL 가정
+      const slPct = Math.max(0.01, Math.abs(_params.stopLossPct) / 100);
       const maxBudgetByLoss =
-        totalAssets > 0 && slPct > 0 ? Math.floor((totalAssets * 0.015) / slPct) : Infinity;
+        totalAssets > 0 ? Math.floor((totalAssets * 0.015) / slPct) : Infinity;
       const budget = Math.min(rawBudget, absoluteCap, maxBudgetByLoss);
       const targetQty = Math.max(1, Math.floor(budget / price));
       const currentQty = d.quantity ?? 0;

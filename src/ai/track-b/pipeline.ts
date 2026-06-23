@@ -1524,7 +1524,12 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
 
     // ── SWING/SNIPER 단계 익절 (3.5%@25%, 6.5%@35%, 10%@100% / 4%@30%, 8%@100%) ──
     try {
-      const partialTpDecisions = generatePartialTpDecisions(openChains, livePrices);
+      // v10.11.2: 이미 매도 결정된 종목 코드 수집 → 단계익절 중복 방지 (145% 수량 버그 해소)
+      const alreadySoldCodes = new Set(
+        decisions.filter((d) => d.action === 'SELL' || d.action === 'PARTIAL_SELL' || d.action === 'FORCE_CLOSE')
+          .map((d) => d.stock_code),
+      );
+      const partialTpDecisions = generatePartialTpDecisions(openChains, livePrices, alreadySoldCodes);
       if (partialTpDecisions.length > 0) {
         logger.info(
           `💰 Track B 단계익절 ${partialTpDecisions.length}건: ${partialTpDecisions.map((d) => `${d.stock_code}(${d.action})`).join(', ')}`,

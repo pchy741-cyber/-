@@ -99,7 +99,8 @@ export async function generateAveragingDecisions(
         );
         hasPendingBuy = pendingRows.length > 0;
       } catch {
-        /* DB 오류 시 안전하게 허용 */
+        // v10.11.2: DB 오류 시 물타기 차단 (기존: 허용 → 더블 오더 위험)
+        hasPendingBuy = true;
       }
       if (hasPendingBuy) {
         logger.info(`  ⏳ ${chain.stock_code}: 미체결 BUY 주문 존재 → 물타기 중복 차단`, { component: 'TRACK_B' });

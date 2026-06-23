@@ -21,10 +21,15 @@ class DbTransport extends Transport {
         return;
       }
       this._recent.set(dedupKey, now);
-      // 오래된 항목 정리 (메모리 누수 방지, 5초 이상 경과)
+      // v10.11.2: 하드캡 500 + 강제 정리 (기존: 200 임계만 → 고빈도 로깅 시 무한 성장)
       if (this._recent.size > 200) {
         for (const [k, t] of this._recent) {
           if (t < now - 5000) this._recent.delete(k);
+        }
+        // 정리 후에도 500 초과면 가장 오래된 것부터 삭제
+        if (this._recent.size > 500) {
+          const entries = [...this._recent.entries()].sort((a, b) => a[1] - b[1]);
+          for (let i = 0; i < entries.length - 200; i++) this._recent.delete(entries[i][0]);
         }
       }
       logFn(level, component, String(info.message).slice(0, 500)).catch(() => {});

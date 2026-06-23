@@ -764,8 +764,10 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
             { component: 'TRACK_A' },
           );
         }
-      } catch {
-        /* 조회 실패 시 전체 upsert 진행 */
+      } catch (err) {
+        // v10.11.2: DB 조회 실패 시 전체 스코어 덮어쓰기 차단 (기존: 허용 → 폴백이 정식 AI 점수 파괴)
+        logger.warn(`⚠️ 기존 스코어 조회 실패 → 폴백 스코어 쓰기 차단 (보수적): ${err}`, { component: 'TRACK_A' });
+        existingTodayCodes = new Set(scores.map((s) => s.stock_code)); // 전부 차단
       }
     }
 

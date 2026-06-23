@@ -877,6 +877,8 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
 export function generatePartialTpDecisions(
   openChains: TechnicalFallbackParams['openChains'],
   livePrices: TechnicalFallbackParams['livePrices'],
+  /** v10.11.2: 이미 매도 결정된 종목 코드 — 중복 매도 방지 (145% 수량 버그 해소) */
+  alreadySoldCodes?: ReadonlySet<string>,
 ): TradeDecision[] {
   const decisions: TradeDecision[] = [];
 
@@ -884,6 +886,8 @@ export function generatePartialTpDecisions(
     const price = livePrices.get(chain.stock_code);
     if (!price || !chain.avg_buy_price || chain.total_quantity <= 0) continue;
     if (chain.status === 'PROFIT_TAKING') continue;
+    // v10.11.2: generateSellDecisions에서 이미 매도 결정된 종목 스킵 (145% 수량 버그 방지)
+    if (alreadySoldCodes?.has(chain.stock_code)) continue;
 
     const avgBuy = Number(chain.avg_buy_price);
     if (avgBuy <= 0) continue;
