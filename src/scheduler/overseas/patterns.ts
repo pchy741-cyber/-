@@ -115,7 +115,7 @@ export async function extractTradingPatterns(isPaper?: boolean): Promise<Trading
   return patterns;
 }
 
-/** Memory Agent: 저승률 종목 차단 Set 반환 (승률 25% 이하, 4건 이상) */
+/** Memory Agent: 저승률 종목 차단 Set 반환 (승률 20% 이하, 8건 이상, 90일) */
 export async function getMemoryBlockedStocks(isPaper?: boolean): Promise<Set<string>> {
   try {
     const mode = ctxMode(isPaper);
@@ -126,10 +126,10 @@ export async function getMemoryBlockedStocks(isPaper?: boolean): Promise<Set<str
       WHERE side = 'SELL' AND trigger_source = 'OVERSEAS' AND status = 'FILLED'
         AND (trading_mode = $1::text OR ($1::text = 'paper' AND trading_mode = 'p_arch'))
         AND avg_buy_price > 0 AND filled_price > 0
-        AND created_at >= NOW() - INTERVAL '60 days'
+        AND created_at >= NOW() - INTERVAL '90 days'
       GROUP BY stock_code
-      HAVING COUNT(*) >= 5
-        AND (COUNT(*) FILTER (WHERE filled_price > avg_buy_price))::float / COUNT(*) <= 0.25
+      HAVING COUNT(*) >= 8
+        AND (COUNT(*) FILTER (WHERE filled_price > avg_buy_price))::float / COUNT(*) <= 0.20
     `,
       [mode],
     );
