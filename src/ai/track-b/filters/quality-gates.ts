@@ -123,8 +123,8 @@ export function checkQualityGates(input: QualityGateInput): GateResult {
   };
   const count = Object.values(details).filter(Boolean).length;
   const isRally = input.isRallyDay ?? false;
-  // v11: paper 3/6, live 4-5/6 (paper도 최소한의 품질 검증 필수)
-  const liveMin = isRally ? 4 : aiScore >= 80 ? 4 : 5;
+  // v13-fix: Live 5/6 → 4/6 완화 (5/6은 매수 기회 대량 상실의 주범)
+  const liveMin = 4;
   const min = isPaper ? 3 : liveMin;
 
   return { passed: count >= min, count, min, details };

@@ -47,6 +47,7 @@ import { reconcilePendingOrders } from '../../trading/fill-reconciler.js';
 import { logger } from '../../utils/logger.js';
 import { getOverride } from '../ai-overrides.js';
 import { getCachedNewsAdj } from '../track-a/rss-scorer.js';
+import { getCachedNewsTheme } from '../../api/routes/dashboard-news.js';
 import { IDLE_PARK_STOCK_CODE } from './cash-manager.js';
 import { loadPipelineData } from './data-loader.js';
 import { applyDecisionFlow } from './decision-flow.js';
@@ -872,11 +873,10 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     // 13:00~14:50 → 황금 오후 — 전 모드 진입 허용 (v13 복원: 기존 kstH===13 SNIPER전용이 버그였음)
     // 14:50~15:20 → SWING EOD 종가베팅 전용
     // 15:20+      → 전면 차단
-    const isAfterGoldenHour = kstH > 10 || (kstH === 10 && kstM >= 20); // 황금오전 끝 10:20부터
-    const isSniperOnlyWindow = (kstH === 10 && kstM >= 20) || (kstH === 11 && kstM < 30); // 10:20~11:30 SNIPER 창구
+    // v13-fix: 10:20~11:30 마의구간 차단 제거 → 11:30~13:00 점심만 차단
+    // 기존: 10:20부터 차단 → 하루 3시간 매수 불가 → 기회 대량 상실
     const isGoldenAfternoon = kstH === 13 || (kstH === 14 && kstM < 50) || isSwingEodBetting; // 황금오후 + EOD
-    const isLunchBan =
-      isAfterGoldenHour && !isGoldenAfternoon && !(effectiveModeRaw === 'SNIPER' && isSniperOnlyWindow);
+    const isLunchBan = (kstH === 11 && kstM >= 30) || (kstH === 12); // 11:30~13:00 점심만 차단
     const portfolioStress = calcPortfolioStressLevel(openChains, livePrices, totalAssets);
     if (portfolioStress >= 1) {
       logger.warn(`⚠️ 포트폴리오 스트레스 레벨 ${portfolioStress} (미실현 손실 누적)`, { component: 'TRACK_B' });
@@ -944,8 +944,10 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       isMaxPositionsReached || // 최대 동시 포지션 수 초과: 신규 매수 차단
       (!ctxIsPaper && dailyLoss.blocked) || // Paper: 일일손실 차단 면제 (데이터 수집 우선)
       (!ctxIsPaper && kospiRegime.flashCrash) || // 급락 서킷브레이커: Live만 차단 (Paper 면제 — 모의자금)
-      (!ctxIsPaper && !isKospiOverrideActive() && kospiRegime.todayDown) || // 코스피 당일 -0.3%+ 하락: 신규매수 전면 차단
-      (!ctxIsPaper && !isKospiOverrideActive() && kospiRegime.penalty >= 2 && kospiRegime.todayDown) || // 하락장+당일하락
+      // v13-fix: KOSPI todayDown(-1%) 글로벌 차단 제거 → 점수 감산(-5~-15)으로 자연 필터링
+      // 기존: KOSPI -1%면 삼성전자도 전면 차단 → 개별 종목 강세도 기회 상실
+      // 개선: flashCrash(-1% 5분내), CRASH/PANIC 시그널은 유지. 일반 하락은 점수 감산으로 대응
+      (!ctxIsPaper && !isKospiOverrideActive() && kospiRegime.penalty >= 3 && kospiRegime.todayDown) || // penalty 3+ 극단적 하락장만 차단
       (!ctxIsPaper && portfolioStress >= 2) || // Paper: 포트스트레스 면제
       (!ctxIsPaper && crashSignal.level === 'CRASH') || // 크래시 시그널 CRASH
       (!ctxIsPaper && crashSignal.level === 'PANIC') || // 크래시 시그널 PANIC
@@ -1012,10 +1014,21 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     }
 
     const todayDate = getKSTNow().toISOString().split('T')[0];
-    // KOSPI 레짐에 따른 전종목 점수 감산: 조정장(penalty=1) -10, 하락장(penalty=2) -15, 당일하락(todayDown) -5
-    // 이유: AI 점수는 개별 팩터만 반영하며 시장 방향성 무관. 하락장 낙칼 방지를 위해 threshold 상향 대신 점수 직접 감산.
+
+    // ── v13: 뉴스 테마 부스트 — 오늘 핫 테마 관련 종목에 점수 가산 ──
+    const newsTheme = getCachedNewsTheme();
+    const newsThemeStockCodes = new Set(newsTheme?.stocks?.map((s) => s.code) ?? []);
+    if (newsTheme && newsThemeStockCodes.size > 0) {
+      logger.info(
+        `📰 오늘 테마: "${newsTheme.theme}" → 관련 종목 ${newsThemeStockCodes.size}개 부스트 대상`,
+        { component: 'TRACK_B' },
+      );
+    }
+
+    // v13-fix: KOSPI 레짐 점수 감산 완화 (기존 -15/-10/-5 → -8/-5/-3)
+    // 이유: 과도한 감산은 KOSPI -1%만 돼도 모든 종목 진입 불가 → 뉴스/기술지표 기반 개별 판단 위임
     const kospiPenaltyAdj =
-      kospiRegime.penalty >= 2 ? -15 : kospiRegime.penalty >= 1 ? -10 : kospiRegime.todayDown ? -5 : 0;
+      kospiRegime.penalty >= 2 ? -8 : kospiRegime.penalty >= 1 ? -5 : kospiRegime.todayDown ? -3 : 0;
     if (kospiPenaltyAdj !== 0) {
       logger.info(
         `📉 KOSPI 레짐 점수 보정: penalty=${kospiRegime.penalty} todayDown=${kospiRegime.todayDown} → 전종목 ${kospiPenaltyAdj}점 감산`,
@@ -1127,6 +1140,8 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         // RSS 뉴스 감성 보정: Quick Re-Score/Surge Detector가 캐시한 실시간 뉴스 점수 반영
         // 긍정 뉴스(+1~+5), 부정 뉴스(-1~-6) — 네트워크 호출 없음 (캐시 참조만)
         const newsAdj = getCachedNewsAdj(s.stock_code);
+        // v13: 뉴스 테마 부스트 — 오늘 핫 테마 관련 종목에 +8점 (돈의 흐름 추적)
+        const newsThemeAdj = newsThemeStockCodes.has(s.stock_code) ? 8 : 0;
         const totalAdj =
           adj +
           capAdj +
@@ -1145,15 +1160,16 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
           relStrengthAdj +
           insiderAdj +
           naverTrendAdj +
-          newsAdj;
+          newsAdj +
+          newsThemeAdj;
         if (!Number.isFinite(totalAdj)) {
           logger.warn(
-            `⚠️ 스코어 보정 NaN 감지: ${s.stock_code} adj=${adj} cap=${capAdj} macro=${macroAdj} dart=${dartAdj} cns=${consensusAdj} ai=${aiScoreAdj} acc=${stockAccAdj} pio=${piotroskiAdj} fund=${fundScoreAdj} cmty=${communityAdj} rs=${relStrengthAdj} ins=${insiderAdj} nvt=${naverTrendAdj} news=${newsAdj}`,
+            `⚠️ 스코어 보정 NaN 감지: ${s.stock_code} adj=${adj} cap=${capAdj} macro=${macroAdj} dart=${dartAdj} cns=${consensusAdj} ai=${aiScoreAdj} acc=${stockAccAdj} pio=${piotroskiAdj} fund=${fundScoreAdj} cmty=${communityAdj} rs=${relStrengthAdj} ins=${insiderAdj} nvt=${naverTrendAdj} news=${newsAdj} theme=${newsThemeAdj}`,
             { component: 'TRACK_B' },
           );
           return { stock_code: s.stock_code, score: Math.max(0, Math.round(base)) || 0 };
         }
-        const boundedAdj = Math.max(-20, Math.min(25, totalAdj));
+        const boundedAdj = Math.max(-25, Math.min(30, totalAdj)); // v13: 뉴스 테마 부스트 추가로 상한 25→30, 하한 -20→-25
         const rawScore = Math.min(100, Math.max(0, base + boundedAdj));
         return { stock_code: s.stock_code, score: Math.round(rawScore) };
       });
@@ -1690,7 +1706,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     }
 
     // ── 당일 수익 자율 퇴장: 목표 수익 도달 시 신규 BUY/AVERAGE_DOWN 차단 (Live만) ──
-    const DAILY_PROFIT_STOP_PCT = 2.0;
+    const DAILY_PROFIT_STOP_PCT = 5.0; // v13-fix: 2%→5% 완화 (2%는 대형주 스캘핑 2~3건만에 도달 → 수익 기회 차단)
     if (!ctxIsPaper && dailyLoss.dailyPnlPct >= DAILY_PROFIT_STOP_PCT) {
       const beforeCount = actionable.length;
       const filtered = actionable.filter((d) => !['BUY', 'AVERAGE_DOWN'].includes(d.action));

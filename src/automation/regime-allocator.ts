@@ -116,7 +116,7 @@ export async function autoTuneRegimeWeights(): Promise<void> {
       if (row.total >= 5) {
         const winRateAdj = (winRate - 0.5) * 1.5; // -0.75 ~ +0.75
         const pnlBonus = pnlSign > 0 ? 0.1 : -0.1; // 수익 전략 소폭 추가 보너스
-        multiplier = Math.max(0.3, Math.min(2.0, 1.0 + winRateAdj + pnlBonus));
+        multiplier = Math.max(0.5, Math.min(2.0, 1.0 + winRateAdj + pnlBonus)); // v13-fix: 최소 50% (0.3→0.5) — 승률 낮아도 전략 완전 사장 방지
       }
 
       const newWeight = Math.round(baseWeight * multiplier);

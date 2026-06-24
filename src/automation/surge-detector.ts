@@ -331,8 +331,41 @@ export async function runSurgeDetector(): Promise<void> {
       logger.debug(`뉴스 추천 감지 스킵: ${newsErr}`, { component: COMPONENT });
     }
 
+    // ── v13: 뉴스 테마 종목 자동 편입 — Gemini 추천 테마 관련주 워치리스트 등록 ──
+    const themeAdded: string[] = [];
+    try {
+      const { getCachedNewsTheme } = await import('../api/routes/dashboard-news.js');
+      const theme = getCachedNewsTheme();
+      if (theme?.stocks?.length) {
+        for (const ts of theme.stocks) {
+          if (!ts.code || ts.code.length !== 6 || activeSet.has(ts.code)) continue;
+          try {
+            const { rowCount } = await pool.query(
+              `INSERT INTO watchlist (stock_code, stock_name, market, is_active, source)
+               VALUES ($1, $2, $3, true, 'NEWS_THEME')
+               ON CONFLICT (stock_code) DO UPDATE
+                 SET is_active = true, stock_name = EXCLUDED.stock_name, source = 'NEWS_THEME'
+                 WHERE watchlist.is_active = false`,
+              [ts.code, ts.name, ts.market || 'KOSPI'],
+            );
+            if (rowCount && rowCount > 0) {
+              activeSet.add(ts.code);
+              themeAdded.push(`${ts.name}(${ts.code})`);
+              logger.info(`🔥 뉴스테마 편입: ${ts.name}(${ts.code}) — 테마: ${theme.theme}`, { component: COMPONENT });
+            }
+          } catch { /* skip */ }
+        }
+        if (themeAdded.length > 0) {
+          await sendTelegramMessage(
+            `🔥 뉴스 테마 "${theme.theme}" 관련종목 자동편입 (${themeAdded.length}개)\n` +
+              themeAdded.map((s) => `• ${s}`).join('\n'),
+          ).catch(() => {});
+        }
+      }
+    } catch { /* getCachedNewsTheme not available */ }
+
     logger.info(
-      `급등 감지 완료 — 편입 ${added.length}개 / 클러스터 ${clusterAdded.length}개 / 뉴스 ${newsAdded.length}개 / 후보 ${surgeList.length}개`,
+      `급등 감지 완료 — 편입 ${added.length}개 / 클러스터 ${clusterAdded.length}개 / 뉴스 ${newsAdded.length}개 / 테마 ${themeAdded.length}개 / 후보 ${surgeList.length}개`,
       { component: COMPONENT },
     );
   } catch (err) {
