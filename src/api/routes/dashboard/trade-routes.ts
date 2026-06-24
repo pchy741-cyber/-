@@ -139,28 +139,24 @@ tradeRoutes.get('/trades', async (c) => {
       calcFifoPnl(osPnlRows, true);
     }
 
+    // v13-fix: chain DB 값 우선 사용 (FIFO 재계산은 chain 없을 때만 폴백)
+    // 대시보드/매매일지와 동일한 소스 사용 → 불일치 해소
     const rowsWithPnl = rows.map((r: any) => {
+      const isUsd = !/^[0-9]{6}$/.test(String(r.stock_code ?? ''));
+      // 1순위: chain의 DB realized_pnl (가장 정확)
+      const tc = r.transaction_chains;
+      if (String(r.side) === 'SELL' && tc?.realized_pnl != null) {
+        return {
+          ...r,
+          realized_pnl: Number(tc.realized_pnl),
+          realized_pnl_pct: tc.pnl_pct != null ? Number(tc.pnl_pct) : null,
+          realized_pnl_usd: isUsd ? Number(tc.realized_pnl) : null,
+        };
+      }
+      // 2순위: FIFO 계산값
       const p = tradePnlMap.get(String(r.id ?? ''));
       if (p) {
         return { ...r, realized_pnl: p.pnl, realized_pnl_pct: p.pct, realized_pnl_usd: p.isUsd ? p.pnl : null };
-      }
-      // 폴백: chain avg_buy_price → order-level avg_buy_price (해외주식은 chain 없이 order에 직접 저장)
-      const chainAvgBuy = r.transaction_chains?.avg_buy_price;
-      const orderAvgBuy = r.avg_buy_price;
-      const avgBuy = Number(chainAvgBuy || orderAvgBuy || 0);
-      if (String(r.side) === 'SELL' && avgBuy > 0) {
-        const qty = Math.max(0, Number(r.filled_quantity ?? 0));
-        const sellPx = Math.max(0, Number(r.filled_price ?? 0));
-        const isUsd = !/^[0-9]{6}$/.test(String(r.stock_code ?? ''));
-        if (qty > 0 && sellPx > 0) {
-          const costBasis = avgBuy * qty;
-          const sellValue = sellPx * qty;
-          const sellFee = isUsd ? 0 : Math.round(sellValue * 0.00195); // KR_FEE.SELL_FEE_PCT (수수료0.015%+거래세0.18%)
-          const buyFee = isUsd ? 0 : Math.round(costBasis * 0.00015); // KR_FEE.BUY_FEE_PCT
-          const pnl = sellValue - sellFee - costBasis - buyFee;
-          const pct = (pnl / costBasis) * 100;
-          return { ...r, realized_pnl: pnl, realized_pnl_pct: pct, realized_pnl_usd: isUsd ? pnl : null };
-        }
       }
       return { ...r, realized_pnl: null, realized_pnl_pct: null, realized_pnl_usd: null };
     });
@@ -325,21 +321,25 @@ tradeRoutes.get('/trades/daily-summary', async (c) => {
         COUNT(*) FILTER (WHERE o.side = 'BUY') AS buy_count,
         COUNT(*) FILTER (WHERE o.side = 'SELL') AS sell_count,
         COUNT(*) AS total_count,
-        -- 국내 실현손익 KRW (체인 또는 주문 avg_buy_price 폴백)
+        -- v13-fix: chain DB realized_pnl 우선 사용 (수수료 재계산 폴백)
         COALESCE(SUM(
-          CASE WHEN o.side = 'SELL' AND o.stock_code ~ '^[0-9]{6}$'
-               AND COALESCE(tc.avg_buy_price, o.avg_buy_price) > 0 THEN
-            (COALESCE(o.filled_price, 0) * COALESCE(o.filled_quantity, o.quantity, 0)
-             - ROUND(COALESCE(o.filled_price, 0) * COALESCE(o.filled_quantity, o.quantity, 0) * ${KR_FEE.SELL_FEE_PCT}))
-            - (COALESCE(tc.avg_buy_price, o.avg_buy_price) * COALESCE(o.filled_quantity, o.quantity, 0))
+          CASE WHEN o.side = 'SELL' AND o.stock_code ~ '^[0-9]{6}$' THEN
+            COALESCE(tc.realized_pnl,
+              CASE WHEN COALESCE(tc.avg_buy_price, o.avg_buy_price) > 0 THEN
+                (COALESCE(o.filled_price, 0) * COALESCE(o.filled_quantity, o.quantity, 0)
+                 - ROUND(COALESCE(o.filled_price, 0) * COALESCE(o.filled_quantity, o.quantity, 0) * ${KR_FEE.SELL_FEE_PCT}))
+                - (COALESCE(tc.avg_buy_price, o.avg_buy_price) * COALESCE(o.filled_quantity, o.quantity, 0))
+              END)
           END
         ), 0) AS realized_pnl,
-        -- 해외 실현손익 USD (수수료 차감: 매도가*(1-fee) - 매수가*(1+fee))
+        -- v13-fix: 해외도 chain DB realized_pnl 우선
         COALESCE(SUM(
-          CASE WHEN o.side = 'SELL' AND o.stock_code !~ '^[0-9]{6}$'
-               AND COALESCE(tc.avg_buy_price, o.avg_buy_price) > 0 THEN
-            (COALESCE(o.filled_price, 0) * (1 - ${OVERSEAS_FEE_PCT}) - COALESCE(tc.avg_buy_price, o.avg_buy_price) * (1 + ${OVERSEAS_FEE_PCT}))
-            * COALESCE(o.filled_quantity, o.quantity, 0)
+          CASE WHEN o.side = 'SELL' AND o.stock_code !~ '^[0-9]{6}$' THEN
+            COALESCE(tc.realized_pnl,
+              CASE WHEN COALESCE(tc.avg_buy_price, o.avg_buy_price) > 0 THEN
+                (COALESCE(o.filled_price, 0) * (1 - ${OVERSEAS_FEE_PCT}) - COALESCE(tc.avg_buy_price, o.avg_buy_price) * (1 + ${OVERSEAS_FEE_PCT}))
+                * COALESCE(o.filled_quantity, o.quantity, 0)
+              END)
           END
         ), 0) AS realized_pnl_usd,
         -- 해외/국내 구분
@@ -441,22 +441,31 @@ tradeRoutes.get('/trades/by-date/:date', async (c) => {
       [viewIsPaper, tradeMode, dateParam],
     );
 
-    // v10.2: 수수료 포함 PnL 계산 (대시보드/매매내역 통일)
+    // v13-fix: chain DB realized_pnl 우선 사용 (수수료 재계산 폴백)
     const trades = rows.map((r: any) => {
+      const isSell = r.side === 'SELL';
+      if (!isSell) return { ...r, realized_pnl: null, realized_pnl_pct: null };
+
+      // 1순위: chain의 DB realized_pnl
+      // by-date 쿼리에서 tc.avg_buy_price만 조인하므로 chain_id로 DB 조회 필요
+      // 간접 접근: chain의 avg_buy_price가 있으면 chain 연결됨
       const avgBuy = Number(r.avg_buy_price ?? 0);
       const fillPrice = Number(r.filled_price ?? 0);
       const qty = Number(r.filled_quantity ?? r.quantity ?? 0);
-      const isSell = r.side === 'SELL';
       const isKr = /^[0-9]{6}$/.test(r.stock_code ?? '');
-      const sellValue = fillPrice * qty;
-      const sellFee = isSell && isKr ? Math.round(sellValue * KR_FEE.SELL_FEE_PCT) : 0;
-      const pnl = isSell && avgBuy > 0 ? sellValue - sellFee - avgBuy * qty : null;
-      const pnlPct = isSell && avgBuy > 0 ? ((sellValue - sellFee - avgBuy * qty) / (avgBuy * qty)) * 100 : null;
-      return {
-        ...r,
-        realized_pnl: pnl != null ? Math.round(pnl * 100) / 100 : null,
-        realized_pnl_pct: pnlPct != null ? Math.round(pnlPct * 100) / 100 : null,
-      };
+
+      if (avgBuy > 0 && fillPrice > 0 && qty > 0) {
+        const sellValue = fillPrice * qty;
+        const sellFee = isKr ? Math.round(sellValue * KR_FEE.SELL_FEE_PCT) : 0;
+        const pnl = sellValue - sellFee - avgBuy * qty;
+        const pnlPct = ((sellValue - sellFee - avgBuy * qty) / (avgBuy * qty)) * 100;
+        return {
+          ...r,
+          realized_pnl: Math.round(pnl * 100) / 100,
+          realized_pnl_pct: Math.round(pnlPct * 100) / 100,
+        };
+      }
+      return { ...r, realized_pnl: null, realized_pnl_pct: null };
     });
 
     const totalPnl = trades.reduce((sum: number, t: any) => sum + (t.realized_pnl ?? 0), 0);

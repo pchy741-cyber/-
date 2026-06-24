@@ -5,6 +5,7 @@ import type { TradeDecision, TransactionChain } from '../../db/models.js';
 import type { CurrentPrice } from '../../kis/market.js';
 import { logger } from '../../utils/logger.js';
 import { PARK_STOCK_CODE } from './defense-park.js';
+import { MEGA_CAP_PRIORITY_CODES } from './trading-rules.js';
 
 /**
  * 조기 매도 방지 필터
@@ -116,16 +117,19 @@ export async function applyHardRules(params: {
     const baseStop =
       chain.stop_loss_pct != null ? Number(chain.stop_loss_pct) : (stopLossPct ?? baseParams.stopLossPct);
 
-    // ── 진입 초기 여유 버퍼: 비활성화 (2026-06 성과 검토) ──
-    // v2 문제: WR 30.8%에서 earlyBuffer 1.5%는 70% 잘못된 진입의 손실을 -3%→-4.5%로 확대
-    // v3: earlyBuffer 제거, baseStop 그대로 적용. 빠른 손절이 평균 손실 감소 효과.
-    // 10분 미만 보유는 약간의 여유(0.5%)만 제공 — 체결 직후 노이즈 방지
+    // ── v13-fix: 대형우량주 파킹 개념 도입 ──
+    // 삼성전자 등 메가캡은 일중 3-5% 변동이 정상 → 기존 -3.5% 손절은 너무 타이트
+    // 대형주: 손절 -5.5%, 초기 버퍼 2.0% (30분간), 절대 바닥 -7%
+    // 일반주: 기존 유지 (-3.5% ~ -6%)
+    const isMegaCap = MEGA_CAP_PRIORITY_CODES.has(chain.stock_code);
     const holdMs = chain.opened_at ? Date.now() - new Date(chain.opened_at).getTime() : Infinity;
-    const EARLY_HOLD_MS = 10 * 60_000; // 10 minutes
-    const EARLY_BUFFER = 0.5; // 0.5% 최소 여유 (기존 1.5%→0.5%)
-    const HARD_FLOOR = -6.0; // 절대 손절선: -6% (기존 -8%→-6% 축소)
+    const EARLY_HOLD_MS = isMegaCap ? 30 * 60_000 : 10 * 60_000; // 대형주 30분, 일반 10분
+    const EARLY_BUFFER = isMegaCap ? 2.0 : 0.5; // 대형주 2%, 일반 0.5%
+    const HARD_FLOOR = isMegaCap ? -7.0 : -6.0; // 대형주 -7%, 일반 -6%
     const earlyBuffer = holdMs < EARLY_HOLD_MS ? EARLY_BUFFER : 0;
-    const stopPct = Math.max(baseStop - earlyBuffer, HARD_FLOOR);
+    // 대형주 기본 손절폭 확대: baseStop이 -3.5%면 → -5.5%로 확대
+    const effectiveBaseStop = isMegaCap ? Math.min(baseStop, -5.5) : baseStop;
+    const stopPct = Math.max(effectiveBaseStop - earlyBuffer, HARD_FLOOR);
 
     // PROFIT_TAKING 상태: 트레일링 스탑은 technical-fallback 전담, 하드 손절은 여기서도 강제
     if (chain.status === 'PROFIT_TAKING') {
@@ -170,8 +174,8 @@ export async function applyHardRules(params: {
         } else if (tech.adx14 < 20) {
           dynamicTrail *= 0.85; // 횡보장 → 타이트 트레일
         }
-        // 과매수 영역 → 타이트
-        if (tech.rsi14 > 75) dynamicTrail = Math.max(dynamicTrail, -3.5);
+        // 과매수 영역 → 타이트 (대형주는 면제 — 강한 추세에서 RSI 75+ 정상)
+        if (tech.rsi14 > 75 && !isMegaCap) dynamicTrail = Math.max(dynamicTrail, -3.5);
 
         // 수익 클수록 트레일 허용폭 확장 (모멘텀 종목 조기 청산 방지 — 상한가 진입 여지 보존)
         const maxPnl = peakForTrail > avgBuy ? ((peakForTrail - avgBuy) / avgBuy) * 100 : pnlPct;

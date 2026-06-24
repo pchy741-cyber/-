@@ -273,8 +273,32 @@ journalRoutes.get('/journal', async (c) => {
       ? Math.round((lossTrades.reduce((s, t) => s + t.pnlPct, 0) / lossTrades.length) * 100) / 100
       : 0;
 
+  // v13: 일자별 그룹핑 (CEO 요청: "일자별로 볼 수 있게")
+  const dailyMap = new Map<string, { trades: JournalTrade[]; pnlKrw: number; wins: number; losses: number }>();
+  for (const t of trades) {
+    const dateKey = t.closedAt ? t.closedAt.slice(0, 10) : 'unknown';
+    const day = dailyMap.get(dateKey) ?? { trades: [], pnlKrw: 0, wins: 0, losses: 0 };
+    day.trades.push(t);
+    day.pnlKrw += t.pnlAmountKrw;
+    if (t.pnlPct > 0) day.wins++;
+    else day.losses++;
+    dailyMap.set(dateKey, day);
+  }
+  const daily = [...dailyMap.entries()]
+    .sort(([a], [b]) => b.localeCompare(a))
+    .map(([date, d]) => ({
+      date,
+      tradeCount: d.trades.length,
+      pnlKrw: Math.round(d.pnlKrw),
+      wins: d.wins,
+      losses: d.losses,
+      winRate: d.trades.length > 0 ? Math.round((d.wins / d.trades.length) * 1000) / 10 : 0,
+      trades: d.trades,
+    }));
+
   return c.json({
     trades,
+    daily, // 일자별 그룹핑
     summary: {
       totalTrades: total,
       wins,

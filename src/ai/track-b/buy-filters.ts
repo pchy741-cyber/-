@@ -140,6 +140,24 @@ export async function filterBuyCandidates(params: TechnicalFallbackParams): Prom
     };
     if (isHardBlocked(hardGateInput)) continue;
 
+    // ━━━ v13-fix: 극단 급락 종목만 신규매수 차단 (안전망) ━━━
+    // 당일 -5% 이상 폭락 종목만 신규매수 차단 (메가캡 -7%)
+    // 물타기(AVERAGE_DOWN)는 별도 로직에서 허용 — 여기는 신규 진입만 제한
+    {
+      const priceCheck = livePrices.get(stock.stock_code);
+      if (priceCheck && priceCheck.changePct < 0 && !openStockCodes.has(stock.stock_code)) {
+        const isMc = MEGA_CAP_PRIORITY_CODES.has(stock.stock_code);
+        const extremeLimit = isMc ? -7.0 : -5.0;
+        if (priceCheck.changePct <= extremeLimit) {
+          logger.info(
+            `  🔪 ${stock.stock_code}: 폭락 신규매수 차단 (당일 ${priceCheck.changePct.toFixed(1)}% ≤ ${extremeLimit}%) → 스킵`,
+            { component: 'TRACK_B' },
+          );
+          continue;
+        }
+      }
+    }
+
     // ━━━ 데이터 준비 ━━━
     const candles = chartData.get(stock.stock_code);
     const price = livePrices.get(stock.stock_code);

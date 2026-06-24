@@ -4,6 +4,7 @@ import { getPool } from '../../db/client.js';
 import type { TradeDecision } from '../../db/models.js';
 import { logger } from '../../utils/logger.js';
 import { resolveStrategyParams, type TechnicalFallbackParams } from './technical-fallback-types.js';
+import { MEGA_CAP_PRIORITY_CODES } from './trading-rules.js';
 
 /**
  * 보유 종목 물타기 판단 (지지선+반등신호 게이트)
@@ -27,14 +28,23 @@ export async function generateAveragingDecisions(
 
     const avgBuy = Number(chain.avg_buy_price);
     const pnlPct = ((price.currentPrice - avgBuy) / avgBuy) * 100;
-    const avgDownTrigger = strategyParams.averageDownPct; // 보통 -3%
 
-    // 물타기 차단: 익절 진행 중 체인 or SMA20 아래 깊은 하락 (추가 물타기는 손실만 키움)
+    // v13-fix: 대형우량주(MEGA_CAP) 물타기 활성화 — 전략 파라미터 0%여도 메가캡은 -2.5% 트리거
+    // 핵심 원리: 삼성전자/SK하이닉스 같은 우량주는 일시 하락 시 물타기로 평단가 낮추고 수익 실현
+    const isMegaCap = MEGA_CAP_PRIORITY_CODES.has(chain.stock_code);
+    const avgDownTrigger = isMegaCap
+      ? -2.5  // 대형주: -2.5% 하락 시 물타기 (SL -5.5%보다 충분히 위)
+      : strategyParams.averageDownPct; // 일반: 전략 설정값 (현재 0 = 비활성)
+
+    // 물타기 차단: 익절 진행 중 체인 or SMA20 아래 깊은 하락
     const chainCandles = chartData.get(chain.stock_code);
     const chainTech = chainCandles ? analyzeTechnicals(chainCandles) : null;
-    const isBelowSma20Deep = chainTech ? price.currentPrice < chainTech.sma20 * 0.97 : false; // SMA20 -3% 이상 이탈 시 물타기 금지
-    // 하드 손실 한도: -8% 초과 수중에서는 물타기 절대 금지 (나락 방지)
-    const isTooDeepUnderwater = pnlPct <= -8.0;
+    // 대형주: SMA20 -5% 이탈만 차단 (일반: -3%)
+    const sma20DeepThreshold = isMegaCap ? 0.95 : 0.97;
+    const isBelowSma20Deep = chainTech ? price.currentPrice < chainTech.sma20 * sma20DeepThreshold : false;
+    // 하드 손실 한도: 대형주 -10%, 일반 -8%
+    const deepUnderwaterLimit = isMegaCap ? -10.0 : -8.0;
+    const isTooDeepUnderwater = pnlPct <= deepUnderwaterLimit;
     // 포지션 집중도 한도: 총자산의 25% 이상이면 추가 물타기 차단 (Hard Cap과 동기화)
     const positionValue = price.currentPrice * Number(chain.total_quantity ?? 0);
     const concentrationPct = (totalAssets ?? 0) > 0 ? positionValue / totalAssets! : 0;
@@ -51,11 +61,14 @@ export async function generateAveragingDecisions(
         chainTech.rsi14 < 38
       : true;
     // 반등신호: 불리쉬 캔들(망치형 등) OR MACD 전환 OR RSI 과매도+MACD 비하락
-    const avgDownReversalOk = chainTech
-      ? hasBullishReversalCandle ||
-        chainTech.macdCrossover === 'BULLISH' ||
-        (chainTech.rsi14 < 35 && chainTech.macdCrossover !== 'BEARISH')
-      : true;
+    // v13-fix: 대형우량주는 반등신호 면제 — 삼성/하이닉스는 하락 시 물타기 = 수익 공식
+    const avgDownReversalOk = isMegaCap
+      ? true // 대형주: 반등신호 불필요 (구조적으로 항상 반등)
+      : chainTech
+        ? hasBullishReversalCandle ||
+          chainTech.macdCrossover === 'BULLISH' ||
+          (chainTech.rsi14 < 35 && chainTech.macdCrossover !== 'BEARISH')
+        : true;
     if (
       chain.status === 'PROFIT_TAKING' ||
       isBelowSma20Deep ||
@@ -90,7 +103,11 @@ export async function generateAveragingDecisions(
 
     // 물타기 조건: 평단가 대비 하락률이 트리거 이하 + 횟수 미달
     // + 이미 대기 중인 BUY 주문 없어야 함 (count는 체결 후 업데이트 → 중복 방지)
-    if (avgDownTrigger !== 0 && pnlPct <= avgDownTrigger && chain.current_averaging_count < chain.max_averaging_count) {
+    // v13-fix: 대형주 물타기 최대 횟수 오버라이드 (chain.max_averaging_count가 0이어도 2회 허용)
+    const effectiveMaxAvgCount = isMegaCap
+      ? Math.max(chain.max_averaging_count, 2) // 대형주: 최소 2회 물타기 허용
+      : chain.max_averaging_count;
+    if (avgDownTrigger !== 0 && pnlPct <= avgDownTrigger && chain.current_averaging_count < effectiveMaxAvgCount) {
       let hasPendingBuy = false;
       try {
         const { rows: pendingRows } = await getPool().query(
