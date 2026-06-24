@@ -19,7 +19,7 @@ import {
   resolveStrategyParams,
   type TechnicalFallbackParams,
 } from './technical-fallback-types.js';
-import { PRIORITY_SECTOR_CODES } from './trading-rules.js';
+import { PRIORITY_SECTOR_CODES, MEGA_CAP_PRIORITY_CODES } from './trading-rules.js';
 
 // ── 국내 주식 Kelly 사이징 (해외 kelly.ts 패턴 재사용) ──
 interface DomesticKellyResult {
@@ -400,8 +400,10 @@ export async function executeBuyDecisions(
     }
 
     // ── Per-Stock EV 하드게이트: 음의 기대값 종목 매수 차단 ──────────────
+    // 메가캡 대형주(삼성전자/SK하이닉스 등)는 EV게이트 면제 — 변동성 낮아 EV 구조적 저평가
     const stockEv = domesticStockEV.get(cand.stock_code);
-    if (stockEv && stockEv.sampleCount >= 5 && stockEv.evPct <= 0 && !getCtxIsPaper()) {
+    const isMegaCap = MEGA_CAP_PRIORITY_CODES.has(cand.stock_code);
+    if (stockEv && stockEv.sampleCount >= 5 && stockEv.evPct <= 0 && !getCtxIsPaper() && !isMegaCap) {
       logger.info(
         `  ❌ ${cand.stock_code}: 음수 EV ${stockEv.evPct.toFixed(1)}% (${stockEv.sampleCount}건, 승률${(stockEv.winRate * 100).toFixed(0)}%) → Live 진입 차단`,
         { component: 'TRACK_B' },

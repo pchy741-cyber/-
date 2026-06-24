@@ -26,7 +26,7 @@ const xmlParser = new XMLParser({
 // 수집된 뉴스 메모리 캐시 (당일만 유지)
 let todayNews: Map<string, NewsItem[]> = new Map();
 let lastCollectDate = '';
-let lastNewsSuccessAt = 0; // 마지막 성공적 수집 타임스탬프 (ms) — 0 = 아직 수집 안됨
+let lastNewsSuccessAt = Date.now(); // Boot grace: Cold Start 직후 0이면 즉시 "뉴스 끊김" 차단 → 현재 시각으로 초기화 (프리페치가 실제값 덮어씀)
 const NEWS_MAX_ENTRIES = 500; // 하루 최대 뉴스 엔트리 수 (메모리 누수 방지)
 
 /** 마지막 뉴스 수집 성공 시각 (ms). 0이면 오늘 아직 수집 안됨. */

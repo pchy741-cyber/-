@@ -1001,7 +1001,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
                       ? `진입타이밍가드(${entryTimingCheck.details.phase})`
                       : eodOnlyActive
                         ? '🎰 EOD-only모드(연패→종가베팅만허용)'
-                        : `포트폴리오위험(미실현손실-3.5%↑)`;
+                        : `포트폴리오위험(미실현손실-5%↑)`;
       logger.warn(`🚫 신규매수 차단: ${blockReason}`, { component: 'TRACK_B' });
     }
     if (macroSizingMult < 1.0) {

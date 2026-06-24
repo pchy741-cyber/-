@@ -11,7 +11,7 @@ let _perfMultCache: { data: number; ts: number } | null = null;
 const PERF_MULT_CACHE_MS = 15 * 60 * 1000; // 15분 캐시
 
 // ── 포트폴리오 스트레스 레벨 ──────────────────────────────────────────────
-// 0 = 정상  1 = 주의 (미실현 손실 -2%)  2 = 위험 (미실현 손실 -3.5%)
+// 0 = 정상  1 = 주의 (미실현 손실 -3%)  2 = 위험 (미실현 손실 -5%)
 export type PortfolioStressLevel = 0 | 1 | 2;
 
 /**
@@ -442,7 +442,7 @@ export async function runPortfolioHealthCheck(): Promise<void> {
       }
     }
 
-    const stressLevel: PortfolioStressLevel = unrealizedPct <= -3.5 ? 2 : unrealizedPct <= -2.0 ? 1 : 0;
+    const stressLevel: PortfolioStressLevel = unrealizedPct <= -5.0 ? 2 : unrealizedPct <= -3.0 ? 1 : 0;
 
     if (stressLevel >= 2) {
       const msg = [

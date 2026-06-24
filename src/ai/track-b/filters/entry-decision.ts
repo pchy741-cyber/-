@@ -10,10 +10,13 @@ import { getCtxIsPaper } from '../../../config/context.js';
 import { config } from '../../../config/index.js';
 import { logger } from '../../../utils/logger.js';
 import { getOverride } from '../../ai-overrides.js';
+import { MEGA_CAP_PRIORITY_CODES } from '../trading-rules.js';
 import type { EntryInput, EntryVerdict } from './types.js';
 
 /** 레짐 신뢰도 No-Trade 임계값 — 이 미만이면 레짐 불확실 → 진입 금지 */
 const REGIME_CONFIDENCE_THRESHOLD = 0.65;
+/** 메가캡 대형주: 변동성 구조적으로 낮아 RANGE_LOW_VOL 빈발 → 신뢰도 임계 완화 */
+const MEGA_CAP_REGIME_THRESHOLD = 0.45;
 
 /** 진입 사유 문자열 생성 */
 function buildEntryReason(input: EntryInput): string {
@@ -47,10 +50,13 @@ export function tryRegimeRouterEntry(input: EntryInput): EntryVerdict {
 
   if (!regimeRoute.routed) return { action: 'CONTINUE' };
 
-  // No-Trade 게이트: 레짐 신뢰도 부족 → 진입 금지
-  if (regimeRoute.regimeConfidence < REGIME_CONFIDENCE_THRESHOLD) {
+  // No-Trade 게이트: 레짐 신뢰도 부족 → 진입 금지 (메가캡은 임계 완화)
+  const regimeThreshold = MEGA_CAP_PRIORITY_CODES.has(stockCode)
+    ? MEGA_CAP_REGIME_THRESHOLD
+    : REGIME_CONFIDENCE_THRESHOLD;
+  if (regimeRoute.regimeConfidence < regimeThreshold) {
     logger.info(
-      `  🚫 ${stockCode}: 레짐 불확실 (confidence=${(regimeRoute.regimeConfidence * 100).toFixed(0)}% < ${REGIME_CONFIDENCE_THRESHOLD * 100}%) → No-Trade`,
+      `  🚫 ${stockCode}: 레짐 불확실 (confidence=${(regimeRoute.regimeConfidence * 100).toFixed(0)}% < ${regimeThreshold * 100}%) → No-Trade`,
       { component: 'TRACK_B' },
     );
     return { action: 'SKIP', reason: `레짐 신뢰도 부족 (${(regimeRoute.regimeConfidence * 100).toFixed(0)}%)` };
@@ -85,8 +91,11 @@ export function tryFinalEntry(input: EntryInput): EntryVerdict {
   const { stockCode, aiScore, buyThreshold, scoring, winRates } = input;
   const { effectiveTechScore, minTechScore, priorityBonus, candleBonus } = scoring;
 
-  // No-Trade 게이트: 레짐 신뢰도 부족 → 진입 금지 (모든 진입 경로 공통 적용, 최우선)
-  if (input.regimeRoute.regimeConfidence < REGIME_CONFIDENCE_THRESHOLD) {
+  // No-Trade 게이트: 레짐 신뢰도 부족 → 진입 금지 (메가캡은 임계 완화)
+  const regimeThreshold2 = MEGA_CAP_PRIORITY_CODES.has(stockCode)
+    ? MEGA_CAP_REGIME_THRESHOLD
+    : REGIME_CONFIDENCE_THRESHOLD;
+  if (input.regimeRoute.regimeConfidence < regimeThreshold2) {
     logger.info(
       `  🚫 ${stockCode}: 레짐 불확실 (confidence=${(input.regimeRoute.regimeConfidence * 100).toFixed(0)}%) → No-Trade 강제`,
       { component: 'TRACK_B' },
