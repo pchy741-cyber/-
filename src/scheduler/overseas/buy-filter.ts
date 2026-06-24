@@ -328,40 +328,48 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
       })
       // 9. 기술적 진입 필터 (RSI/ADX/MA/BB/dayRange) + AI 확신도
       .filter((t) => {
-        const ai = aiMap.get(t.code);
         const isOversold = t.rsi <= RSI_OVERSOLD && t.trendStrength !== 'WEAK';
         const isAbove50 = t.rsi >= 50;
-        // RSI "developing zone" (35-49): 추세 발전/회복 중, ADX 확인 시 진입 허용
-        // v15: RSI 38→35, ADX 20→15, MA20 제거 — 조정 후 회복 종목 진입 허용
-        const isDeveloping = t.rsi >= 35 && t.rsi < 50 && t.adx >= 15;
-        // v14: ADX Paper/Live 통합 15 (기존 Live 18 → 진입 지연으로 타이밍 악화)
-        const adxThreshold = 15;
-        // 조정장 급락: RSI ≤ 30 + 당일 -3% → 트렌드 필터 무시 (저점 매수)
+        // v15 Hyper: developing zone RSI 30-49 + ADX 12+ (기존 35-49/ADX15 → 회복 초기 포착)
+        const isDeveloping = t.rsi >= 30 && t.rsi < 50 && t.adx >= 12;
+        const adxThreshold = 12; // v15: 15→12 (약한 추세도 진입 허용)
+        // 조정장 급락 바이패스
         const isDipBuyEntry = (t.rsi <= 30 && t.price.changePct <= -2.5)
           || (t.rsi <= 25 && t.price.changePct <= -1.5)
           || t.rsi <= 20;
-        // v15: RSI 28-35 구간도 강한 추세(ADX≥25)면 진입 허용 (깊은 조정 후 반등 포착)
-        const isNearOversold = t.rsi > RSI_OVERSOLD && t.rsi <= 35 && t.adx >= 25;
+        // v15: RSI 28-38 + ADX≥20 진입 (깊은 조정 후 반등)
+        const isNearOversold = t.rsi > RSI_OVERSOLD && t.rsi <= 38 && t.adx >= 20;
+        // v15: score > 0이면 추세 필터 완화 (기술점수 양호 = 진입 여건 있음)
+        const scoreBypass = t.score > 0 && t.adx >= 15;
         const trendFilterOk =
-          t.isMomentum || t.isBigMover || isOversold || isDeveloping || isDipBuyEntry || isNearOversold || (isAbove50 && t.adx > adxThreshold);
+          t.isMomentum || t.isBigMover || isOversold || isDeveloping || isDipBuyEntry
+          || isNearOversold || scoreBypass || (isAbove50 && t.adx > adxThreshold);
         if (!trendFilterOk) {
-          logger.info(`  ⛔ 진입 필터 탈락: ${t.code} RSI=${t.rsi.toFixed(0)} ADX=${t.adx.toFixed(0)}`, {
+          logger.info(`  ⛔ 진입 필터 탈락: ${t.code} RSI=${t.rsi.toFixed(0)} ADX=${t.adx.toFixed(0)} score=${t.score}`, {
             component: 'OVERSEAS',
           });
           return false;
         }
-        // v14: MA/BB 바이패스 Paper/Live 통합 — STRONG_BUY/BUY면 통과
+        // v15: MA/BB 바이패스 조건 대폭 완화 — 조정장에서 MA20 하방 차단이 매수 0건의 주범
         const signalPass = (t.signal === 'STRONG_BUY' || t.signal === 'BUY')
           || (paperValidated.has(t.code) && t.score >= 20);
-        // 조정장 급락 바이패스: RSI ≤ 30 + 당일 -3% 이상 하락 → MA20/MA60 필터 무시
+        // 조정장 급락 바이패스
         const dipBuyPass = (t.rsi <= 30 && t.price.changePct <= -2.5)
           || (t.rsi <= 25 && t.price.changePct <= -1.5)
           || t.rsi <= 20;
-        if (!t.isMomentum && !isOversold && t.aboveMA20 === false && !signalPass && !dipBuyPass) {
+        // v15: AI 매수 추천이면 MA20 무관 진입 (AI가 보는 것은 기술적 지표 이상의 정보)
+        const ai = aiMap.get(t.code);
+        const aiBypass = ai?.action === 'BUY' && (ai.confidence ?? 0) >= 0.60;
+        // v15: ADX ≥ 22 + score > 0 → 추세가 살아있으면 MA20 아래도 진입
+        // (조정 후 회복 초기 = MA20 아래지만 ADX/score 양호한 구간)
+        const trendAliveBypass = t.adx >= 22 && t.score > 0;
+        if (!t.isMomentum && !isOversold && t.aboveMA20 === false
+            && !signalPass && !dipBuyPass && !aiBypass && !trendAliveBypass) {
           logger.info(`  ⛔ MA20 하방 진입 차단: ${t.code}`, { component: 'OVERSEAS' });
           return false;
         }
-        if (!t.isMomentum && t.aboveMA60 === false && !signalPass && !dipBuyPass) {
+        // v15: MA60 차단도 동일하게 완화 (AI/추세 바이패스 추가)
+        if (!t.isMomentum && t.aboveMA60 === false && !signalPass && !dipBuyPass && !aiBypass && !trendAliveBypass) {
           logger.info(`  ⛔ MA60 하방 진입 차단: ${t.code}`, { component: 'OVERSEAS' });
           return false;
         }

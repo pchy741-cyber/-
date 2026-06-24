@@ -599,13 +599,11 @@ export async function executeBuyLoop(params: BuyLoopParams): Promise<BuyLoopResu
     );
   }
 
-  // ── 종가베팅 ──
+  // ── 종가베팅 (v15: 극단 약세장만 제한, 나머지는 스윙) ──
   const { isUSMarketLastNMinutes, getMinutesToUSClose } = await import('./session.js');
   const isEodWindow = isUSMarketLastNMinutes(30);
   const isBadMarket =
-    freshBreadth < 0.35 ||
-    effectiveVixRegime.regime === 'STRESS' ||
-    effectiveVixRegime.regime === 'CRISIS' ||
+    (freshBreadth < 0.25 && effectiveVixRegime.regime === 'CRISIS') || // 극단 약세만
     defenseSignal.blockNewBuys;
   const eodBlockBuys = !isPaperMode && openRegions.has('US') && !isEodWindow && isBadMarket;
   if (eodBlockBuys && buyTargets.length > 0) {
@@ -613,8 +611,8 @@ export async function executeBuyLoop(params: BuyLoopParams): Promise<BuyLoopResu
       `⏰ 종가베팅: 약세장(breadth=${(freshBreadth * 100).toFixed(0)}% VIX=${effectiveVixRegime.regime}) 마감 ${getMinutesToUSClose()}분 전 — 후보 ${buyTargets.length}종목 대기`,
       { component: 'OVERSEAS' },
     );
-  } else if (openRegions.has('US') && !isBadMarket) {
-    logger.info(`📈 스윙모드: 정상장(breadth=${(freshBreadth * 100).toFixed(0)}%) — 매수 활성`, {
+  } else if (openRegions.has('US')) {
+    logger.info(`📈 스윙모드: breadth=${(freshBreadth * 100).toFixed(0)}% VIX=${effectiveVixRegime.regime} — 매수 활성`, {
       component: 'OVERSEAS',
     });
   }
@@ -649,7 +647,16 @@ export async function executeBuyLoop(params: BuyLoopParams): Promise<BuyLoopResu
     }
     const mtf = mtfResults.get(target.code);
     if (mtf?.blocked) {
-      if (isPaperMode || portfolioValue < SMALL_ACCOUNT_USD) {
+      // v15: MTF 바이패스 조건 확대 — 과도한 차단이 매수 0건의 주범
+      const aiDec = aiMap.get(target.code);
+      const mtfBypass =
+        isPaperMode ||
+        portfolioValue < MID_ACCOUNT_USD || // 소액 계좌 ($2000 미만) 바이패스
+        (aiDec?.action === 'BUY' && (aiDec.confidence ?? 0) >= 0.60) || // AI BUY 60%+ 바이패스
+        target.signal === 'STRONG_BUY' || // STRONG_BUY 신호 바이패스
+        (target.signal === 'BUY' && mtf.confluence >= 1) || // BUY + 최소 1개 합류 허용
+        target.rsi <= 30; // 극단 과매도 바이패스
+      if (mtfBypass) {
         logger.info(
           `📊 MTF 경고(바이패스): ${target.code} (W:${mtf.weekly} D:${mtf.daily} H4:${mtf.h4} 합류${mtf.confluence}/3)`,
           { component: 'OVERSEAS' },
@@ -710,20 +717,21 @@ export async function executeBuyLoop(params: BuyLoopParams): Promise<BuyLoopResu
     if (qtyBySizing === 0 && positionSize >= target.price.currentPrice * 0.99) {
       qtyBySizing = 1;
     }
-    if (qtyBySizing === 0 && portfolioValue < SMALL_ACCOUNT_USD && target.price.currentPrice <= cash * 0.95) {
+    // v15: 고가 주식 1주 매수 허용 — 현금으로 살 수 있으면 최소 1주
+    // (기존: 소액 계좌만 → 일반 계좌도 고가 주식에서 fullQty=0 문제)
+    if (qtyBySizing === 0 && target.price.currentPrice <= cash * 0.90) {
       qtyBySizing = 1;
     }
     const existingHolding = updatedHoldings.get(target.code);
     const existingQty = existingHolding?.qty ?? 0;
-    /** Small account threshold (USD) — below this, relax concentration limits */
-    /** Concentration cap: % of portfolio allowed per single position */
-    // v10.11: 집중도 상한 25%→35% Paper (자금 분산 과다 완화)
-    const CONC_CAP_PCT = portfolioValue < SMALL_ACCOUNT_USD ? 1.0 : isPaperMode ? 0.35 : 0.25;
+    // v15: 집중도 상한 완화 — 소액 $2000 미만은 100%, 일반은 Live 35%
+    const CONC_CAP_PCT = portfolioValue < MID_ACCOUNT_USD ? 1.0 : isPaperMode ? 0.45 : 0.35;
     let maxQtyByConc =
       portfolioValue > 0
         ? Math.max(0, Math.floor((portfolioValue * CONC_CAP_PCT) / priceWithFee) - existingQty)
         : Infinity;
-    if (maxQtyByConc === 0 && portfolioValue < 500 && existingQty === 0 && target.price.currentPrice <= cash * 0.95) {
+    // v15: 현금으로 살 수 있는 고가 주식 1주 허용 (집중도 무관)
+    if (maxQtyByConc === 0 && existingQty === 0 && target.price.currentPrice <= cash * 0.90) {
       maxQtyByConc = 1;
     }
     const fullQty = Math.min(qtyBySizing, qtyBy1PctRule > 0 ? qtyBy1PctRule : qtyBySizing, maxQtyByConc);
