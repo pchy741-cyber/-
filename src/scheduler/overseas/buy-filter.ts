@@ -318,8 +318,8 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         const isAbove50 = t.rsi >= 50;
         // RSI "developing zone" (38-49): 추세 발전 중, ADX가 확인해주면 진입 허용
         const isDeveloping = t.rsi >= 38 && t.rsi < 50 && t.adx >= 20 && t.aboveMA20;
-        // v10.9: ADX 진입 최소 기준 강화 (13→18 Live) — 횡보장 진입 차단
-        const adxThreshold = isPaper ? 15 : 18;
+        // v14: ADX Paper/Live 통합 15 (기존 Live 18 → 진입 지연으로 타이밍 악화)
+        const adxThreshold = 15;
         // 조정장 급락: RSI ≤ 30 + 당일 -3% → 트렌드 필터 무시 (저점 매수)
         const isDipBuyEntry = (t.rsi <= 30 && t.price.changePct <= -2.5)
           || (t.rsi <= 25 && t.price.changePct <= -1.5)
@@ -332,13 +332,9 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
           });
           return false;
         }
-        // MA20/MA60/BB 스퀴즈 필터 완화 — 강한 시그널이면 통과
-        const paperSignalPass = isPaper && (t.signal === 'STRONG_BUY' || t.signal === 'BUY');
-        // Live: STRONG_BUY + score≥30이면 MA/BB 필터 바이패스 (소액 계좌 매수 기회 확보)
-        const liveSignalPass = !isPaper && t.signal === 'STRONG_BUY' && t.score >= 30;
-        // Paper→Live 브릿지: 연습모드 검증 종목도 MA/BB 필터 완화
-        const paperBridgePass = paperValidated.has(t.code) && t.score >= 20;
-        const signalPass = paperSignalPass || liveSignalPass || paperBridgePass;
+        // v14: MA/BB 바이패스 Paper/Live 통합 — STRONG_BUY/BUY면 통과
+        const signalPass = (t.signal === 'STRONG_BUY' || t.signal === 'BUY')
+          || (paperValidated.has(t.code) && t.score >= 20);
         // 조정장 급락 바이패스: RSI ≤ 30 + 당일 -3% 이상 하락 → MA20/MA60 필터 무시
         const dipBuyPass = (t.rsi <= 30 && t.price.changePct <= -2.5)
           || (t.rsi <= 25 && t.price.changePct <= -1.5)
@@ -380,25 +376,25 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         const breadthBonus = freshBreadth >= 0.65 ? 0.02 : 0;
         const breadthAdj = breadthPenalty - breadthBonus;
         const isBigMoverTarget = t.isBigMover;
-        // v12.3: 실전모드 신뢰도 바닥 상향 — 저확신 진입이 손실 원인 1위
-        // Paper는 학습용이므로 기존 유지, Live만 강화
+        // v14: Paper/Live 통합 — Live 과필터링으로 고점수 승률 17% (Paper 100%)
+        // Paper 검증 결과 낮은 바닥이 더 좋은 진입 타이밍 → Live도 동일 적용
         const baseMinConf = recoveryMode
-          ? 0.75 // v12.3: 0.72→0.75
+          ? 0.75
           : mq === 'GREAT'
-            ? (isPaper ? 0.58 : 0.65) // v12.3: Live 0.58→0.65
+            ? 0.58 // v14: Paper/Live 통합 (기존 Live 0.65)
             : mq === 'CAUTIOUS'
-              ? (isPaper ? 0.63 : 0.68) // v12.3: Live 0.63→0.68
+              ? 0.63 // v14: Paper/Live 통합 (기존 Live 0.68)
               : mq === 'DANGER'
-                ? 0.75 // v12.3: 0.72→0.75
-                : (isPaper ? 0.60 : 0.65); // v12.3: Live 0.60→0.65
+                ? 0.75
+                : 0.60; // v14: Paper/Live 통합 (기존 Live 0.65)
         const minConf =
           (isBigMoverTarget
-            ? Math.max(isPaper ? 0.5 : 0.6, baseMinConf - 0.05 + breadthAdj)
+            ? Math.max(0.5, baseMinConf - 0.05 + breadthAdj) // v14: Paper/Live 통합 0.5 (기존 Live 0.6)
             : baseMinConf + breadthAdj) + vixRegime.confBoost;
         const minConfMomentum =
           (isBigMoverTarget
             ? Math.max(
-                isPaper ? 0.45 : 0.55,
+                0.45, // v14: Paper/Live 통합 0.45 (기존 Live 0.55)
                 (recoveryMode ? 0.75 : mq === 'GREAT' ? 0.6 : mq === 'CAUTIOUS' ? 0.65 : mq === 'DANGER' ? 0.75 : 0.62) -
                   0.05 +
                   breadthAdj,
@@ -437,11 +433,10 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         // ════════════════════════════════════════════════════════
         const wr = overseasWinRates.get(t.code);
         const hasGoodWinRate = wr && wr.sampleCount >= 5 && wr.winRate >= 0.55;
-        const hasBadWinRate = wr && wr.sampleCount >= 5 && wr.winRate <= 0.35;
-        // 승률 나쁜 종목은 기술적으로도 차단 (Memory Agent와 이중 보호)
-        // Paper: 학습 데이터 수집을 위해 완화 (sample 10건 이상 + 승률 25% 미만만 차단)
-        const paperRelaxedBadWR = isPaper && wr && wr.sampleCount >= 10 && wr.winRate <= 0.25;
-        const effectiveBadWR = isPaper ? paperRelaxedBadWR : hasBadWinRate;
+        // v14: Paper/Live 승률 피드백 통합 — 기존 Live sample≥5/35%는 과도 차단
+        // 5건만에 35% 차단 → 회복 가능 종목도 블랙리스트 (Paper 검증: 8건/30%가 적정)
+        const hasBadWinRate = wr && wr.sampleCount >= 8 && wr.winRate <= 0.30;
+        const effectiveBadWR = hasBadWinRate;
         if (effectiveBadWR && !t.isBigMover) {
           logger.info(
             `  ⛔ 승률 피드백 차단: ${t.code} 승률 ${(wr!.winRate * 100).toFixed(0)}% (${wr!.sampleCount}건)`,
@@ -471,9 +466,9 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         // 5. BUY 시그널 + 트렌드 확인 (ADX 확인, RSI 적정 범위)
         if (t.signal === 'BUY' && t.score >= 30 && t.adx >= 20 && t.rsi >= 42 && t.rsi <= 70 && t.aboveMA20)
           return true;
-        // 5b. Paper BUY 완화 — positiveCats<3 점수 반감(score≥20 → <30)으로 path-5 탈락하는 케이스 구제
+        // 5b. v14: BUY 완화 Paper/Live 통합 — positiveCats<3 점수 반감 구제
+        // (기존 Paper 전용 → Live에서도 score≥20+BUY+ADX20 조건 충족 시 진입)
         if (
-          isPaper &&
           t.signal === 'BUY' &&
           t.score >= 20 &&
           t.adx >= 20 &&
@@ -483,7 +478,7 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
           !effectiveBadWR
         ) {
           logger.info(
-            `  ✅ Paper BUY완화진입: ${t.code} score=${t.score} RSI=${t.rsi.toFixed(0)} ADX=${t.adx.toFixed(0)}`,
+            `  ✅ BUY완화진입: ${t.code} score=${t.score} RSI=${t.rsi.toFixed(0)} ADX=${t.adx.toFixed(0)}`,
             { component: 'OVERSEAS' },
           );
           return true;
@@ -529,19 +524,7 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
           return true;
         }
 
-        // Live 추가: 시장 상황이 좋을 때만 일반 BUY 완화
-        if (!isPaper && (mq === 'GREAT' || mq === 'OK')) {
-          if (
-            t.signal === 'BUY' &&
-            t.score >= 25 &&
-            t.adx >= 18 &&
-            t.rsi >= 42 &&
-            t.rsi <= 70 &&
-            t.aboveMA20 &&
-            !hasBadWinRate
-          )
-            return true;
-        }
+        // v14: Live GREAT/OK 전용 경로 제거 — 5b 통합 경로로 대체 (중복 해소)
         // 8b. Paper→Live 브릿지 완화 진입 — 연습모드 검증 종목은 완화 기준 허용
         if (
           !isPaper &&

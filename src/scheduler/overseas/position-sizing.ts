@@ -67,7 +67,8 @@ export function calcSizingMultiplier(params: {
   const rawMult = Math.round((0.6 + combined * 1.4) * combinedBoostMult * vixSizingMult * cooldownPenalty * 100) / 100;
   // 상한 캡: 2.0x 초과 방지 (과집중 사고 방지)
   const cappedMult = Math.min(2.0, rawMult);
-  return isPaper ? Math.max(cappedMult, 0.5) : cappedMult;
+  // v14: Paper/Live 통합 0.5x floor — 복합 감소로 포지션 붕괴 방지
+  return Math.max(cappedMult, 0.5);
 }
 
 export function calcPositionSize(params: SizingParams): SizingResult {
@@ -161,9 +162,9 @@ export function calcPositionSize(params: SizingParams): SizingResult {
           ? PHI.MAJOR // 38.2% 모멘텀 강세
           : PHI.MEDIUM; // 23.6% 기본
 
-  // v10.11: Paper는 50% 캡 허용 (Live는 38.2% 유지 — 실전 리스크 관리)
-  // Paper에서 충분히 매수하면서 학습 데이터 축적
-  const kellyCap = isPaper ? 0.50 : PHI.MAJOR;
+  // v14: Paper/Live Kelly Cap 통합 — Live 38.2%→45% 상향
+  // Paper 검증 결과 집중도 높을수록 승률↑ (소액 분산은 의미 없음)
+  const kellyCap = isPaper ? 0.50 : 0.45;
   const baseSize = portfolioValue * Math.min(kellyPct, kellyCap);
 
   // 현금 활용: 레짐 기반 동적 현금유보 — 장 좋으면 적극, 나쁘면 보수적
