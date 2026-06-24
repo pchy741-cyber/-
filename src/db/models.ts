@@ -168,7 +168,7 @@ export const TradeDecisionSchema = z.object({
 export type TradeDecision = z.infer<typeof TradeDecisionSchema>;
 
 // ── 해외주식 보유 현황 ──
-// DDL: 011 (생성) + 018 (scalp) + 026/035 (is_paper PK) + 043 (tp/sl) + 050 (bucket)
+// DDL: 011 (생성) + 018 (scalp) + 026/035 (is_paper PK) + 043 (tp/sl) + 050 (bucket) + 102 (averaging) + 103 (max_price)
 // PK: (exchange, stock_code, is_paper)
 const OverseasHoldingSchema = z.object({
   stock_code: z.string(),
@@ -185,6 +185,9 @@ const OverseasHoldingSchema = z.object({
   scalp_sl: z.number().nullable().optional(), // 018: 스캘핑 SL
   is_scalp: z.boolean().optional(),           // 018: 스캘핑 여부
   strategy_bucket: z.enum(['SWING', 'CORE', 'TACTICAL']).default('SWING'), // 050
+  averaging_count: z.number().default(0),               // 102: 물타기 횟수
+  initial_avg_price: z.number().nullable().optional(),   // 102: 최초 매수 평균가
+  max_price: z.number().nullable().optional(),           // 103: 보유 기간 최고가
 });
 export type OverseasHolding = z.infer<typeof OverseasHoldingSchema>;
 

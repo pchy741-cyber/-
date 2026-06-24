@@ -55,10 +55,11 @@ export function registerOverseasSellRoutes(app: Hono) {
         const { withTransaction } = await import('../../../db/client.js');
         await withTransaction(async (tx) => {
           if (isPartial) {
-            await tx.query(
-              'UPDATE overseas_holdings SET quantity = quantity - $1 WHERE stock_code = $2 AND exchange = $3 AND is_paper = true',
+            const upd = await tx.query(
+              'UPDATE overseas_holdings SET quantity = quantity - $1 WHERE stock_code = $2 AND exchange = $3 AND is_paper = true AND quantity >= $1',
               [qty, stockCode, exchange],
             );
+            if (upd.rowCount === 0) throw new Error('수량 부족 (동시 매도 경합)');
           } else {
             await tx.query(
               'DELETE FROM overseas_holdings WHERE stock_code = $1 AND exchange = $2 AND is_paper = true',
@@ -122,10 +123,11 @@ export function registerOverseasSellRoutes(app: Hono) {
       if (confirmed) {
         await withTx(async (tx) => {
           if (isPartial) {
-            await tx.query(
-              'UPDATE overseas_holdings SET quantity = quantity - $1 WHERE stock_code = $2 AND exchange = $3 AND is_paper = false',
+            const upd = await tx.query(
+              'UPDATE overseas_holdings SET quantity = quantity - $1 WHERE stock_code = $2 AND exchange = $3 AND is_paper = false AND quantity >= $1',
               [qty, stockCode, exchange],
             );
+            if (upd.rowCount === 0) throw new Error('수량 부족 (동시 매도 경합)');
           } else {
             await tx.query(
               'DELETE FROM overseas_holdings WHERE stock_code = $1 AND exchange = $2 AND is_paper = false',
