@@ -41,17 +41,17 @@ export async function detectSituations(isPaper: boolean): Promise<number> {
     const latestSnapshot = await getPool()
       .query(
         `
-      SELECT data FROM portfolio_snapshots
-      WHERE is_paper = $1 ORDER BY created_at DESC LIMIT 1
+      SELECT positions FROM portfolio_snapshots
+      WHERE is_paper = $1 ORDER BY snapshot_at DESC LIMIT 1
     `,
         [isPaper],
       )
       .catch(() => ({ rows: [] }));
 
-    const snapshotData = latestSnapshot.rows[0]?.data as Record<string, unknown> | undefined;
+    const snapshotPositions = latestSnapshot.rows[0]?.positions;
     const priceMap = new Map<string, number>();
-    if (snapshotData && Array.isArray(snapshotData.positions)) {
-      for (const p of snapshotData.positions as Array<Record<string, unknown>>) {
+    if (Array.isArray(snapshotPositions)) {
+      for (const p of snapshotPositions as Array<Record<string, unknown>>) {
         if (p.stock_code && p.current_price) {
           priceMap.set(p.stock_code as string, Number(p.current_price));
         }

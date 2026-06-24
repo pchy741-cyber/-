@@ -70,7 +70,8 @@ export async function runDailyBriefing(market: Market): Promise<void> {
       });
     } else {
       const { rows: holdings } = await pool.query(
-        `SELECT stock_code, is_paper, quantity, avg_price, unrealized_pnl_pct
+        `SELECT stock_code, is_paper, quantity, avg_price, last_price,
+                CASE WHEN avg_price > 0 THEN ((last_price - avg_price) / avg_price) * 100 ELSE NULL END AS unrealized_pnl_pct
          FROM overseas_holdings
          WHERE quantity > 0
          ORDER BY is_paper, stock_code`,
@@ -172,9 +173,11 @@ export async function runDailyBriefing(market: Market): Promise<void> {
           unrealizedPnlKrw += Number(c.realized_pnl ?? 0);
         }
       } else {
-        // 해외: overseas_holdings의 unrealized_pnl
+        // 해외: overseas_holdings의 unrealized_pnl (인라인 계산)
         const { rows: holdings } = await pool.query(
-          `SELECT quantity, avg_price, unrealized_pnl_pct FROM overseas_holdings WHERE quantity > 0`,
+          `SELECT quantity, avg_price, last_price,
+                  CASE WHEN avg_price > 0 THEN ((last_price - avg_price) / avg_price) * 100 ELSE 0 END AS unrealized_pnl_pct
+           FROM overseas_holdings WHERE quantity > 0`,
         );
         unrealizedCount = holdings.length;
         for (const h of holdings) {
