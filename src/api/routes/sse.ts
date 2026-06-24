@@ -308,6 +308,7 @@ async function buildMetaPayload(viewIsPaper: boolean): Promise<string> {
     overseasMarketValueUsd: overseasSummary?.evalUsd ?? 0,
     overseasCashRaw: viewIsPaper ? (overseasSummary?.cashUsd ?? 0) : (overseasSummary?.cashKrw ?? 0),
     overseasMaxUsd: 0,
+    overseasLiveUsd: 0,
     fxRate,
     paperInitialCapital: PAPER_INITIAL_CAPITAL,
     liveRealizedPnl: sseLiveRealizedPnl,

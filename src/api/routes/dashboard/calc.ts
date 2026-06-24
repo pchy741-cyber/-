@@ -34,6 +34,7 @@ export interface TotalAssetInputs {
   overseasMarketValueUsd: number;
   overseasCashRaw: number;          // Paper=USD, Live=KRW
   overseasMaxUsd: number;           // KIS cash_max_usd (통합증거금 전체 USD)
+  overseasLiveUsd: number;          // KIS cash_live_usd (외화예수금 실제 USD — 앱 "주문가능달러")
 
   // 외부
   fxRate: number;
@@ -110,9 +111,12 @@ export function calcTotalAssets(i: TotalAssetInputs): TotalAssetOutputs {
 
   // 해외 현금 표시
   const overseasCashForDisplay = Math.round(safeOverseasCashKrw);
-  const overseasCashUsdDisplay = i.overseasMaxUsd > 0
-    ? Math.round(i.overseasMaxUsd * 100) / 100
-    : fxRate > 0 ? Math.round((overseasCashForDisplay / fxRate) * 100) / 100 : 0;
+  // 우선순위: cash_live_usd(외화예수금 — KIS앱 "주문가능달러") > cash_max_usd(통합증거금) > 역변환
+  const overseasCashUsdDisplay = safe(i.overseasLiveUsd) > 0
+    ? Math.round(safe(i.overseasLiveUsd) * 100) / 100
+    : i.overseasMaxUsd > 0
+      ? Math.round(i.overseasMaxUsd * 100) / 100
+      : fxRate > 0 ? Math.round((overseasCashForDisplay / fxRate) * 100) / 100 : 0;
 
   // ─── 2. 국내 투자/시가 ───
   const domesticInvested = !i.viewIsPaper && i.kisPurchaseCost > 0

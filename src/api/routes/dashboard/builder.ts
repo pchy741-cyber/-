@@ -369,6 +369,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
   let overseasCash = 0;
   let _osCashAge = Infinity; // 스테일 가드용: overseas_state.cash 경과 초 (try 블록 밖 선언)
   let _overseasMaxUsd = 0; // KIS maxUsd(통합증거금 전체 주문가능 USD) — 환율 역변환 오차 방지
+  let _overseasLiveUsd = 0; // KIS 외화예수금 실제 USD (앱 "주문가능달러"와 일치)
   try {
     const pfx = viewIsPaper ? 'p_' : 'l_';
 
@@ -382,7 +383,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       // cash + cash_max_usd 배치 조회 (2 쿼리 → 1 쿼리)
       const { rows: cashStateRows } = await safeQuery(
         `SELECT key, value, EXTRACT(EPOCH FROM (NOW() - COALESCE(updated_at, NOW() - INTERVAL '999 hours'))) AS age_sec
-         FROM overseas_state WHERE key IN ('cash', 'cash_max_usd')`,
+         FROM overseas_state WHERE key IN ('cash', 'cash_max_usd', 'cash_live_usd')`,
       );
       for (const row of cashStateRows) {
         if (row.key === 'cash') {
@@ -390,6 +391,8 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
           overseasCash = Number(row.value); // KRW
         } else if (row.key === 'cash_max_usd') {
           _overseasMaxUsd = Number(row.value);
+        } else if (row.key === 'cash_live_usd') {
+          _overseasLiveUsd = Number(row.value);
         }
       }
     }
@@ -571,6 +574,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     overseasMarketValueUsd,
     overseasCashRaw: overseasCash,
     overseasMaxUsd: _overseasMaxUsd,
+    overseasLiveUsd: _overseasLiveUsd,
     fxRate: FX_RATE,
     paperInitialCapital: PAPER_INITIAL_CAPITAL,
     liveRealizedPnl,
