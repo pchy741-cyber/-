@@ -66,6 +66,7 @@ journalRoutes.get('/journal', async (c) => {
         tc.total_quantity,
         tc.total_invested,
         tc.realized_pnl,
+        tc.pnl_pct,
         tc.strategy_mode,
         tc.opened_at,
         tc.closed_at,
@@ -99,30 +100,12 @@ journalRoutes.get('/journal', async (c) => {
       const qty = Number(r.total_quantity ?? 0);
       const invested = Number(r.total_invested ?? 0);
 
-      // 수수료 추정 (표시용) — 매수 0.015% + 매도 0.195%
-      const buyFeeKrw = entryPrice * qty * 0.00015;  // KR_FEE.BUY_FEE_PCT
-      const sellFeeKrw = exitPrice > 0 ? exitPrice * qty * 0.00195 : 0;  // KR_FEE.SELL_FEE_PCT
-      const feeKrw = buyFeeKrw + sellFeeKrw;
-
-      // realized_pnl: DB 값은 이미 수수료 포함 (avg_buy_price에 매수수수료 포함, 매도가에 SELL_FEE 차감)
-      // → pnlNet으로 직접 사용, 추가 수수료 차감 금지 (이중차감 방지)
-      let pnlNet: number;
-      let pnlPctGross: number;
-      if (r.realized_pnl != null) {
-        pnlNet = Number(r.realized_pnl);
-        // Gross = 수수료 차감 전 추정 (역산)
-        const estGross = pnlNet + feeKrw;
-        pnlPctGross = invested > 0 ? (estGross / invested) * 100
-          : entryPrice > 0 && exitPrice > 0 ? ((exitPrice - entryPrice) / entryPrice) * 100 : 0;
-      } else {
-        // realized_pnl NULL: 가격 기반 폴백 (외부 매도 등)
-        // exitPrice=0(외부 매도 → SELL 주문 없음 → NULL) 시 -100% 오표시 방지
-        const pnlGross = exitPrice > 0 && entryPrice > 0 ? (exitPrice - entryPrice) * qty : 0;
-        pnlPctGross = invested > 0 ? (pnlGross / invested) * 100
-          : entryPrice > 0 && exitPrice > 0 ? ((exitPrice - entryPrice) / entryPrice) * 100 : 0;
-        pnlNet = pnlGross - feeKrw;
-      }
-      const pnlPctNet = invested > 0 ? (pnlNet / invested) * 100 : pnlPctGross;
+      // v13-fix: DB realized_pnl & pnl_pct 직접 사용 (수수료 재추정 제거 — 대시보드와 동일 소스)
+      const pnlNet = r.realized_pnl != null ? Number(r.realized_pnl) : 0;
+      const pnlPctNet = r.pnl_pct != null ? Number(r.pnl_pct)
+        : invested > 0 ? (pnlNet / invested) * 100 : 0;
+      const pnlPctGross = pnlPctNet; // DB값이 이미 수수료 포함 최종값
+      const feeKrw = 0; // DB realized_pnl에 이미 포함되어 별도 표시 불필요
 
       const openedAt = r.opened_at ? new Date(r.opened_at).toISOString() : '';
       const closedAt = r.closed_at ? new Date(r.closed_at).toISOString() : '';
