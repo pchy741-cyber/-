@@ -198,8 +198,8 @@ export async function executeBuyDecisions(
   // 소자산: 3종목 분산 불가 시 50%까지 집중 허용 (80%는 2종목 = 100% 초과 위험)
   // 기준: effectiveMaxPos(=totalAssets×25%)로 1주 최소가(1만원) 3개 이상 살 수 없으면 소자산
   const canDiversify3 = (totalAssets ?? 0) > 0 && (totalAssets ?? 0) * 0.25 >= 30_000;
-  // v12.3: Hard Cap 30% — 고가주 의미있는 수량 확보 (소자산은 50% 집중 허용)
-  const maxPosFraction = !canDiversify3 ? 0.5 : 0.30;
+  // v12.3: Hard Cap — 소자산 50% 집중, 일반 25% (안전 기본), 시장+확신 조합은 allocPct에서 동적 처리
+  const maxPosFraction = !canDiversify3 ? 0.5 : 0.25;
   const effectiveMaxPos = totalAssets
     ? Math.min(maxPositionKrw, Math.round(totalAssets * maxPosFraction))
     : maxPositionKrw;
@@ -534,44 +534,34 @@ export async function executeBuyDecisions(
     // 기술지표만 통과(AI 미허락) → 소액 탐색(4-5%)으로 제한
     const aiApproved = aiScore >= strategyParams.buyThreshold;
 
-    // 황금비율 v3: 확신도 비례 적극 투입 (고가 대형주도 의미있는 수량 매수)
-    const hardcodedAllocPct = aiApproved
-      ? mode === 'SNIPER'
-        ? // SNIPER: 단일 최고확신 종목 집중
-          blendedScore >= 90
-          ? 0.3
-          : blendedScore >= 85
-            ? 0.25
-            : 0.2
-        : blendedScore >= 90
-          ? 0.3
-          : // 90+: 30% (최고확신 적극 투입)
-            blendedScore >= 85
-            ? 0.25
-            : // 85-89: 25%
-              blendedScore >= 80
-              ? 0.2
-              : // 80-84: 20%
-                blendedScore >= 75
-                ? 0.15
-                : // 75-79: 15%
-                  blendedScore >= 70
-                  ? 0.12
-                  : 0.08
+    // 황금비율 v3: 시장 상황 × 확신도 동적 배분
+    // 시장 좋으면 공격적, 안 좋으면 보수적 + 90점+ 확실한 건 적극 투입
+    const _mktMult = mode === 'DEFENSE' ? 0.6 : macroSizingMult >= 1.0 ? 1.2 : 0.8;
+    const _baseAlloc = aiApproved
+      ? blendedScore >= 90
+        ? 0.40 * _mktMult // 90+: 시장 좋으면 48%, 나쁘면 32% — 확실한 건 적극
+        : blendedScore >= 85
+          ? 0.25 * _mktMult // 85-89: 시장 좋으면 30%, 나쁘면 20%
+          : blendedScore >= 80
+            ? 0.18 * _mktMult // 80-84: 시장 좋으면 21%, 나쁘면 14%
+            : blendedScore >= 75
+              ? 0.12
+              : blendedScore >= 70
+                ? 0.10
+                : 0.07
       : noAiScores || aiScore === 0
-        ? // v11: AI 부재 → 기술지표만으로 판단
-          blendedScore >= 85
-          ? 0.12
+        ? blendedScore >= 85
+          ? 0.10
           : blendedScore >= 75
-            ? 0.08
-            : 0.05
-        : // AI 있지만 이 종목은 미허락 → 최소 탐색
-          blendedScore >= 80
-          ? 0.08
-          : 0.05;
+            ? 0.07
+            : 0.04
+        : blendedScore >= 80
+          ? 0.06
+          : 0.04;
+    const hardcodedAllocPct = Math.min(_baseAlloc, 0.50); // 절대 상한 50% (리스크 관리)
     // Kelly 사이징 우선: 10건+ 데이터 있으면 Kelly 기반, 없으면 기존 하드코딩 × 페널티
     const kellyAllocPct = kellyResult
-      ? Math.min(0.30, kellyResult.kellyPct * (blendedScore >= 85 ? 1.5 : blendedScore >= 70 ? 1.2 : 1.0)) // 점수 비례 스케일 (30% hard cap)
+      ? Math.min(0.25, kellyResult.kellyPct * (blendedScore >= 85 ? 1.5 : blendedScore >= 70 ? 1.2 : 1.0)) // 점수 비례 스케일 (25% hard cap)
       : null;
     const dbAllocPct = getDbAllocPct(blendedScore);
     let baseAllocPct = kellyAllocPct ?? dbAllocPct ?? hardcodedAllocPct * kellyNullPenalty;
@@ -728,18 +718,21 @@ export async function executeBuyDecisions(
       );
     }
 
-    // v12.3: AI 고확신 포지션 한도 확대 (최대 총자산 30%)
+    // AI 고확신 포지션 한도: 90점+ 시장좋으면 40%까지, 그 외 25%
+    const _concPct = blendedScore >= 90 && _mktMult >= 1.0 ? 0.40 : 0.25;
     const concentrationCap = !canDiversify3
       ? totalAssets
         ? totalAssets * 0.8
         : Infinity
       : totalAssets
-        ? totalAssets * 0.30
+        ? totalAssets * _concPct
         : Infinity;
+    // v12.3: 90점+ 확실한 건 → effectiveMaxPos 대신 concentrationCap 직접 사용 (시장 연동)
+    const _highConvBase = blendedScore >= 90 ? concentrationCap : effectiveMaxPos;
     const aiMaxPos =
       aiPosMultiplier > 1.0 && totalAssets
-        ? Math.min(effectiveMaxPos * aiPosMultiplier, concentrationCap)
-        : effectiveMaxPos;
+        ? Math.min(_highConvBase * aiPosMultiplier, concentrationCap)
+        : _highConvBase;
     // 상한: aiMaxPos (AI확신도 반영 종목당 한도), 남은 현금의 95%까지 사용 (현금 최대 활용)
     const positionSize = Math.min(targetKrw, aiMaxPos, remainingCash * 0.95);
     // 소자산 모드: 분산 불가 시에도 비율 계산 반영 (positionSize vs 현금 80% 중 작은 값)
