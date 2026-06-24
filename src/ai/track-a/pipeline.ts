@@ -414,6 +414,77 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
       logger.warn(`DART 재무 분석 실패 (스킵): ${err}`, { component: 'TRACK_A' });
     }
 
+    // 4-l. 정량 팩터 스코어 (모멘텀·밸류·퀄리티·수급다이버전스)
+    try {
+      const { scoreBatchFactors, calcPortfolioMetrics } = await import('../../analysis/factor-model.js');
+      const { getOpenChains: getFactorChains } = await import('../../db/client.js');
+
+      // 차트 데이터 → OHLCV 변환 + 수급 데이터 매핑
+      const factorItems = allStocks.map((s) => {
+        const chart = chartData.get(s.stock_code) ?? [];
+        const candles = chart.map((c) => ({
+          date: c.date ?? '',
+          open: c.open,
+          high: c.high,
+          low: c.low,
+          close: c.close,
+          volume: c.volume,
+        }));
+        return {
+          code: s.stock_code,
+          name: s.stock_name,
+          candles,
+          dividendYield: dividendData.get(s.stock_code),
+        };
+      }).filter((f) => f.candles.length >= 20);
+
+      const factorResults = await scoreBatchFactors(factorItems);
+      if (factorResults.length > 0) {
+        // 상위/하위 종목 요약 → GPT 프롬프트에 주입
+        const sorted = [...factorResults].sort((a, b) => b.scores.composite - a.scores.composite);
+        const top10 = sorted.slice(0, 10);
+        const bottom5 = sorted.slice(-5);
+        const divAlerts = factorResults.filter((r) => Math.abs(r.scores.flowDivergence) >= 40);
+
+        const lines: string[] = [];
+        lines.push('### 팩터 상위 10 (모멘텀+밸류+퀄리티+수급)');
+        for (const r of top10) {
+          lines.push(`${r.code}(${r.name}): 종합${r.scores.composite} M${r.scores.momentum} V${r.scores.value} Q${r.scores.quality} ${r.scores.regime}`);
+        }
+        lines.push('### 팩터 하위 5');
+        for (const r of bottom5) {
+          lines.push(`${r.code}(${r.name}): 종합${r.scores.composite} M${r.scores.momentum} V${r.scores.value} Q${r.scores.quality} ${r.scores.regime}`);
+        }
+        if (divAlerts.length > 0) {
+          lines.push('### ⚠️ 수급 다이버전스 경보');
+          for (const r of divAlerts) {
+            const dir = r.scores.flowDivergence > 0 ? '🟢 기회(가격↓수급↑)' : '🔴 위험(가격↑수급↓)';
+            lines.push(`${r.code}(${r.name}): ${dir} 괴리${r.scores.flowDivergence} 가격5d:${r.scores.details.priceChange5d}%`);
+          }
+        }
+
+        // 포트폴리오 집중도 (보유 종목 기준)
+        const openChains = await getFactorChains().catch(() => []);
+        if (openChains.length > 0) {
+          const totalInvested = openChains.reduce((s, c) => s + (Number(c.avg_buy_price ?? 0) * Number(c.total_quantity ?? 0)), 0);
+          if (totalInvested > 0) {
+            const weights = openChains.map((c) => ({
+              code: c.stock_code,
+              weight: (Number(c.avg_buy_price ?? 0) * Number(c.total_quantity ?? 0)) / totalInvested,
+            }));
+            const metrics = calcPortfolioMetrics(weights);
+            lines.push(`### 포트폴리오 집중도: HHI=${metrics.hhi} 유효종목=${metrics.effectiveN} 최대비중=${metrics.maxWeight}% [${metrics.concentrationLevel}]`);
+          }
+        }
+
+        const section = `## 📊 정량 팩터 모델 (AI 참고용 — 모멘텀·밸류·퀄리티·수급)\n${lines.join('\n')}`;
+        combinedSources = combinedSources ? `${combinedSources}\n\n${section}` : section;
+        logger.info(`📊 팩터 스코어 ${factorResults.length}종목 계산 완료, GPT 스코어러에 주입`, { component: 'TRACK_A' });
+      }
+    } catch (err) {
+      logger.warn(`팩터 모델 스킵: ${err}`, { component: 'TRACK_A' });
+    }
+
     // 4-d / 4-e / 4-f. 시장 인텔리전스 병렬 수집 (실패해도 파이프라인 계속)
     try {
       const stockMeta = allStocks.map((s) => ({ stockCode: s.stock_code, companyName: s.stock_name }));
