@@ -1,6 +1,6 @@
 /**
  * 글로벌 감시 목록 & 유틸리티
- * Core 23종목 + Extended 12종목 = 35종목 하이브리드 후보군
+ * Core 23종목 + Extended 16종목 = 39종목 하이브리드 후보군
  */
 // ── Core 감시 목록 — 섹터 다각화 (미국 주력 + ADR, 23종목) ──
 // 근거: 2025년 리서치 — 방산/산업인프라가 빅테크 대비 초과 수익 (방산 +60~87% vs FAANG +36%)
@@ -63,9 +63,14 @@ const EXTENDED_WATCHLIST = [
   { code: 'NFLX', name: 'Netflix', exchange: 'NASDAQ', region: 'US', sector: 'TECH' },
   // 💊 헬스케어 추가
   { code: 'ABBV', name: 'AbbVie', exchange: 'NYSE', region: 'US', sector: 'HEALTH' },
+  // 🇨🇳 중국 ADR (NYSE/NASDAQ 상장 — 실적발표 주가 직결, 고변동성 수익 기회)
+  { code: 'BABA', name: 'Alibaba', exchange: 'NYSE', region: 'US', sector: 'CN_ADR' },
+  { code: 'JD', name: 'JD.com', exchange: 'NASDAQ', region: 'US', sector: 'CN_ADR' },
+  { code: 'PDD', name: 'PDD Holdings', exchange: 'NASDAQ', region: 'US', sector: 'CN_ADR' },
+  { code: 'BIDU', name: 'Baidu', exchange: 'NASDAQ', region: 'US', sector: 'CN_ADR' },
 ];
 
-// ── 통합 감시 목록 (Core 23 + Extended 12 = 35종목) ──
+// ── 통합 감시 목록 (Core 23 + Extended 16 = 39종목) ──
 // 모든 코드에서 GLOBAL_WATCHLIST를 사용 → 기존 호환성 유지
 export const GLOBAL_WATCHLIST = [...CORE_WATCHLIST, ...EXTENDED_WATCHLIST];
 
