@@ -18,7 +18,8 @@ export async function enforceConcentrationCap(params: {
   const { portfolioValue, pendingOrderStocks, techResults, sellOrders, isPaper } = params;
   let { cash } = params;
 
-  if (portfolioValue < 500) return { cash };
+  // 소액 계좌($2000 미만): 고가 주식 1주만 보유해도 비중 50%+ → 집중캡 무의미
+  if (portfolioValue < 2000) return { cash };
 
   const CONC_CAP = 0.25;
   const CONC_TARGET = 0.2;

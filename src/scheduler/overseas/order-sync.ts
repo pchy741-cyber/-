@@ -174,7 +174,7 @@ export async function cancelAllPendingOverseasOrders(isPaper?: boolean): Promise
   try {
     const { rows } = await getPool().query(
       `
-      SELECT id, stock_code, exchange, quantity, kis_order_no
+      SELECT id, stock_code, quantity, kis_order_no
       FROM orders
       WHERE trigger_source = 'OVERSEAS'
         AND trading_mode = $1

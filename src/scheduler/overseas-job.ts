@@ -1622,21 +1622,22 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
         if (qtyBySizing === 0 && positionSize >= target.price.currentPrice * 0.99) {
           qtyBySizing = 1; // 1주 가격 ±1% 내면 수수료 무시하고 매수
         }
-        // v10.8.2: 마이크로 계좌 — 현금으로 1주 살 수 있으면 최소 1주 보장
-        if (qtyBySizing === 0 && sizingPortfolioValue < 500 && target.price.currentPrice <= cash * 0.95) {
+        // v15: 고가 주식 1주 매수 허용 — 현금으로 살 수 있으면 최소 1주 (소액 계좌 전체 적용)
+        if (qtyBySizing === 0 && target.price.currentPrice <= cash * 0.90) {
           qtyBySizing = 1;
         }
         // 집중캡 사전 체크: concentration-cap.ts의 CONC_CAP(25%)와 정렬
         // $500 미만: cap 무제한 (concentration-cap도 skip), $500+: 25% (cap 발동 기준과 동일)
         const existingHolding = updatedHoldings.get(target.code);
         const existingQty = existingHolding?.qty ?? 0;
-        const CONC_CAP_PCT = sizingPortfolioValue < 500 ? 1.0 : 0.25;
+        // v15: 소액 계좌($2000 미만) 집중캡 100% (고가 주식 1주 매수 가능하도록)
+        const CONC_CAP_PCT = sizingPortfolioValue < 2000 ? 1.0 : 0.25;
         let maxQtyByConc =
           sizingPortfolioValue > 0
             ? Math.max(0, Math.floor((sizingPortfolioValue * CONC_CAP_PCT) / priceWithFee) - existingQty)
             : Infinity;
-        // v10.8.2: 마이크로 계좌 — 집중캡 계산상 0이지만 현금으로 1주 가능하면 허용
-        if (maxQtyByConc === 0 && sizingPortfolioValue < 500 && existingQty === 0 && target.price.currentPrice <= cash * 0.95) {
+        // v15: 소액 계좌 — 집중캡 계산상 0이지만 현금으로 1주 가능하면 허용
+        if (maxQtyByConc === 0 && existingQty === 0 && target.price.currentPrice <= cash * 0.90) {
           maxQtyByConc = 1;
         }
         const fullQty = Math.min(qtyBySizing, qtyBy1PctRule > 0 ? qtyBy1PctRule : qtyBySizing, maxQtyByConc);

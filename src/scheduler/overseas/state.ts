@@ -54,7 +54,9 @@ export async function computePaperCash(fxRate?: number): Promise<number> {
       logger.warn(`⚠️ FX rate 이상치 감지: ${rate} → ${FALLBACK_FX_RATE} 폴백`, { component: 'OVERSEAS' });
       rate = FALLBACK_FX_RATE;
     }
-    const seedUsd = PAPER_OVERSEAS_SEED_KRW / rate;
+    const seedKrw = await getEffectivePaperSeedKrw();
+    const seedUsd = seedKrw / rate;
+    // 현재 세대(paper)만 계산 — 아카이브(p_arch)는 리필 시 초기화된 것이므로 제외
     const { rows } = await getPool().query(`
       SELECT
         COALESCE(SUM(CASE WHEN side = 'BUY'
@@ -64,7 +66,7 @@ export async function computePaperCash(fxRate?: number): Promise<number> {
           THEN filled_price::numeric * filled_quantity::numeric * ${1 - OVERSEAS_FEE_PCT}
           ELSE 0 END), 0) AS total_sell
       FROM orders
-      WHERE trading_mode IN ('paper', 'p_arch') AND is_paper = true AND status = 'FILLED' AND trigger_source = 'OVERSEAS'
+      WHERE trading_mode = 'paper' AND is_paper = true AND status = 'FILLED' AND trigger_source = 'OVERSEAS'
     `);
     const totalBuyRaw = Number(rows[0]?.total_buy ?? 0);
     const totalSellRaw = Number(rows[0]?.total_sell ?? 0);
@@ -75,12 +77,29 @@ export async function computePaperCash(fxRate?: number): Promise<number> {
     return computed;
   } catch (e) {
     // DB 실패 시: 마지막 정상값 반환 (없으면 시드 폴백)
-    // 이전에는 항상 full seed를 반환 → 매수 후 현금 증가 버그 유발
     logger.warn(`Paper 현금 조회 실패 (폴백 사용): ${(e as Error).message}`, { component: 'OVERSEAS' });
     if (_lastPaperCash !== null) return _lastPaperCash;
     const rate = fxRate ?? FALLBACK_FX_RATE;
     return PAPER_OVERSEAS_SEED_KRW / rate;
   }
+}
+
+/** 배분 설정 기반 동적 Paper 시드 (KRW) — us_pct 반영 */
+async function getEffectivePaperSeedKrw(): Promise<number> {
+  try {
+    const { rows } = await getPool().query(
+      'SELECT us_pct FROM portfolio_allocation_config WHERE is_paper = true ORDER BY id DESC LIMIT 1',
+    );
+    if (rows[0]?.us_pct != null) {
+      const usPct = Number(rows[0].us_pct) / 100;
+      if (usPct > 0 && usPct <= 1) {
+        const { PAPER_INITIAL_CAPITAL } = await import('../../risk/paper-balance.js');
+        const totalPaperKrw = PAPER_INITIAL_CAPITAL + PAPER_OVERSEAS_SEED_KRW;
+        return Math.round(totalPaperKrw * usPct);
+      }
+    }
+  } catch { /* DB 미설정 시 기본값 사용 */ }
+  return PAPER_OVERSEAS_SEED_KRW;
 }
 
 /** 통합증거금 KRW 시드 반환 (표시용) */
@@ -224,6 +243,7 @@ export async function ensureOverseasTable(): Promise<void> {
       fxRate = FALLBACK_FX_RATE;
     }
     const computed = await computePaperCash(fxRate);
+    const seedKrw = await getEffectivePaperSeedKrw();
     const { rows: pkRows } = await getPool().query('SELECT value FROM overseas_state WHERE key = $1', [paperKey]);
     if (pkRows.length === 0) {
       await getPool().query(`INSERT INTO overseas_state (key, value) VALUES ($1, $2) ON CONFLICT (key) DO NOTHING`, [
@@ -231,7 +251,7 @@ export async function ensureOverseasTable(): Promise<void> {
         computed.toFixed(2),
       ]);
       logger.info(
-        `💰 Paper 통합증거금 초기화: ₩${(PAPER_OVERSEAS_SEED_KRW / 10000).toFixed(0)}만 → $${computed.toFixed(2)} (환율 ${fxRate.toFixed(0)})`,
+        `💰 Paper 통합증거금 초기화: ₩${(seedKrw / 10000).toFixed(0)}만 → $${computed.toFixed(2)} (환율 ${fxRate.toFixed(0)})`,
         { component: 'OVERSEAS' },
       );
     } else {
@@ -240,7 +260,7 @@ export async function ensureOverseasTable(): Promise<void> {
       if (diff > 10 || stored < 0 || !Number.isFinite(stored)) {
         await getPool().query(`UPDATE overseas_state SET value = $1 WHERE key = $2`, [computed.toFixed(2), paperKey]);
         logger.warn(
-          `🔧 Paper 현금 보정: $${stored.toFixed(2)} → $${computed.toFixed(2)} (통합증거금 ₩${(PAPER_OVERSEAS_SEED_KRW / 10000).toFixed(0)}만 / 환율 ${fxRate.toFixed(0)})`,
+          `🔧 Paper 현금 보정: $${stored.toFixed(2)} → $${computed.toFixed(2)} (통합증거금 ₩${(seedKrw / 10000).toFixed(0)}만 / 환율 ${fxRate.toFixed(0)})`,
           { component: 'OVERSEAS' },
         );
       }
@@ -509,7 +529,8 @@ export async function checkAndRefillOverseasPaper(force = false): Promise<boolea
 
   try {
     const fxRate = await fetchExchangeRate();
-    const seedUsd = PAPER_OVERSEAS_SEED_KRW / (fxRate > 0 ? fxRate : FALLBACK_FX_RATE);
+    const seedKrw = await getEffectivePaperSeedKrw();
+    const seedUsd = seedKrw / (fxRate > 0 ? fxRate : FALLBACK_FX_RATE);
     const cash = await computePaperCash(fxRate);
     const holdings = await getHoldings(true);
 
@@ -519,14 +540,14 @@ export async function checkAndRefillOverseasPaper(force = false): Promise<boolea
       holdingsValue += h.qty * h.avgPrice; // avgPrice 폴백 (시가 미확보 시)
     }
     const totalValue = cash + holdingsValue;
-    const totalRatio = totalValue / seedUsd;
+    const totalRatio = seedUsd > 0 ? totalValue / seedUsd : 0;
 
     if (!force && totalRatio >= OVERSEAS_REFILL_THRESHOLD) return false;
 
     // v10.8.4 안전장치: 최근 1시간 내 매매가 있었으면 리필 차단 (현금 계산 일시 오류 방지)
     const { rows: recentTrades } = await getPool().query(
       `SELECT COUNT(*) AS cnt FROM orders
-       WHERE trading_mode IN ('paper', 'p_arch') AND is_paper = true AND trigger_source = 'OVERSEAS' AND status = 'FILLED'
+       WHERE trading_mode = 'paper' AND is_paper = true AND trigger_source = 'OVERSEAS' AND status = 'FILLED'
        AND created_at > NOW() - INTERVAL '1 hour'`,
     );
     if (Number(recentTrades[0]?.cnt ?? 0) > 0) {
@@ -567,7 +588,7 @@ export async function checkAndRefillOverseasPaper(force = false): Promise<boolea
           archivedAt: new Date().toISOString(),
           ordersArchived: rowCount,
           finalCashUsd: cash,
-          seedKrw: PAPER_OVERSEAS_SEED_KRW,
+          seedKrw,
           fxRate,
           seedUsd,
         }),
@@ -575,7 +596,7 @@ export async function checkAndRefillOverseasPaper(force = false): Promise<boolea
     );
 
     logger.info(
-      `🔄 [PAPER-REFILL] 통합증거금 리필 (세대 #${gen}): $${cash.toFixed(0)} → $${seedUsd.toFixed(0)} (₩${(PAPER_OVERSEAS_SEED_KRW / 10000).toFixed(0)}만 / 환율 ${fxRate.toFixed(0)}) — ${rowCount}건 아카이브`,
+      `🔄 [PAPER-REFILL] 통합증거금 리필 (세대 #${gen}): $${cash.toFixed(0)} → $${seedUsd.toFixed(0)} (₩${(seedKrw / 10000).toFixed(0)}만 / 환율 ${fxRate.toFixed(0)}) — ${rowCount}건 아카이브`,
       { component: 'OVERSEAS' },
     );
     return true;
