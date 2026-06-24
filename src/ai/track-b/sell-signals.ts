@@ -479,6 +479,36 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
       }
     }
 
+    // ── 급등 즉시 익절 (Spike Sell): 매수 직후 급등 시 전량 매도 ─────────
+    // "사자마자 팍 오르면 바로 팔아야지" — 급등은 빠르게 되돌림 위험 높음
+    // 매수 후 60분 이내 + PnL ≥ 3% → 전량 익절 (수수료 후 순수익 ~2.8% 확보)
+    {
+      const chainAge = chain.opened_at
+        ? (Date.now() - new Date(chain.opened_at).getTime()) / 60_000
+        : 9999;
+      if (
+        chainAge <= 60 &&
+        pnlPct >= 3.0 &&
+        chain.total_quantity > 0 &&
+        !processedSellChains.has(chain.id)
+      ) {
+        logger.info(
+          `⚡ 급등즉시익절: ${chain.stock_code} +${pnlPct.toFixed(2)}% (매수 후 ${chainAge.toFixed(0)}분, 전량매도)`,
+          { component: 'TRACK_B' },
+        );
+        decisions.push({
+          action: 'SELL',
+          stock_code: chain.stock_code,
+          quantity: chain.total_quantity,
+          price_type: 'MARKET',
+          reasoning: `급등즉시익절: +${pnlPct.toFixed(2)}% (매수${chainAge.toFixed(0)}분후) → 되돌림 전 전량확정`,
+          confidence: 0.95,
+        });
+        processedSellChains.add(chain.id);
+        continue;
+      }
+    }
+
     // ── 장중 스캘핑 익절 (v11-fix: 1%→2.5% 상향, SWING 7% TP와 충돌 해소) ──
     // v11-fix: 기존 1%는 수수료 0.21% 차감 후 순수익 0.79%밖에 안 됨
     // SWING TP 7%인데 1%에서 전량 청산하면 수익 기회 대부분 상실
