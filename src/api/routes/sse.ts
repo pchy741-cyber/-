@@ -97,24 +97,20 @@ export async function getTodayTradeStats(isPaper?: boolean) {
       SELECT
         COUNT(*) AS total,
         COUNT(*) FILTER (WHERE o.side = 'SELL' AND o.stock_code ~ '^[0-9]{6}$') AS kr_sells,
-        -- v13-fix: chain DB realized_pnl 우선 사용 (수수료 재계산 제거 → 대시보드/매매일지와 일치)
+        -- v14-fix: 주문 단위 PnL (chain realized_pnl은 체인 전체값이라 중복 집계됨)
         COALESCE(SUM(
-          CASE WHEN o.side = 'SELL' AND o.stock_code ~ '^[0-9]{6}$' THEN
-            COALESCE(tc.realized_pnl,
-              CASE WHEN COALESCE(tc.avg_buy_price, o.avg_buy_price, 0) > 0 AND o.filled_price > 0 THEN
-                (o.filled_price * COALESCE(o.filled_quantity, o.quantity, 0)
-                 - ROUND(o.filled_price * COALESCE(o.filled_quantity, o.quantity, 0) * ${KR_FEE.SELL_FEE_PCT}))
-                - (COALESCE(tc.avg_buy_price, o.avg_buy_price) * COALESCE(o.filled_quantity, o.quantity, 0))
-              END)
+          CASE WHEN o.side = 'SELL' AND o.stock_code ~ '^[0-9]{6}$'
+               AND COALESCE(tc.avg_buy_price, o.avg_buy_price, 0) > 0 AND o.filled_price > 0 THEN
+            (o.filled_price * COALESCE(o.filled_quantity, o.quantity, 0)
+             - ROUND(o.filled_price * COALESCE(o.filled_quantity, o.quantity, 0) * ${KR_FEE.SELL_FEE_PCT}))
+            - (COALESCE(tc.avg_buy_price, o.avg_buy_price) * COALESCE(o.filled_quantity, o.quantity, 0))
           END
         ), 0) AS kr_realized_pnl,
         COUNT(*) FILTER (WHERE o.stock_code !~ '^[0-9]{6}$' AND o.side = 'SELL') AS us_sells,
         COALESCE(SUM(
-          CASE WHEN o.side = 'SELL' AND o.stock_code !~ '^[0-9]{6}$' THEN
-            COALESCE(tc.realized_pnl,
-              CASE WHEN COALESCE(o.avg_buy_price, tc.avg_buy_price, 0) > 0 AND o.filled_price > 0 THEN
-                (o.filled_price - COALESCE(o.avg_buy_price, tc.avg_buy_price)) * COALESCE(o.filled_quantity, o.quantity, 0)
-              END)
+          CASE WHEN o.side = 'SELL' AND o.stock_code !~ '^[0-9]{6}$'
+               AND COALESCE(o.avg_buy_price, tc.avg_buy_price, 0) > 0 AND o.filled_price > 0 THEN
+            (o.filled_price - COALESCE(o.avg_buy_price, tc.avg_buy_price)) * COALESCE(o.filled_quantity, o.quantity, 0)
           END
         ), 0) AS us_realized_pnl_usd
       FROM orders o

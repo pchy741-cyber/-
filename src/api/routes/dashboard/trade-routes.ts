@@ -139,21 +139,9 @@ tradeRoutes.get('/trades', async (c) => {
       calcFifoPnl(osPnlRows, true);
     }
 
-    // v13-fix: chain DB 값 우선 사용 (FIFO 재계산은 chain 없을 때만 폴백)
-    // 대시보드/매매일지와 동일한 소스 사용 → 불일치 해소
+    // v14-fix: FIFO만 사용 (chain realized_pnl은 체인 전체값이라 개별 주문에 쓰면 중복 집계됨)
     const rowsWithPnl = rows.map((r: any) => {
       const isUsd = !/^[0-9]{6}$/.test(String(r.stock_code ?? ''));
-      // 1순위: chain의 DB realized_pnl (가장 정확)
-      const tc = r.transaction_chains;
-      if (String(r.side) === 'SELL' && tc?.realized_pnl != null) {
-        return {
-          ...r,
-          realized_pnl: Number(tc.realized_pnl),
-          realized_pnl_pct: tc.pnl_pct != null ? Number(tc.pnl_pct) : null,
-          realized_pnl_usd: isUsd ? Number(tc.realized_pnl) : null,
-        };
-      }
-      // 2순위: FIFO 계산값
       const p = tradePnlMap.get(String(r.id ?? ''));
       if (p) {
         return { ...r, realized_pnl: p.pnl, realized_pnl_pct: p.pct, realized_pnl_usd: p.isUsd ? p.pnl : null };
@@ -321,25 +309,21 @@ tradeRoutes.get('/trades/daily-summary', async (c) => {
         COUNT(*) FILTER (WHERE o.side = 'BUY') AS buy_count,
         COUNT(*) FILTER (WHERE o.side = 'SELL') AS sell_count,
         COUNT(*) AS total_count,
-        -- v13-fix: chain DB realized_pnl 우선 사용 (수수료 재계산 폴백)
+        -- v14-fix: 주문 단위 PnL (chain realized_pnl은 체인 전체값이라 중복 집계됨)
         COALESCE(SUM(
-          CASE WHEN o.side = 'SELL' AND o.stock_code ~ '^[0-9]{6}$' THEN
-            COALESCE(tc.realized_pnl,
-              CASE WHEN COALESCE(tc.avg_buy_price, o.avg_buy_price) > 0 THEN
-                (COALESCE(o.filled_price, 0) * COALESCE(o.filled_quantity, o.quantity, 0)
-                 - ROUND(COALESCE(o.filled_price, 0) * COALESCE(o.filled_quantity, o.quantity, 0) * ${KR_FEE.SELL_FEE_PCT}))
-                - (COALESCE(tc.avg_buy_price, o.avg_buy_price) * COALESCE(o.filled_quantity, o.quantity, 0))
-              END)
+          CASE WHEN o.side = 'SELL' AND o.stock_code ~ '^[0-9]{6}$'
+               AND COALESCE(tc.avg_buy_price, o.avg_buy_price) > 0 THEN
+            (COALESCE(o.filled_price, 0) * COALESCE(o.filled_quantity, o.quantity, 0)
+             - ROUND(COALESCE(o.filled_price, 0) * COALESCE(o.filled_quantity, o.quantity, 0) * ${KR_FEE.SELL_FEE_PCT}))
+            - (COALESCE(tc.avg_buy_price, o.avg_buy_price) * COALESCE(o.filled_quantity, o.quantity, 0))
           END
         ), 0) AS realized_pnl,
-        -- v13-fix: 해외도 chain DB realized_pnl 우선
+        -- 해외: 주문 단위 PnL (수수료 없음 — KIS 실시간 반영)
         COALESCE(SUM(
-          CASE WHEN o.side = 'SELL' AND o.stock_code !~ '^[0-9]{6}$' THEN
-            COALESCE(tc.realized_pnl,
-              CASE WHEN COALESCE(tc.avg_buy_price, o.avg_buy_price) > 0 THEN
-                (COALESCE(o.filled_price, 0) * (1 - ${OVERSEAS_FEE_PCT}) - COALESCE(tc.avg_buy_price, o.avg_buy_price) * (1 + ${OVERSEAS_FEE_PCT}))
-                * COALESCE(o.filled_quantity, o.quantity, 0)
-              END)
+          CASE WHEN o.side = 'SELL' AND o.stock_code !~ '^[0-9]{6}$'
+               AND COALESCE(o.avg_buy_price, tc.avg_buy_price) > 0 THEN
+            (COALESCE(o.filled_price, 0) - COALESCE(o.avg_buy_price, tc.avg_buy_price))
+            * COALESCE(o.filled_quantity, o.quantity, 0)
           END
         ), 0) AS realized_pnl_usd,
         -- 해외/국내 구분
@@ -441,14 +425,11 @@ tradeRoutes.get('/trades/by-date/:date', async (c) => {
       [viewIsPaper, tradeMode, dateParam],
     );
 
-    // v13-fix: chain DB realized_pnl 우선 사용 (수수료 재계산 폴백)
+    // v14-fix: 주문 단위 PnL (FIFO 방식, chain PnL은 체인 전체값이라 중복됨)
     const trades = rows.map((r: any) => {
       const isSell = r.side === 'SELL';
       if (!isSell) return { ...r, realized_pnl: null, realized_pnl_pct: null };
 
-      // 1순위: chain의 DB realized_pnl
-      // by-date 쿼리에서 tc.avg_buy_price만 조인하므로 chain_id로 DB 조회 필요
-      // 간접 접근: chain의 avg_buy_price가 있으면 chain 연결됨
       const avgBuy = Number(r.avg_buy_price ?? 0);
       const fillPrice = Number(r.filled_price ?? 0);
       const qty = Number(r.filled_quantity ?? r.quantity ?? 0);
