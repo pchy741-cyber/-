@@ -422,26 +422,47 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
     }
   }
 
-  // ── 9.6. 실적발표 7일 매수 차단 — 어닝스 변동성 회피 ──────────────
+  // ── 9.6. 실적발표 전략 — 재무 좋으면 기회, 나쁘면 회피 ──────────────
+  // v13-fix: 단순 차단 → 실적 방향성 판단
+  // 재무지표(fundamentalScore) 60+ → 실적 서프라이즈 기대 → 매수 유지 + 확신도 부스트
+  // 재무지표 40 미만 → 실적 쇼크 우려 → 매수 차단
+  // 재무지표 없음 or 40~59 → 불확실 → 차단 (안전 우선)
   {
     const { checkKrEarnings } = await import('../../automation/earnings-sentinel.js');
+    const { getCachedFundamentalScore, getCachedPiotroskiScore } = await import('../../automation/dart-research.js');
     const buyDecisions = decisions.filter((d) => d.action === 'BUY' || d.action === 'AVERAGE_DOWN');
     if (buyDecisions.length > 0) {
       const results = await Promise.allSettled(
         buyDecisions.map(async (d) => ({ d, er: await checkKrEarnings(d.stock_code) })),
       );
       const earningsBlocked: string[] = [];
+      const earningsBoosted: string[] = [];
       for (const r of results) {
         if (r.status !== 'fulfilled') continue;
         const { d, er } = r.value;
         if (er.hasUpcomingEarnings) {
-          earningsBlocked.push(`${d.stock_code}(D-${er.daysUntil})`);
-          d.action = 'HOLD';
-          d.reasoning = `[실적발표 D-${er.daysUntil}일 차단] ${d.reasoning}`;
+          const fundScore = getCachedFundamentalScore(d.stock_code);
+          const piotroski = getCachedPiotroskiScore(d.stock_code);
+          const isStrongFundamentals = (fundScore != null && fundScore >= 60) || (piotroski != null && piotroski >= 6);
+
+          if (isStrongFundamentals) {
+            // 실적 서프라이즈 기대 → 매수 유지 + 확신도 부스트
+            d.confidence = Math.min(1.0, (d.confidence ?? 0.7) + 0.1);
+            d.reasoning = `[📈 실적발표 D-${er.daysUntil}일 기회! 재무${fundScore ?? '?'}점 F${piotroski ?? '?'}] ${d.reasoning}`;
+            earningsBoosted.push(`${d.stock_code}(D-${er.daysUntil},F${fundScore ?? '?'})`);
+          } else {
+            // 재무 불확실/취약 → 차단
+            earningsBlocked.push(`${d.stock_code}(D-${er.daysUntil},F${fundScore ?? '미산출'})`);
+            d.action = 'HOLD';
+            d.reasoning = `[실적발표 D-${er.daysUntil}일 회피 — 재무${fundScore ?? '미산출'}점] ${d.reasoning}`;
+          }
         }
       }
+      if (earningsBoosted.length > 0) {
+        logger.info(`📈 실적발표 매수기회: ${earningsBoosted.join(', ')} (재무 우수 → 서프라이즈 기대)`, { component: 'EARNINGS_SENTINEL' });
+      }
       if (earningsBlocked.length > 0) {
-        logger.info(`📅 실적발표 매수차단: ${earningsBlocked.join(', ')}`, { component: 'EARNINGS_SENTINEL' });
+        logger.info(`📅 실적발표 매수회피: ${earningsBlocked.join(', ')} (재무 불확실/취약)`, { component: 'EARNINGS_SENTINEL' });
       }
     }
   }

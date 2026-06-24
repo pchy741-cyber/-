@@ -1,10 +1,12 @@
 /**
- * 실적발표 감시자 — 매수 전 실적발표 일정 사전 차단
+ * 실적발표 감시자 — 실적발표 전 기회/위험 판단
  *
  * KR: NAVER Finance 일정 API (키 불필요)
  * US: Yahoo Finance calendarEvents (키 불필요)
  *
- * 7일 이내 실적발표 → 매수 차단 (공시 직후 변동성 회피)
+ * v13: 단순 차단 → 재무 기반 판단
+ * - 재무 우수(60+점) → 매수 기회 (서프라이즈 기대)
+ * - 재무 취약(<40점) → 매수 회피 (쇼크 우려)
  * 4시간 캐시 / 실패 시 안전 기본값 (통과) 반환
  */
 
@@ -80,7 +82,7 @@ export async function checkKrEarnings(code: string): Promise<EarningsCheckResult
             };
             evictExpiredCache();
             _cache.set(cacheKey, { result, expires: Date.now() + REFRESH.EARNINGS_CACHE_TTL_MS });
-            logger.info(`📅 KR실적발표 [${code}] D+${daysUntil}일 (${dateRaw}) → 매수 차단`, {
+            logger.info(`📅 KR실적발표 [${code}] D-${daysUntil}일 (${dateRaw}) → 재무 판단 위임`, {
               component: 'EARNINGS_SENTINEL',
             });
             return result;
@@ -132,7 +134,7 @@ export async function checkUsEarnings(symbol: string): Promise<EarningsCheckResu
         };
         evictExpiredCache();
         _cache.set(cacheKey, { result, expires: Date.now() + REFRESH.EARNINGS_CACHE_TTL_MS });
-        logger.info(`📅 US실적발표 [${symbol}] D+${daysUntil}일 (${dateStr}) → 매수 차단`, {
+        logger.info(`📅 US실적발표 [${symbol}] D-${daysUntil}일 (${dateStr}) → 재무 판단 위임`, {
           component: 'EARNINGS_SENTINEL',
         });
         return result;
