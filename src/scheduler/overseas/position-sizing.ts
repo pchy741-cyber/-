@@ -36,11 +36,11 @@ export interface SizingResult {
 
 // ── 황금비율 상수 (피보나치) ──
 const PHI = {
-  MAJOR: 0.382, // 38.2% — 주력 포지션 비율
-  MEDIUM: 0.236, // 23.6% — 중간 포지션
-  MINOR: 0.146, // 14.6% — 소형 포지션
-  CASH: 0.15, // 15.0% — 최소 현금 보유 (폭락장 방어)
-  MAX: 0.618, // 61.8% — 단일 포지션 최대 (소액 집중)
+  MAJOR: 0.40, // v15: 38.2%→40% — 주력 포지션 소폭 확대
+  MEDIUM: 0.27, // v15: 23.6%→27% — 중간 포지션 소폭 확대
+  MINOR: 0.17, // v15: 14.6%→17% — 소형 포지션
+  CASH: 0.10, // v15: 15%→10% — 해외는 적당한 현금유보
+  MAX: 0.618, // 61.8% 유지 (소액 집중)
 } as const;
 
 // 최소 포지션: 포트폴리오의 % (고정 $ 폐지)
@@ -65,9 +65,9 @@ export function calcSizingMultiplier(params: {
   // 배율 스택 캡: evMult × wrMult 합산이 1.5x 초과 방지 (과집중 사고 방지)
   const combinedBoostMult = Math.min(evMult * wrMult, 1.5);
   const rawMult = Math.round((0.6 + combined * 1.4) * combinedBoostMult * vixSizingMult * cooldownPenalty * 100) / 100;
-  // 상한 캡: 2.0x 초과 방지 (과집중 사고 방지)
+  // 상한 캡 2.0x 유지 (해외는 안정적)
   const cappedMult = Math.min(2.0, rawMult);
-  // v14: Paper/Live 통합 0.5x floor — 복합 감소로 포지션 붕괴 방지
+  // v14: Paper/Live 통합 0.5x floor
   return Math.max(cappedMult, 0.5);
 }
 
@@ -162,16 +162,13 @@ export function calcPositionSize(params: SizingParams): SizingResult {
           ? PHI.MAJOR // 38.2% 모멘텀 강세
           : PHI.MEDIUM; // 23.6% 기본
 
-  // v14: Paper/Live Kelly Cap 통합 — Live 38.2%→45% 상향
-  // Paper 검증 결과 집중도 높을수록 승률↑ (소액 분산은 의미 없음)
+  // v15: Kelly Cap 소폭 상향 (해외는 안정적 운용)
   const kellyCap = isPaper ? 0.50 : 0.45;
   const baseSize = portfolioValue * Math.min(kellyPct, kellyCap);
 
-  // 현금 활용: 레짐 기반 동적 현금유보 — 장 좋으면 적극, 나쁘면 보수적
-  // breadth ≥ 0.65 (BULL): 3% 유보 → 97% 활용
-  // breadth 0.45-0.65 (NORMAL): 6% 유보 → 94% 활용
-  // breadth < 0.45 (BEAR): 15% 유보 → 85% 활용 (PHI.CASH)
-  const dynamicCashReserve = breadth >= 0.65 ? 0.03 : breadth >= 0.45 ? 0.06 : PHI.CASH;
+  // v15: 해외 현금 유보 소폭 축소 (시간으로 올리는 개념)
+  // BULL: 3% 유보, NORMAL: 5% 유보, BEAR: 10% 유보
+  const dynamicCashReserve = breadth >= 0.65 ? 0.03 : breadth >= 0.45 ? 0.05 : 0.10;
   const cashUsageCap = 1.0 - dynamicCashReserve;
 
   // 복합 감소기 바닥: 소액 0.60 / 일반 0.40 (여러 팩터 곱셈 붕괴 방지)

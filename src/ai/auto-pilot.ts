@@ -466,6 +466,9 @@ async function getConsecutiveLosses(isPaper: boolean): Promise<Map<string, numbe
 /**
  * Dual-mode 실행: paper + live 양쪽 모두 실행
  */
+// US 스코어 티어 재보정: 4회마다 (~40분, 약 2시간에 3회)
+let _autoPilotCycleCount = 0;
+
 export async function runAutoPilotDual(): Promise<void> {
   // 캐시 먼저 리프레시
   await loadOverridesCache().catch(() => {});
@@ -482,6 +485,21 @@ export async function runAutoPilotDual(): Promise<void> {
       `🤖 AutoPilot 완료: paper(${paperResult.overridesSet}↑${paperResult.overridesRemoved}↓) live(${liveResult.overridesSet}↑${liveResult.overridesRemoved}↓)`,
       { component: 'AUTO_PILOT' },
     );
+  }
+
+  // US 스코어 티어 재보정 — 4회마다 (10분×4=40분 주기)
+  _autoPilotCycleCount++;
+  if (_autoPilotCycleCount % 4 === 0) {
+    try {
+      const { calibrateScoreTierParams } = await import('../automation/self-learning/calibration.js');
+      await Promise.all([
+        runWithMode(true, () => calibrateScoreTierParams('US')),
+        runWithMode(false, () => calibrateScoreTierParams('US')),
+      ]);
+      logger.info('🔄 US 스코어 티어 주기적 재보정 완료', { component: 'AUTO_PILOT' });
+    } catch (err) {
+      logger.warn(`US 스코어 티어 재보정 실패: ${err}`, { component: 'AUTO_PILOT' });
+    }
   }
 
   // 상황 감지: 규칙으로 못 푸는 판단 큐 적재

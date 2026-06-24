@@ -388,6 +388,128 @@ export async function getWinRateFeedback(isPaper: boolean): Promise<WinRateFeedb
   }
 }
 
+// ── v15 Adaptive Entry Confidence — 최근 10거래 기반 빠른 진입 조정 ──────────
+export interface AdaptiveEntryAdj {
+  thresholdAdj: number;  // buyThreshold 조정 (-5 ~ +8)
+  sizingMult: number;    // 포지션 사이징 배율 (0.7 ~ 1.2)
+  streakWinRate: number; // 최근 10거래 승률
+  reason: string;
+}
+
+let _adaptiveCache: { data: AdaptiveEntryAdj; ts: number } | null = null;
+const ADAPTIVE_CACHE_MS = 10 * 60 * 1000; // 10분 캐시
+
+/**
+ * 최근 10거래 승률 → 진입 공격도 동적 조정 (빠른 피드백 루프)
+ * - 70%+ 승률: threshold -3, sizing 1.15x (연승 → 공격 확대)
+ * - 60%+ 승률: threshold -2, sizing 1.1x
+ * - 40%- 승률: threshold +5, sizing 0.8x (연패 → 방어 강화)
+ * - 30%- 승률: threshold +8, sizing 0.7x (심각 연패 → 최소 진입)
+ */
+export async function getAdaptiveEntryAdj(isPaper: boolean): Promise<AdaptiveEntryAdj> {
+  const neutral: AdaptiveEntryAdj = { thresholdAdj: 0, sizingMult: 1.0, streakWinRate: 0.5, reason: '' };
+  const now = Date.now();
+  if (_adaptiveCache && now - _adaptiveCache.ts < ADAPTIVE_CACHE_MS) return _adaptiveCache.data;
+
+  try {
+    const SELL_PRICE_SUB_LOCAL = `(SELECT filled_price FROM orders WHERE chain_id = tc.id AND side = 'SELL' ORDER BY created_at DESC LIMIT 1)`;
+    const { rows } = await getPool().query(
+      `SELECT avg_buy_price, ${SELL_PRICE_SUB_LOCAL} AS sell_price
+       FROM transaction_chains tc
+       WHERE status = 'CLOSED' AND is_paper = $1
+       ORDER BY closed_at DESC LIMIT 10`,
+      [isPaper],
+    );
+    if (rows.length < 5) {
+      _adaptiveCache = { data: neutral, ts: now };
+      return neutral;
+    }
+
+    const wins = rows.filter((r: { avg_buy_price: string | number; sell_price: string | number | null }) =>
+      Number(r.sell_price ?? r.avg_buy_price) > Number(r.avg_buy_price),
+    ).length;
+    const wr = wins / rows.length;
+
+    let result: AdaptiveEntryAdj;
+    if (wr >= 0.7) {
+      result = { thresholdAdj: -3, sizingMult: 1.15, streakWinRate: wr, reason: `연승${wins}/${rows.length} → 공격 확대` };
+    } else if (wr >= 0.6) {
+      result = { thresholdAdj: -2, sizingMult: 1.1, streakWinRate: wr, reason: `양호${wins}/${rows.length} → 소폭 공격` };
+    } else if (wr <= 0.3) {
+      result = { thresholdAdj: 8, sizingMult: 0.7, streakWinRate: wr, reason: `심각연패${wins}/${rows.length} → 최소 진입` };
+    } else if (wr <= 0.4) {
+      result = { thresholdAdj: 5, sizingMult: 0.8, streakWinRate: wr, reason: `연패${wins}/${rows.length} → 방어 강화` };
+    } else {
+      result = neutral;
+    }
+
+    if (result.thresholdAdj !== 0) {
+      logger.info(`🎯 적응형진입: ${result.reason} (최근${rows.length}건 WR ${(wr * 100).toFixed(0)}%)`, { component: COMPONENT });
+    }
+    _adaptiveCache = { data: result, ts: now };
+    return result;
+  } catch (err) {
+    logger.warn(`적응형진입 조회 실패: ${err}`, { component: COMPONENT });
+    return neutral;
+  }
+}
+
+// ── v15 Anti-Drawdown Shield — 포트폴리오 레벨 고점 추적 + 드로다운 보호 ──
+const _portfolioPeak = new Map<string, number>(); // 'paper'|'live' → peak value (USD)
+
+export interface DrawdownShield {
+  drawdownPct: number;   // 고점 대비 드로다운 %
+  action: 'NONE' | 'WARN' | 'SELL_WORST' | 'LIQUIDATE';
+  reason: string;
+}
+
+/**
+ * 포트폴리오 고점 대비 드로다운 계산 + 행동 결정
+ * - -3%: 최악 포지션 매도 (SELL_WORST)
+ * - -5%: 전량 청산 (LIQUIDATE)
+ * @param currentValue 현재 포트폴리오 총가치 (USD)
+ */
+export function checkDrawdownShield(currentValue: number, isPaper: boolean): DrawdownShield {
+  const key = isPaper ? 'paper' : 'live';
+  const peak = _portfolioPeak.get(key) ?? 0;
+
+  // 고점 갱신
+  if (currentValue > peak) {
+    _portfolioPeak.set(key, currentValue);
+    return { drawdownPct: 0, action: 'NONE', reason: '' };
+  }
+  if (peak <= 0) {
+    _portfolioPeak.set(key, currentValue);
+    return { drawdownPct: 0, action: 'NONE', reason: '' };
+  }
+
+  const drawdownPct = ((currentValue - peak) / peak) * 100;
+
+  // v15: 드로다운 허용치 소폭 확대 (해외는 시간으로 올리는 개념)
+  if (drawdownPct <= -7.0) {
+    return {
+      drawdownPct,
+      action: 'LIQUIDATE',
+      reason: `포트폴리오 드로다운 ${drawdownPct.toFixed(1)}% (고점 $${peak.toFixed(0)} → 현재 $${currentValue.toFixed(0)}) → 전량 청산`,
+    };
+  }
+  if (drawdownPct <= -4.5) {
+    return {
+      drawdownPct,
+      action: 'SELL_WORST',
+      reason: `포트폴리오 드로다운 ${drawdownPct.toFixed(1)}% → 최악 포지션 매도`,
+    };
+  }
+  if (drawdownPct <= -3.0) {
+    return {
+      drawdownPct,
+      action: 'WARN',
+      reason: `포트폴리오 드로다운 ${drawdownPct.toFixed(1)}% — 주의`,
+    };
+  }
+  return { drawdownPct, action: 'NONE', reason: '' };
+}
+
 // ── 집중도 한도 ────────────────────────────────────────────────────────────
 const MAX_SINGLE_STOCK_PCT = 0.25; // 단일 종목 25% 초과 → 경고
 

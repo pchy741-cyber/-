@@ -38,12 +38,14 @@ export async function processScaleIns(params: {
 
   for (const row of scaleInRows) {
     const code = row.key.replace(scaleInPrefix, '');
-    const info = JSON.parse(row.value) as {
-      remainingQty: number;
-      entryPrice: number;
-      createdAt: string;
-      exchange: string;
-    };
+    let info: { remainingQty: number; entryPrice: number; createdAt: string; exchange: string };
+    try {
+      info = JSON.parse(row.value);
+    } catch {
+      logger.warn(`Scale-In JSON 파싱 실패: ${code} — 스킵 (손상된 레코드 삭제)`, { component: 'OVERSEAS' });
+      await getPool().query(`DELETE FROM overseas_state WHERE key = $1`, [row.key]).catch(() => {});
+      continue;
+    }
     const holdingDays = (Date.now() - new Date(info.createdAt).getTime()) / MS_PER_DAY;
     if (holdingDays > SCALE_IN_MAX_DAYS) {
       await getPool()

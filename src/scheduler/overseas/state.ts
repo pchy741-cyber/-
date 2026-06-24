@@ -64,7 +64,7 @@ export async function computePaperCash(fxRate?: number): Promise<number> {
           THEN filled_price::numeric * filled_quantity::numeric * ${1 - OVERSEAS_FEE_PCT}
           ELSE 0 END), 0) AS total_sell
       FROM orders
-      WHERE trading_mode = 'paper' AND is_paper = true AND status = 'FILLED' AND trigger_source = 'OVERSEAS'
+      WHERE trading_mode IN ('paper', 'p_arch') AND is_paper = true AND status = 'FILLED' AND trigger_source = 'OVERSEAS'
     `);
     const totalBuyRaw = Number(rows[0]?.total_buy ?? 0);
     const totalSellRaw = Number(rows[0]?.total_sell ?? 0);
@@ -469,13 +469,20 @@ export async function getMaxPrice(code: string, isPaper?: boolean): Promise<numb
 export async function setMaxPrice(code: string, price: number, isPaper?: boolean): Promise<void> {
   const cacheKey = `ov_maxprice:${modePrefix(isPaper)}${code}`;
   cacheSet(cacheKey, price, 300); // 캐시 즉시 갱신
-  await getPool()
-    .query(
-      `INSERT INTO overseas_state (key, value) VALUES ($1, $2)
-     ON CONFLICT (key) DO UPDATE SET value = $2`,
-      [`${modePrefix(isPaper)}maxprice_${code}`, price.toString()],
-    )
-    .catch(() => {});
+  const dbKey = `${modePrefix(isPaper)}maxprice_${code}`;
+  const sql = `INSERT INTO overseas_state (key, value) VALUES ($1, $2)
+     ON CONFLICT (key) DO UPDATE SET value = $2`;
+  try {
+    await getPool().query(sql, [dbKey, price.toString()]);
+  } catch (e1) {
+    // 1회 재시도 (트레일링 스탑 핵심 데이터 — 유실 시 손절 오작동)
+    logger.warn(`setMaxPrice DB 실패 (${code}=$${price}), 1회 재시도: ${(e1 as Error).message}`, { component: 'OVERSEAS' });
+    try {
+      await getPool().query(sql, [dbKey, price.toString()]);
+    } catch (e2) {
+      logger.error(`🚨 setMaxPrice DB 최종 실패 (${code}=$${price}): ${(e2 as Error).message} — 트레일링 스탑 정확도 저하 위험`, { component: 'OVERSEAS' });
+    }
+  }
 }
 
 export async function clearMaxPrice(code: string, isPaper?: boolean): Promise<void> {
@@ -490,29 +497,36 @@ let lastOverseasRefillCheck = 0;
 
 /**
  * Paper 해외 자금 고갈 시 자동 리필 (통합증거금 기준)
- * - 남은 현금 < 시드 15% + 보유종목 0건 → 리필 트리거
+ * - 포트폴리오 가치(현금+보유) < 시드 15% → 리필 트리거
  * - 기존 overseas paper 주문을 아카이브
+ * @param force 강제 리필 (수동 트리거 시)
  * @returns true if refill happened
  */
-export async function checkAndRefillOverseasPaper(): Promise<boolean> {
+export async function checkAndRefillOverseasPaper(force = false): Promise<boolean> {
   const now = Date.now();
-  if (now - lastOverseasRefillCheck < 5 * 60 * 1000) return false; // 30분→5분 (교착 감지 가속)
+  if (!force && now - lastOverseasRefillCheck < 5 * 60 * 1000) return false;
   lastOverseasRefillCheck = now;
 
   try {
     const fxRate = await fetchExchangeRate();
     const seedUsd = PAPER_OVERSEAS_SEED_KRW / (fxRate > 0 ? fxRate : FALLBACK_FX_RATE);
     const cash = await computePaperCash(fxRate);
-    const cashRatio = cash / seedUsd;
     const holdings = await getHoldings(true);
-    const hasPositions = [...holdings.values()].some((h) => h.qty > 0);
 
-    if (cashRatio >= OVERSEAS_REFILL_THRESHOLD || hasPositions) return false;
+    // 포트폴리오 총 가치 계산 (현금 + 보유종목 시가)
+    let holdingsValue = 0;
+    for (const h of holdings.values()) {
+      holdingsValue += h.qty * h.avgPrice; // avgPrice 폴백 (시가 미확보 시)
+    }
+    const totalValue = cash + holdingsValue;
+    const totalRatio = totalValue / seedUsd;
+
+    if (!force && totalRatio >= OVERSEAS_REFILL_THRESHOLD) return false;
 
     // v10.8.4 안전장치: 최근 1시간 내 매매가 있었으면 리필 차단 (현금 계산 일시 오류 방지)
     const { rows: recentTrades } = await getPool().query(
       `SELECT COUNT(*) AS cnt FROM orders
-       WHERE trading_mode = 'paper' AND is_paper = true AND trigger_source = 'OVERSEAS' AND status = 'FILLED'
+       WHERE trading_mode IN ('paper', 'p_arch') AND is_paper = true AND trigger_source = 'OVERSEAS' AND status = 'FILLED'
        AND created_at > NOW() - INTERVAL '1 hour'`,
     );
     if (Number(recentTrades[0]?.cnt ?? 0) > 0) {

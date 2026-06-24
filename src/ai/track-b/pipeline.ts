@@ -30,6 +30,7 @@ import type { TradeDecision } from '../../db/models.js';
 import { logScanSession } from '../../db/scan-logger.js';
 import {
   getBatchPrices,
+  type CurrentPrice,
   getChangeRankingStocks,
   getDailyChart,
   getKSTNow,
@@ -299,7 +300,15 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       `📡 시세 조회: ${allStockCodes.length}종목 (AI점수 상위 ${sortedWatchlistCodes.length}/${aiScoredCodes.size}개 + 보유 ${chainStockCodes.length})`,
       { component: 'TRACK_B' },
     );
-    const livePrices = await getBatchPrices(allStockCodes);
+    const livePrices = await getBatchPrices(allStockCodes).catch((err) => {
+      logger.error(`🚨 getBatchPrices 전체 실패: ${err} — 이번 사이클 안전 중단 (다음 사이클 재시도)`, { component: 'TRACK_B' });
+      return null; // null = 전체 실패 → 파이프라인 중단 (전량 강제청산 방지)
+    });
+    // 전체 가격 조회 실패 → 이번 사이클 포기 (정상 포지션 강제청산 방지)
+    if (!livePrices) {
+      logger.warn(`⚠️ 시세 전체 실패 → 매매 판단 불가, 이번 사이클 스킵 (보유종목 안전 유지)`, { component: 'TRACK_B' });
+      return { decisions: [], summary: 'Price fetch failed — cycle skipped for safety' } as any;
+    }
 
     // ── Shadow Tracker: KR AI 점수 상위 3종목 가상진입 (OOS 검증) ──
     try {
@@ -556,9 +565,9 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         `🔴 자동 DEFENSE 모드 전환: ${reason} → 신규 매수 극제한${ctxIsPaper ? ' (Paper: DB쓰기 차단)' : ''}`,
         { component: 'TRACK_B' },
       );
-      // DB 모드 전환 (SWING → DEFENSE) — Live 행만, Paper 행 오염 방지 (AND is_paper=false)
+      // DB 모드 전환 (SWING → DEFENSE) — await로 보장 (fire-and-forget → 모드 진동 방지)
       if (!ctxIsPaper)
-        getPool()
+        await getPool()
           .query(
             `UPDATE strategy_config SET mode='DEFENSE', updated_at=NOW() WHERE is_active=true AND mode='SWING' AND is_paper=false`,
           )
@@ -566,14 +575,14 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
             if (rowCount && rowCount > 0)
               logger.warn(`✅ DB 모드 자동전환: SWING → DEFENSE (${reason})`, { component: 'TRACK_B' });
           })
-          .catch((e: Error) => logger.warn(`모드 전환 DB 실패: ${e.message}`, { component: 'TRACK_B' }));
+          .catch((e: Error) => logger.error(`🚨 모드 전환 DB 실패 (진동 위험): ${e.message}`, { component: 'TRACK_B' }));
     } else if (autoShouldSniper) {
       logger.info(`🎯 자동 SNIPER 모드: 90점+ ${highScoreCount}종목 감지 → 고확신 집중 포착 (TP +8%, SL -3%)`, {
         component: 'TRACK_B',
       });
-      // DB 모드 전환 (SWING → SNIPER) — Live 행만
+      // DB 모드 전환 (SWING → SNIPER) — await로 보장
       if (!ctxIsPaper)
-        getPool()
+        await getPool()
           .query(
             `UPDATE strategy_config SET mode='SNIPER', updated_at=NOW() WHERE is_active=true AND mode='SWING' AND is_paper=false`,
           )
@@ -581,12 +590,12 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
             if (rowCount && rowCount > 0)
               logger.info('✅ DB 모드 자동전환: SWING → SNIPER (90점+ 감지)', { component: 'TRACK_B' });
           })
-          .catch((e: Error) => logger.warn(`SNIPER 전환 DB 실패: ${e.message}`, { component: 'TRACK_B' }));
+          .catch((e: Error) => logger.error(`🚨 SNIPER 전환 DB 실패: ${e.message}`, { component: 'TRACK_B' }));
     } else if (autoShouldRevertFromSniper) {
       logger.info('🟢 자동 SWING 복귀: 90점+ 종목 소멸 → SNIPER 해제', { component: 'TRACK_B' });
-      // DB 모드 복귀 (SNIPER → SWING) — Live 행만
+      // DB 모드 복귀 (SNIPER → SWING) — await로 보장
       if (!ctxIsPaper)
-        getPool()
+        await getPool()
           .query(
             `UPDATE strategy_config SET mode='SWING', updated_at=NOW() WHERE is_active=true AND mode='SNIPER' AND is_paper=false`,
           )
@@ -594,15 +603,15 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
             if (rowCount && rowCount > 0)
               logger.info('✅ DB 모드 자동전환: SNIPER → SWING (90점+ 소멸)', { component: 'TRACK_B' });
           })
-          .catch((e: Error) => logger.warn(`SNIPER→SWING 복귀 DB 실패: ${e.message}`, { component: 'TRACK_B' }));
+          .catch((e: Error) => logger.error(`🚨 SNIPER→SWING 복귀 DB 실패: ${e.message}`, { component: 'TRACK_B' }));
     } else if (autoShouldRevertSwing) {
       logger.info(
         `🟢 자동 SWING 복귀: KOSPI 정상(penalty=0) + 당일 무하락 + 손실${dailyLoss.dailyPnlPct.toFixed(1)}% → DEFENSE 해제${ctxIsPaper ? ' (Paper: DB쓰기 차단)' : ''}`,
         { component: 'TRACK_B' },
       );
-      // DB 모드 복귀 (DEFENSE → SWING) — Live 행만, Paper 행 오염 방지 (AND is_paper=false)
+      // DB 모드 복귀 (DEFENSE → SWING) — await로 보장
       if (!ctxIsPaper)
-        getPool()
+        await getPool()
           .query(
             `UPDATE strategy_config SET mode='SWING', updated_at=NOW() WHERE is_active=true AND mode='DEFENSE' AND is_paper=false`,
           )
@@ -610,7 +619,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
             if (rowCount && rowCount > 0)
               logger.info('✅ DB 모드 자동전환: DEFENSE → SWING (시장 정상화)', { component: 'TRACK_B' });
           })
-          .catch((e: Error) => logger.warn(`모드 자동복귀 DB 업데이트 실패: ${e.message}`, { component: 'TRACK_B' }));
+          .catch((e: Error) => logger.error(`🚨 모드 자동복귀 DB 실패: ${e.message}`, { component: 'TRACK_B' }));
     } else if (scores.length === 0 && mode === 'DEFENSE') {
       logger.info('⚡ AI 스코어 없음 + DEFENSE 모드 → SWING으로 완화', { component: 'TRACK_B' });
     }
@@ -948,7 +957,9 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       // 기존: KOSPI -1%면 삼성전자도 전면 차단 → 개별 종목 강세도 기회 상실
       // 개선: flashCrash(-1% 5분내), CRASH/PANIC 시그널은 유지. 일반 하락은 점수 감산으로 대응
       (!ctxIsPaper && !isKospiOverrideActive() && kospiRegime.penalty >= 3 && kospiRegime.todayDown) || // penalty 3+ 극단적 하락장만 차단
-      (!ctxIsPaper && portfolioStress >= 2) || // Paper: 포트스트레스 면제
+      // portfolioStress >= 2: 포지션 축소로 대응 (blockNewBuys 제거 → 회복 매수 허용)
+      // 기존: 완전 차단 → 손절 후 빈 포트폴리오가 회복 불가
+      // 개선: 사이징 단계에서 0.5x 배율 적용 (portfolio-guard.getPerformanceMultiplier)
       (!ctxIsPaper && crashSignal.level === 'CRASH') || // 크래시 시그널 CRASH
       (!ctxIsPaper && crashSignal.level === 'PANIC') || // 크래시 시그널 PANIC
       isNewsStale || // 📰 뉴스 수집 90분 이상 끊김: Live 신규매수 차단

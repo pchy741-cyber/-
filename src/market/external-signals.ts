@@ -54,64 +54,104 @@ setInterval(() => {
 // ──────────────────────────────────────────────────────────────
 // 1. CNN Fear & Greed Index
 // ──────────────────────────────────────────────────────────────
+// 브라우저 유사 헤더 (CNN 418 차단 대응)
+const BROWSER_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+  'Accept': 'application/json, text/plain, */*',
+  'Accept-Language': 'en-US,en;q=0.9',
+  'Accept-Encoding': 'gzip, deflate, br',
+  'Referer': 'https://edition.cnn.com/markets/fear-and-greed',
+  'Origin': 'https://edition.cnn.com',
+};
+
+// VIX 기반 합성 F&G (CNN 완전 차단 시 대체)
+function vixToSyntheticFG(vix: number): { score: number; label: string } {
+  // VIX 역상관: VIX 12→FG80, VIX 20→FG50, VIX 30→FG25, VIX 40→FG10
+  const score = Math.max(0, Math.min(100, Math.round(100 - (vix - 10) * 2.5)));
+  return { score, label: `${scorToLabel(score)} (VIX추정)` };
+}
+
 export async function getFearGreedIndex(): Promise<MarketSentiment | null> {
   if (_fgCache && Date.now() - _fgCache.fetchedAt < CACHE_TTL) return _fgCache.data;
 
+  // VIX부터 가져오기 (F&G 실패 시 fallback에 필요)
+  let vix = 0;
   try {
-    const res = await fetch('https://production.dataviz.cnn.io/index/fearandgreed/graphdata', {
-      headers: { 'User-Agent': 'Mozilla/5.0' },
-      signal: AbortSignal.timeout(8000),
+    const vixRes = await fetch('https://query1.finance.yahoo.com/v8/finance/chart/%5EVIX?interval=1d&range=1d', {
+      headers: BROWSER_HEADERS,
+      signal: AbortSignal.timeout(6000),
     });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const json = (await res.json()) as any;
-    const score = Math.round(json?.fear_and_greed?.score ?? -1);
-    const rating = (json?.fear_and_greed?.rating ?? '') as string;
-    if (score < 0) throw new Error('score 파싱 실패');
+    const vixJson = (await vixRes.json()) as any;
+    vix = vixJson?.chart?.result?.[0]?.meta?.regularMarketPrice ?? 0;
+  } catch { /* VIX 실패는 무시 */ }
 
-    // VIX — Yahoo Finance
-    let vix = 0;
+  // CNN Fear & Greed — 다중 엔드포인트 시도
+  const CNN_ENDPOINTS = [
+    'https://production.dataviz.cnn.io/index/fearandgreed/graphdata',
+    'https://production.dataviz.cnn.io/index/fearandgreed/current',
+  ];
+
+  let score = -1;
+  let rating = '';
+
+  for (const url of CNN_ENDPOINTS) {
     try {
-      const vixRes = await fetch('https://query1.finance.yahoo.com/v8/finance/chart/%5EVIX?interval=1d&range=1d', {
-        headers: { 'User-Agent': 'Mozilla/5.0' },
-        signal: AbortSignal.timeout(6000),
+      const res = await fetch(url, {
+        headers: BROWSER_HEADERS,
+        signal: AbortSignal.timeout(8000),
       });
-      const vixJson = (await vixRes.json()) as any;
-      vix = vixJson?.chart?.result?.[0]?.meta?.regularMarketPrice ?? 0;
-    } catch {
-      /* VIX 실패해도 F&G만 반환 */
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = (await res.json()) as any;
+      // graphdata 엔드포인트
+      score = Math.round(json?.fear_and_greed?.score ?? json?.score ?? -1);
+      rating = (json?.fear_and_greed?.rating ?? json?.rating ?? '') as string;
+      if (score >= 0) break;
+    } catch (err: any) {
+      logger.debug(`CNN F&G (${url.split('/').pop()}) 실패: ${err.message}`, { component: 'EXT_SIGNAL' });
     }
+  }
 
-    const label = rating.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()) || scorToLabel(score);
+  // CNN 전부 실패 → VIX 기반 합성
+  if (score < 0 && vix > 0) {
+    const synth = vixToSyntheticFG(vix);
+    score = synth.score;
+    rating = synth.label;
+    logger.info(`📊 Fear&Greed(VIX합성): ${score}(${rating}) VIX: ${vix.toFixed(1)}`, { component: 'EXT_SIGNAL' });
+  }
 
-    // FGI≥80 연속일 카운터 (날짜 바뀔 때마다 1회 증가, 1일 하락 허용)
-    const todayStr = getKSTNow().toISOString().slice(0, 10);
-    if (score >= 80) {
-      if (_greedyStreakLastDate !== todayStr) {
-        _greedyStreak++;
-        _greedyStreakLastDate = todayStr;
-        _greedyMissedDays = 0; // 탐욕 복귀 → 유예 리셋
-      }
-    } else if (_greedyStreakLastDate !== todayStr && _greedyStreak > 0) {
-      _greedyMissedDays++;
-      _greedyStreakLastDate = todayStr;
-      if (_greedyMissedDays > 1) {
-        // 2일 연속 80 미만 → 스트릭 리셋
-        _greedyStreak = 0;
-        _greedyMissedDays = 0;
-        _greedyStreakLastDate = '';
-      }
-    }
-
-    const data: MarketSentiment = { fearGreedScore: score, fearGreedLabel: label, vix, greedyStreak: _greedyStreak, updatedAt: new Date() };
-    _fgCache = { data, fetchedAt: Date.now() };
-    logger.info(`📊 Fear&Greed: ${score}(${label}) VIX: ${vix.toFixed(1)}`, { component: 'EXT_SIGNAL' });
-    return data;
-  } catch (err: any) {
-    logger.warn(`Fear&Greed 조회 실패: ${err.message}`, { component: 'EXT_SIGNAL' });
+  if (score < 0) {
+    logger.warn('Fear&Greed 조회 완전 실패 (CNN+VIX 모두)', { component: 'EXT_SIGNAL' });
     const cached = _fgCache?.data;
     if (cached && !('greedyStreak' in cached)) (cached as any).greedyStreak = _greedyStreak;
     return cached ?? null;
   }
+
+  const label = rating.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()) || scorToLabel(score);
+
+  // FGI≥80 연속일 카운터 (날짜 바뀔 때마다 1회 증가, 1일 하락 허용)
+  const todayStr = getKSTNow().toISOString().slice(0, 10);
+  if (score >= 80) {
+    if (_greedyStreakLastDate !== todayStr) {
+      _greedyStreak++;
+      _greedyStreakLastDate = todayStr;
+      _greedyMissedDays = 0;
+    }
+  } else if (_greedyStreakLastDate !== todayStr && _greedyStreak > 0) {
+    _greedyMissedDays++;
+    _greedyStreakLastDate = todayStr;
+    if (_greedyMissedDays > 1) {
+      _greedyStreak = 0;
+      _greedyMissedDays = 0;
+      _greedyStreakLastDate = '';
+    }
+  }
+
+  const data: MarketSentiment = { fearGreedScore: score, fearGreedLabel: label, vix, greedyStreak: _greedyStreak, updatedAt: new Date() };
+  _fgCache = { data, fetchedAt: Date.now() };
+  if (!rating.includes('VIX추정')) {
+    logger.info(`📊 Fear&Greed: ${score}(${label}) VIX: ${vix.toFixed(1)}`, { component: 'EXT_SIGNAL' });
+  }
+  return data;
 }
 
 function scorToLabel(score: number): string {

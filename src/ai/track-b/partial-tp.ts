@@ -21,62 +21,63 @@ export interface PartialTpStage {
 
 /**
  * 국내 섹터별 분할 수익실현 단계
- * - 대형주: 보수적 (1.5%부터)
- * - 중소형/테마: 공격적 (2%부터, 더 넓은 간격)
- * - 방어주: 빠른 확정 (1%부터)
+ * v15 Ultra Quick Win: Stage 1을 대폭 낮춰서 빠른 수익 확정 → 승률↑
+ * 모멘텀(ADX≥28) 감지 시 기존 트리거 유지 → 위너 라이딩
  */
-export function getKrPartialTpStages(stockCode: string): PartialTpStage[] {
+export function getKrPartialTpStages(stockCode: string, adx?: number): PartialTpStage[] {
   const sector = SECTOR_MAP_KR[stockCode] ?? '';
+  // v15: ADX≥28이면 모멘텀 → 기존 높은 트리거로 위너 라이딩
+  const accel = (adx ?? 0) >= 28;
 
   // 반도체/IT — 변동성 높은 대형주
   if (['반도체', 'IT', '전기전자'].includes(sector)) {
     return [
-      { stage: 1, triggerPct: 2.0, sellRatio: 0.25 },  // +2% → 25% 확정
-      { stage: 2, triggerPct: 4.0, sellRatio: 0.20 },  // +4% → 20%
-      { stage: 3, triggerPct: 7.0, sellRatio: 0.20 },  // +7% → 20%
-      { stage: 4, triggerPct: 11.0, sellRatio: 0.20 }, // +11% → 20%
-      { stage: 5, triggerPct: 16.0, sellRatio: 0.15 }, // +16% → 15% (나머지 트레일링)
+      { stage: 1, triggerPct: accel ? 2.0 : 0.7, sellRatio: 0.30 },  // v15 Hyper: 1.0→0.7% (수수료0.21% → 순이익0.49%)
+      { stage: 2, triggerPct: 3.0, sellRatio: 0.25 },
+      { stage: 3, triggerPct: 5.5, sellRatio: 0.20 },
+      { stage: 4, triggerPct: 9.0, sellRatio: 0.15 },
+      { stage: 5, triggerPct: 14.0, sellRatio: 0.10 },
     ];
   }
 
   // 방산/조선/에너지 — 중간 변동성
   if (['방산', '조선', '에너지', '화학', '철강'].includes(sector)) {
     return [
-      { stage: 1, triggerPct: 2.5, sellRatio: 0.25 },
-      { stage: 2, triggerPct: 5.0, sellRatio: 0.25 },
-      { stage: 3, triggerPct: 8.0, sellRatio: 0.25 },
-      { stage: 4, triggerPct: 12.0, sellRatio: 0.25 },
+      { stage: 1, triggerPct: accel ? 2.5 : 1.0, sellRatio: 0.30 }, // v15 Hyper: 1.5→1.0%
+      { stage: 2, triggerPct: 3.5, sellRatio: 0.25 },
+      { stage: 3, triggerPct: 6.0, sellRatio: 0.25 },
+      { stage: 4, triggerPct: 10.0, sellRatio: 0.20 },
     ];
   }
 
   // 바이오 — 고변동성
   if (['바이오', '제약'].includes(sector)) {
     return [
-      { stage: 1, triggerPct: 3.0, sellRatio: 0.20 },
-      { stage: 2, triggerPct: 6.0, sellRatio: 0.20 },
-      { stage: 3, triggerPct: 10.0, sellRatio: 0.20 },
-      { stage: 4, triggerPct: 15.0, sellRatio: 0.20 },
-      { stage: 5, triggerPct: 22.0, sellRatio: 0.20 },
+      { stage: 1, triggerPct: accel ? 3.0 : 1.2, sellRatio: 0.25 }, // v15 Hyper: 1.8→1.2%
+      { stage: 2, triggerPct: 4.5, sellRatio: 0.20 },
+      { stage: 3, triggerPct: 8.0, sellRatio: 0.20 },
+      { stage: 4, triggerPct: 13.0, sellRatio: 0.20 },
+      { stage: 5, triggerPct: 20.0, sellRatio: 0.15 },
     ];
   }
 
   // 금융/유틸리티 — 저변동성, 빠른 확정
   if (['금융', '은행', '보험', '유틸리티', '통신'].includes(sector)) {
     return [
-      { stage: 1, triggerPct: 1.5, sellRatio: 0.30 },
-      { stage: 2, triggerPct: 3.0, sellRatio: 0.30 },
-      { stage: 3, triggerPct: 5.0, sellRatio: 0.25 },
-      { stage: 4, triggerPct: 8.0, sellRatio: 0.15 },
+      { stage: 1, triggerPct: accel ? 1.5 : 0.6, sellRatio: 0.35 }, // v15 Hyper: 0.8→0.6% (수수료0.21% → 순이익0.39%, 슬리피지 감안)
+      { stage: 2, triggerPct: 2.0, sellRatio: 0.25 },
+      { stage: 3, triggerPct: 4.0, sellRatio: 0.25 },
+      { stage: 4, triggerPct: 7.0, sellRatio: 0.15 },
     ];
   }
 
   // 기본 (자동차, 건설 등)
   return [
-    { stage: 1, triggerPct: 2.0, sellRatio: 0.25 },
-    { stage: 2, triggerPct: 4.0, sellRatio: 0.20 },
-    { stage: 3, triggerPct: 7.0, sellRatio: 0.20 },
-    { stage: 4, triggerPct: 10.0, sellRatio: 0.20 },
-    { stage: 5, triggerPct: 14.0, sellRatio: 0.15 },
+    { stage: 1, triggerPct: accel ? 2.0 : 0.7, sellRatio: 0.30 }, // v15 Hyper: 1.0→0.7% (빠른 수익확정)
+    { stage: 2, triggerPct: 3.0, sellRatio: 0.25 },
+    { stage: 3, triggerPct: 5.5, sellRatio: 0.20 },
+    { stage: 4, triggerPct: 8.5, sellRatio: 0.15 },
+    { stage: 5, triggerPct: 12.0, sellRatio: 0.10 },
   ];
 }
 
@@ -124,7 +125,7 @@ export async function evaluateKrPartialTp(params: {
   // 강한 추세(ADX ≥ 35)에서는 분할TP 임계값 +1.5% 상향 (추세 더 태우기)
   const trendBonus = (adx ?? 0) >= 35 ? 1.5 : 0;
 
-  const stages = getKrPartialTpStages(stockCode);
+  const stages = getKrPartialTpStages(stockCode, adx);
   const currentStage = await getKrPartialTpStageNum(chainId);
 
   const nextStage = stages.find(

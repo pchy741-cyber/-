@@ -198,7 +198,7 @@ async function callVertexGrounded(
       maxOutputTokens: opts.maxOutputTokens ?? 8192,
     },
     systemInstruction: systemPrompt,
-    tools: [{ googleSearchRetrieval: {} }],
+    tools: [{ googleSearch: {} } as any], // Vertex AI SDK 타입 미지원 — google_search_retrieval → googleSearch 마이그레이션
   });
 
   const result = await model.generateContent({ contents: [{ role: 'user', parts: [{ text: userMessage }] }] });

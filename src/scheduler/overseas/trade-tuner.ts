@@ -393,6 +393,44 @@ function generateRecommendations(ctx: {
   // 다양한 SL/TP 조합으로 가상 시뮬레이션 → 최적 R배수 역산
   recs.push(...runParameterSensitivity(ctx.trades, ctx.globalWinRate));
 
+  // ── 7. v15 Self-Learning Turbo: 부분익절 Stage 1 최적 트리거 학습 ──
+  // 수익 거래의 max_price 분석 → 대부분의 거래가 도달하는 수익률 = 최적 Stage 1 트리거
+  if (ctx.wins.length >= 10) {
+    const maxPnls = ctx.wins
+      .filter((t) => t.max_price > 0 && t.avg_buy > 0)
+      .map((t) => ((t.max_price - t.avg_buy) / t.avg_buy) * 100)
+      .sort((a, b) => a - b);
+    if (maxPnls.length >= 8) {
+      // 80분위수: 수익 거래의 80%가 이 수익률 이상 도달 → Stage 1 트리거 후보
+      const p20 = maxPnls[Math.floor(maxPnls.length * 0.2)]; // 하위 20% = 80%가 도달
+      const optimal = Math.max(0.8, Math.min(4.0, Math.round(p20 * 10) / 10)); // 0.8~4.0% 범위
+      recs.push({
+        param: 'partial_tp_stage1_pct',
+        current: 1.5, // v15 Ultra Quick Win 기본값
+        recommended: optimal,
+        reason: `수익 거래의 80%가 +${p20.toFixed(1)}% 이상 도달 → Stage 1 최적 트리거 +${optimal}%`,
+      });
+
+      // 섹터별 Stage 1 최적화
+      for (const ss of ctx.sectorStats) {
+        if (ss.trades < 5 || ss.wins < 3) continue;
+        const sectorWins = ctx.wins.filter((t) => SECTOR_MAP[t.stock_code] === ss.sector && t.max_price > 0 && t.avg_buy > 0);
+        if (sectorWins.length < 3) continue;
+        const sPnls = sectorWins.map((t) => ((t.max_price - t.avg_buy) / t.avg_buy) * 100).sort((a, b) => a - b);
+        const sp20 = sPnls[Math.floor(sPnls.length * 0.2)];
+        const sOptimal = Math.max(0.8, Math.min(5.0, Math.round(sp20 * 10) / 10));
+        if (Math.abs(sOptimal - optimal) >= 0.5) {
+          recs.push({
+            param: `partial_tp_stage1_${ss.sector}`,
+            current: optimal,
+            recommended: sOptimal,
+            reason: `${ss.sector} 섹터: 수익 80%가 +${sp20.toFixed(1)}% 도달 → Stage 1 ${sOptimal}% (전체 ${optimal}% 대비 ${sOptimal > optimal ? '상향' : '하향'})`,
+          });
+        }
+      }
+    }
+  }
+
   return recs;
 }
 
@@ -504,13 +542,24 @@ function buildOverrides(recs: TuneRecommendation[]): Record<string, number> {
   return overrides;
 }
 
-// ── 튜닝 오버라이드 읽기 (sell-logic/buy-filter에서 호출) ──
+// ── 튜닝 오버라이드 읽기 (sell-logic/buy-loop에서 호출) ──
+// 30분 TTL 캐시: 매 사이클(3분) DB 조회 방지 — tuner는 하루 1회 갱신이므로 충분
+const _tunerCache: { paper: { data: Record<string, number>; expiresAt: number }; live: { data: Record<string, number>; expiresAt: number } } = {
+  paper: { data: {}, expiresAt: 0 },
+  live: { data: {}, expiresAt: 0 },
+};
+const TUNER_CACHE_TTL = 30 * 60_000; // 30분
 
 export async function getTunerOverrides(isPaper = true): Promise<Record<string, number>> {
+  const slot = isPaper ? _tunerCache.paper : _tunerCache.live;
+  if (Date.now() < slot.expiresAt) return slot.data;
   try {
     const key = isPaper ? STATE_KEY_OVERRIDES : `${STATE_KEY_OVERRIDES}_live`;
     const raw = await getOverseasState(key);
-    return raw ? JSON.parse(raw) : {};
+    const data = raw ? JSON.parse(raw) : {};
+    slot.data = data;
+    slot.expiresAt = Date.now() + TUNER_CACHE_TTL;
+    return data;
   } catch {
     return {};
   }

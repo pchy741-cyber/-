@@ -51,6 +51,8 @@ export default function DividendView({ toast, viewMode, confirm, mpData, onRefre
   const [holdings, setHoldings] = useState<any[]>([]);
   const [customAmount, setCustomAmount] = useState('');
   const [tunedWeights, setTunedWeights] = useState<Record<string, number> | null>(null);
+  const [eodBetting, setEodBetting] = useState<any>(null);
+  const [rankings, setRankings] = useState<any[]>([]);
 
   const div = mpData?.dividend;
   const strategy = mpData?.strategy;
@@ -61,12 +63,16 @@ export default function DividendView({ toast, viewMode, confirm, mpData, onRefre
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [hold, alloc] = await Promise.all([
+      const [hold, alloc, eod, rank] = await Promise.all([
         api(`/dividend/holdings?viewMode=${viewMode}`),
         api(`/dividend/allocation-tuned?viewMode=${viewMode}`).catch(() => null),
+        api(`/dividend/eod-betting?viewMode=${viewMode}`).catch(() => null),
+        api('/dividend/ranking').catch(() => null),
       ]);
       setHoldings(hold.holdings || []);
       if (alloc?.weights) setTunedWeights(alloc.weights);
+      setEodBetting(eod);
+      setRankings(rank?.rankings || []);
     } catch (e: any) { toast(e.message || '로딩 실패', 'err'); }
     setLoading(false);
   }, [viewMode, toast]);
@@ -278,6 +284,106 @@ export default function DividendView({ toast, viewMode, confirm, mpData, onRefre
           <p className="text-[9px] text-slate-600 text-center">* 배당소득세 15.4% 차감 · 과거 실적 기반 추정 · 참고가 기준</p>
         </div>
       </div>
+
+      {/* ── ETF 일일 순위 (종합수익률) ── */}
+      {rankings.length > 0 && (
+        <div className="glass rounded-2xl border border-white/[0.04] overflow-hidden shadow-xl shadow-black/40">
+          <div className="px-5 py-3.5 border-b border-white/[0.04] flex items-center justify-between">
+            <h2 className="text-sm font-bold text-slate-200">ETF 일일 순위</h2>
+            <span className="text-[9px] text-slate-500">배당+시세 종합</span>
+          </div>
+          <div className="divide-y divide-white/[0.04]">
+            {rankings.map((r: any) => (
+              <div key={r.code} className="px-5 py-3 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <span className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-black ${
+                    r.rank === 1 ? 'bg-amber-500/20 text-amber-400' :
+                    r.rank === 2 ? 'bg-slate-400/20 text-slate-300' :
+                    r.rank === 3 ? 'bg-orange-600/20 text-orange-400' :
+                    'bg-slate-700/30 text-slate-500'
+                  }`}>{r.rank}</span>
+                  <div>
+                    <span className="text-[11px] font-bold text-slate-200">{r.code}</span>
+                    <span className={`ml-2 text-[9px] px-1.5 py-0.5 rounded ${
+                      r.risk === '낮음' ? 'bg-emerald-500/10 text-emerald-400' :
+                      r.risk === '중' ? 'bg-amber-500/10 text-amber-400' :
+                      'bg-cyan-500/10 text-cyan-400'
+                    }`}>{r.risk}</span>
+                  </div>
+                </div>
+                <div className="text-right">
+                  <div className={`text-xs font-bold ${r.totalReturn >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                    {r.totalReturn >= 0 ? '+' : ''}{r.totalReturn}%
+                  </div>
+                  <div className="text-[9px] text-slate-500">배당 {r.netYield}% · 시세 {r.priceChange30d >= 0 ? '+' : ''}{r.priceChange30d}%</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── 종가베팅 현황 ── */}
+      {eodBetting && (
+        <div className="glass rounded-2xl border border-white/[0.04] overflow-hidden shadow-xl shadow-black/40">
+          <div className="px-5 py-3.5 border-b border-white/[0.04] flex items-center justify-between">
+            <h2 className="text-sm font-bold text-slate-200">종가베팅</h2>
+            <span className="text-[9px] text-slate-500">마감 급락 → 익일 반등</span>
+          </div>
+          <div className="p-5 space-y-4">
+            {/* 7일 통계 */}
+            <div className="flex gap-3">
+              <div className="flex-1 text-center">
+                <div className="text-lg font-black text-slate-200">{eodBetting.stats7d?.count ?? 0}</div>
+                <div className="text-[9px] text-slate-500">7일 매매</div>
+              </div>
+              <div className="flex-1 text-center">
+                <div className={`text-lg font-black ${(eodBetting.stats7d?.winRate ?? 0) >= 50 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                  {eodBetting.stats7d?.winRate ?? 0}%
+                </div>
+                <div className="text-[9px] text-slate-500">승률</div>
+              </div>
+              <div className="flex-1 text-center">
+                <div className={`text-lg font-black ${(eodBetting.stats7d?.avgPnlPct ?? 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                  {(eodBetting.stats7d?.avgPnlPct ?? 0) >= 0 ? '+' : ''}{eodBetting.stats7d?.avgPnlPct ?? 0}%
+                </div>
+                <div className="text-[9px] text-slate-500">평균 수익률</div>
+              </div>
+            </div>
+
+            {/* 오늘 매수 종목 */}
+            {eodBetting.todayBets?.length > 0 && (
+              <div>
+                <div className="text-[10px] font-bold text-slate-400 mb-2">오늘 매수</div>
+                {eodBetting.todayBets.map((b: any) => (
+                  <div key={b.stock_code} className="flex justify-between py-1">
+                    <span className="text-[11px] text-slate-300">{b.name}</span>
+                    <span className="text-[10px] text-slate-400">{Number(b.buyPrice).toLocaleString()}원</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            {eodBetting.todayBets?.length === 0 && (
+              <div className="text-[10px] text-slate-500 text-center">오늘 밤 15:15 매수 예정</div>
+            )}
+
+            {/* 어제 매도 결과 */}
+            {eodBetting.yesterdayResults?.length > 0 && (
+              <div>
+                <div className="text-[10px] font-bold text-slate-400 mb-2">어제 결과</div>
+                {eodBetting.yesterdayResults.map((r: any) => (
+                  <div key={r.stock_code} className="flex justify-between py-1">
+                    <span className="text-[11px] text-slate-300">{r.name}</span>
+                    <span className={`text-[10px] font-bold ${r.pnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                      {r.pnl >= 0 ? '+' : ''}{Number(r.pnl).toLocaleString()}원 ({r.pnlPct >= 0 ? '+' : ''}{r.pnlPct}%)
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* ── 혁신 전략 설명 ── */}
       <div className="glass rounded-2xl border border-white/[0.04] overflow-hidden shadow-xl shadow-black/40">

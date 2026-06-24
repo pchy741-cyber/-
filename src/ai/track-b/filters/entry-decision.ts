@@ -70,7 +70,7 @@ export function tryRegimeRouterEntry(input: EntryInput): EntryVerdict {
     return { action: 'CONTINUE' };
   }
 
-  const routeMinScore = 75; // v11: 60→75 강화 (추격매수 방지, 충분한 기술적 신호 요구)
+  const routeMinScore = 65; // v15 Hyper: 75→65 (국내 수수료0.21% 저렴 → 진입 확대)
   const routeEffectiveScore = tech.score + candleBonus + structBonus;
   const aiOk = hasAI ? aiScore >= buyThreshold : !config.geminiEnabled; // Gemini OFF → AI 조건 면제
   if (routeEffectiveScore >= routeMinScore && aiOk) {
@@ -138,11 +138,12 @@ export function tryFinalEntry(input: EntryInput): EntryVerdict {
   // v11-fix: Paper/Live 괴리 축소 — Paper도 최소 기술점수 적용
   // 이전: Paper=1(무제한) → Live 대비 성과 부풀림, 프로모션 신뢰도 하락
   // 변경: Paper=40(최소한의 필터), Live는 기존 유지
+  // v15 Hyper: 국내 진입 문턱 대폭 하향 (수수료0.21%=해외의 1/3, 빈도↑ 전략)
   const v4MinTechScore = getCtxIsPaper()
-    ? Math.max(minTechScore, 40)
+    ? Math.max(minTechScore, 35)  // v15: Paper 40→35 (더 많은 데이터 수집)
     : techOnlyMode
-      ? Math.max(minTechScore, 78) // v10: Live AI없이: 78점 이상 (엄격 선별)
-      : Math.max(minTechScore, 55); // Live AI 병행: 55점 이상
+      ? Math.max(minTechScore, 68) // v15: Live AI없이: 78→68점 (기회 +30%)
+      : Math.max(minTechScore, 45); // v15: Live AI 병행: 55→45점 (진입 대폭 확대)
 
   if (effectiveTechScore >= v4MinTechScore) {
     const entryReason = buildEntryReason(input);

@@ -25,6 +25,38 @@ manualTriggersRoutes.post('/run-overseas', async (c) => {
   return c.json({ ok: true, message: '해외주식 수동 실행 시작' });
 });
 
+// Paper 해외 전용 수동 실행 — 리필 + 뉴스 프리페치 + Paper 매매
+manualTriggersRoutes.post('/run-overseas-paper', async (c) => {
+  const { runWithMode } = await import('../../../config/context.js');
+  const { checkAndRefillOverseasPaper } = await import('../../../scheduler/overseas/state.js');
+  const { runOverseasJob } = await import('../../../scheduler/overseas-job.js');
+  const { prefetchAllNews } = await import('../../routes/dashboard-news.js');
+
+  (async () => {
+    try {
+      // 1. 뉴스 프리페치 (해외 세션용 테마/요약 갱신)
+      await prefetchAllNews();
+      logger.info('📰 Paper 해외 실행 전 뉴스 프리페치 완료', { component: 'SETTINGS' });
+
+      // 2. Paper 자금 리필 (강제)
+      await runWithMode(true, async () => {
+        const refilled = await checkAndRefillOverseasPaper(true);
+        if (refilled) logger.info('🔄 Paper 해외 자금 강제 리필 완료', { component: 'SETTINGS' });
+      });
+
+      // 3. Paper 모드로 overseas job 실행
+      await runWithMode(true, async () => {
+        await runOverseasJob({ isPaper: true });
+      });
+      logger.info('🇺🇸 Paper 해외 수동 실행 완료', { component: 'SETTINGS' });
+    } catch (e) {
+      logger.error(`Paper 해외 수동 실행 실패: ${e}`, { component: 'SETTINGS' });
+    }
+  })();
+
+  return c.json({ ok: true, message: 'Paper 해외 실행 시작 (뉴스 프리페치 + 리필 + 매매)' });
+});
+
 // KIS 잔고 강제 동기화 — 장 마감 중에도 호출 가능 (유령 포지션 정리)
 manualTriggersRoutes.post('/sync-overseas-holdings', async (c) => {
   try {

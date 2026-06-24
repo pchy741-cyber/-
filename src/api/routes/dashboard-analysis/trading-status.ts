@@ -231,6 +231,18 @@ tradingStatusRoutes.get('/trading-status', async (c) => {
       });
     }
 
+    // 정합성 검증 결과 + QA 최신 리포트 추가
+    let consistencyResult = null;
+    let qaLatest = null;
+    try {
+      const { getLatestConsistencyResult } = await import('../../../scheduler/consistency-validator.js');
+      consistencyResult = getLatestConsistencyResult();
+    } catch { /* 아직 실행 전 */ }
+    try {
+      const { getLatestQAReport } = await import('../../../automation/qa-watchdog.js');
+      qaLatest = await getLatestQAReport();
+    } catch { /* QA 미실행 */ }
+
     return c.json({
       overallStatus,
       mode,
@@ -253,9 +265,42 @@ tradingStatusRoutes.get('/trading-status', async (c) => {
       eodOnly,
       consecutiveLosses: cooldownStatus?.consecutive ?? 0,
       blocks,
+      consistency: consistencyResult,
+      qaLatest: qaLatest ? { status: qaLatest.status, critical: qaLatest.critical, warning: qaLatest.warning, runAt: qaLatest.runAt } : null,
     });
     }); // runWithMode
   } catch (err) {
     return c.json({ overallStatus: 'UNKNOWN', blocks: [], error: 'Internal server error' });
+  }
+});
+
+// ── 정합성 수동 전수조사 (즉시 실행) ──
+tradingStatusRoutes.post('/consistency/run', async (c) => {
+  try {
+    const { runConsistencyValidator, getLatestConsistencyResult } = await import('../../../scheduler/consistency-validator.js');
+    await runConsistencyValidator();
+    return c.json({ ok: true, result: getLatestConsistencyResult() });
+  } catch (e: any) {
+    return c.json({ error: e.message || 'Internal server error' }, 500);
+  }
+});
+
+// ── 정합성 최신 결과 조회 ──
+tradingStatusRoutes.get('/consistency/latest', async (c) => {
+  try {
+    const { getLatestConsistencyResult } = await import('../../../scheduler/consistency-validator.js');
+    return c.json(getLatestConsistencyResult() ?? { status: 'not_run', issues: [] });
+  } catch {
+    return c.json({ status: 'not_run', issues: [] });
+  }
+});
+
+// ── Dream Entry 극단 진입점 조회 ──
+tradingStatusRoutes.get('/dream-entries', async (c) => {
+  try {
+    const { getDreamEntries } = await import('../../../scheduler/dream-entry-job.js');
+    return c.json(getDreamEntries());
+  } catch {
+    return c.json({ entries: [], calculatedAt: null });
   }
 });

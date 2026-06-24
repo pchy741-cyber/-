@@ -29,6 +29,7 @@ import { logger } from '../utils/logger.js';
 import { runClosingBellJob } from './closing-bell-job.js';
 import { runHoldingCheckJob } from './holding-check-job.js';
 import { runIntegrityCheck } from './integrity-check-job.js';
+import { runConsistencyValidator } from './consistency-validator.js';
 import { resetOpeningBellDaily, runOpeningBellCycle, warmupOpeningBell } from './opening-bell-job.js';
 import { runOverseasDual } from './overseas-job.js';
 import { runPreMarketOrders } from './pre-market-order-job.js';
@@ -339,6 +340,19 @@ export function startScheduler(): void {
     '25 8 * * 1-5',
     () => {
       fixWatchlistNames().catch((e) => logger.error(`종목명 보정 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 🎯 08:36 — Dream Entry 극단 진입점 계산 (AI 토큰 $0 — 기술적 지표만)
+  // DART 분석 직후 실행, 꿈의 매수가/로또 매도가 지정가 예약
+  cron.schedule(
+    '36 8 * * 1-5',
+    () => {
+      runDomesticDual('DreamEntry', async () => {
+        const { runDreamEntryCalc } = await import('./dream-entry-job.js');
+        await runDreamEntryCalc();
+      }).catch((e) => logger.error(`Dream Entry 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );
@@ -872,6 +886,15 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
+  // 🔍 정합성 크로스체크 — 30분 간격 장중 (P&L·잔고·현금 수치 교차검증 → QA봇 전달)
+  cron.schedule(
+    '25,55 9-15 * * 1-5',
+    () => {
+      runConsistencyValidator().catch((e) => logger.error(`정합성 크로스체크 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
   // 🍚 용돈 이관 — 평일 18:10 (오늘 수익 ≥ 10만원이면 10% 내 계좌로 이관)
   cron.schedule(
     '10 18 * * 1-5',
@@ -1079,6 +1102,30 @@ export function startScheduler(): void {
 
   // 🇺🇸 미국 주식 (23:30~06:30 KST)
 
+  // 🤖 22:20 — 미국장 Auto Pilot 자동 기동 (미장 황금시간 커버)
+  // 기존: 08:50 국내장에만 기동 → 미국장 22:30 개장 전 자동 시작
+  cron.schedule(
+    '20 22 * * 1-5',
+    async () => {
+      try {
+        const { isLoopActive, startLoop } = await import('./loop-mode.js');
+        if (!isLoopActive()) {
+          const result = await startLoop();
+          if (result.ok) {
+            logger.info('🤖 Auto Pilot 미국장 자동 기동 (22:20 — 22:30 개장 대비)', { component: 'SCHEDULER' });
+          } else {
+            logger.info(`🤖 Auto Pilot 미국장 기동 스킵: ${result.error}`, { component: 'SCHEDULER' });
+          }
+        } else {
+          logger.debug('🤖 Auto Pilot 이미 활성 — 미국장 기동 스킵', { component: 'SCHEDULER' });
+        }
+      } catch (e) {
+        logger.warn(`Auto Pilot 미국장 자동 기동 실패: ${e}`, { component: 'SCHEDULER' });
+      }
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
   // 21:00 — 미국장 세션 준비 (Kill Switch 리셋 + 세션 캐시 초기화)
   // 프리마켓 데이터 수집·뉴스 스캔·포트폴리오 리뷰를 위해 개장 1.5시간 전 기동
   cron.schedule(
@@ -1100,6 +1147,15 @@ export function startScheduler(): void {
       // 미국장 세션 캐시 초기화 — 21:00 기동, 프리마켓 감시 즉시 시작
       const { resetUSSessionCache } = await import('./overseas-job.js');
       resetUSSessionCache();
+
+      // Paper 해외 자금 리필 체크 (세션 시작 시 고갈 감지)
+      try {
+        const { checkAndRefillOverseasPaper } = await import('./overseas/state.js');
+        await runWithMode(true, () => checkAndRefillOverseasPaper());
+      } catch (e) {
+        logger.warn(`해외 Paper 리필 체크 실패: ${e}`, { component: 'SCHEDULER' });
+      }
+
       logger.info('🇺🇸 미국장 세션 준비 완료 (21:00 기동 — 프리마켓 감시 시작)', { component: 'SCHEDULER' });
 
       // v14: 블랙리스트 초기화 (CEO 지시 — 매매 기회 확대)
@@ -1111,10 +1167,15 @@ export function startScheduler(): void {
         logger.warn(`블랙리스트 초기화 실패: ${e}`, { component: 'SCHEDULER' });
       }
 
-      // 📰 미국장 프리마켓 뉴스 + SEC 리서치 프리로드
+      // 📰 미국장 프리마켓 뉴스 + 대시보드 테마/요약 + SEC 리서치 프리로드
       // 기존: 뉴스 15:33 종료, SEC는 개장 후 첫 사이클에서 온디맨드 → 4.5시간 공백
       // 개선: 21:00에 미리 돌려서 22:30 개장 시 바로 사용 가능
       try {
+        // 뉴스 테마/요약/유튜브 프리페치 — 해외장 대시보드에 표시
+        import('../api/routes/dashboard-news.js')
+          .then((m) => m.prefetchAllNews())
+          .then(() => logger.info('📰 해외장 뉴스 테마/요약 프리페치 완료', { component: 'SCHEDULER' }))
+          .catch((e) => logger.warn(`해외장 뉴스 프리페치 실패: ${e}`, { component: 'SCHEDULER' }));
         collectWatchlistNews().catch((e) => logger.warn(`프리마켓 뉴스 수집 실패: ${e}`, { component: 'SCHEDULER' }));
         const { GLOBAL_WATCHLIST } = await import('./overseas/watchlist.js');
         const { runSecResearchBatch, getCachedSecFundamentalScore } = await import('../automation/sec-research.js');
@@ -1247,6 +1308,79 @@ export function startScheduler(): void {
       );
       // 동기화 후 즉시 이름 보정 (새로 추가된 종목의 코드→이름 변환)
       await fixWatchlistNames().catch((e) => logger.error(`종목명 보정 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 📊 DART 퀀트 분석 자동실행 — 08:35 장전 + 16:05 장후 (스마트 종목 선택)
+  // v15: 워치리스트 + 최근매매 + 급등종목 통합 + 분기DB캐시로 중복분석 방지
+  cron.schedule(
+    '35 8 * * 1-5',
+    async () => {
+      try {
+        const { isTradingDay } = await import('../utils/holidays.js');
+        if (!(await isTradingDay())) return;
+        const { getActiveWatchlist } = await import('../db/client.js');
+        const { getSmartDartTargets } = await import('../automation/dart-research.js');
+
+        const watchlist = await getActiveWatchlist();
+        const watchCodes = watchlist.map((w: { stock_code: string }) => w.stock_code).filter((c: string) => /^\d{6}$/.test(c));
+
+        // 최근 7일 매매 종목 추가
+        const pool = getPool();
+        const { rows: recentTraded } = await pool.query(`
+          SELECT DISTINCT stock_code FROM transaction_chains
+          WHERE opened_at >= NOW() - INTERVAL '7 days'
+            AND stock_code ~ '^\\d{6}$'
+        `).catch(() => ({ rows: [] as { stock_code: string }[] }));
+        const tradedCodes = recentTraded.map((r: { stock_code: string }) => r.stock_code);
+
+        // 거래량/급등 종목 추가 (KIS 장전에는 미작동할 수 있으므로 catch)
+        let volumeCodes: string[] = [];
+        try {
+          const { getVolumeRankingStocks } = await import('../kis/market.js');
+          const vol = await getVolumeRankingStocks('J', 10);
+          volumeCodes = vol.map((s: { stock_code: string }) => s.stock_code);
+        } catch { /* 장전 시 ranking API 미제공 가능 */ }
+
+        // 합산 + 중복제거 + 배당ETF 제외
+        const allCodes = [...new Set([...watchCodes, ...tradedCodes, ...volumeCodes])];
+
+        // 스마트 타겟: DB캐시 미스 종목만 필터 (동일 분기 재분석 방지)
+        const targets = await getSmartDartTargets(allCodes, 15);
+
+        if (targets.length > 0) {
+          const { runDartResearchBatch } = await import('../automation/dart-research.js');
+          logger.info(`📊 DART 스마트 분석 (장전): ${targets.length}종목 (캐시미스만)`, { component: 'SCHEDULER' });
+          runDartResearchBatch(targets).catch((e) =>
+            logger.warn(`DART 배치 실패 (스킵): ${e}`, { component: 'SCHEDULER' }),
+          );
+        } else {
+          logger.info('📊 DART 장전 분석 스킵 — 전종목 분기캐시 히트', { component: 'SCHEDULER' });
+        }
+      } catch (e) {
+        logger.warn(`DART 자동분석 실패: ${e}`, { component: 'SCHEDULER' });
+      }
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+  cron.schedule(
+    '5 16 * * 1-5',
+    async () => {
+      try {
+        const { getOpenChains } = await import('../db/client.js');
+        const openChains = await getOpenChains().catch(() => []);
+        const holdingCodes = [...new Set(openChains.map((c: { stock_code: string }) => c.stock_code))].filter((c: string) => /^\d{6}$/.test(c));
+        if (holdingCodes.length > 0) {
+          const { runDartResearchBatch } = await import('../automation/dart-research.js');
+          logger.info(`📊 DART 보유종목 자동분석 (장후): ${holdingCodes.length}종목`, { component: 'SCHEDULER' });
+          runDartResearchBatch(holdingCodes).catch((e) =>
+            logger.warn(`DART 장후 분석 실패 (스킵): ${e}`, { component: 'SCHEDULER' }),
+          );
+        }
+      } catch (e) {
+        logger.warn(`DART 장후 분석 실패: ${e}`, { component: 'SCHEDULER' });
+      }
     },
     { timezone: MARKET.TIMEZONE },
   );

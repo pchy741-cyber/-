@@ -9,7 +9,7 @@ import { runWithMode } from '../config/context.js';
 import { paperOnly } from '../config/index.js';
 import { cacheSet } from '../cache/memory.js';
 import { getPool, logSystem } from '../db/client.js';
-import { getOverseasDailyChart, getOverseasPrice } from '../kis/overseas.js';
+import { getOverseasDailyChart, getOverseasPrice, type OverseasPrice } from '../kis/overseas.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
 import { activateKillSwitch, isKillSwitchActive, reportError, reportSuccess } from '../risk/kill-switch.js';
 import { getOverseasLossTiers } from '../risk/seed-capital.js';
@@ -109,6 +109,7 @@ import {
 } from './overseas/session.js';
 import { getActiveSessionBrief } from './overseas/session-strategy.js';
 import { detectSqueezeBreakouts } from './overseas/squeeze-detector.js';
+import { getTunerOverrides } from './overseas/trade-tuner.js';
 import {
   classifyBucket,
   ensureOverseasTable,
@@ -490,6 +491,77 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
       if (i + BATCH < activeStocks.length) {
         await sleep(100);
       }
+    }
+
+    // ── 1-b. 보유종목 가격 실패 안전망 (절대 손절 스킵 방지) ──
+    // holdings에 있는데 techResults에 없는 종목 = 가격 조회 실패 → SL 체크 불가 위험
+    const techCodes = new Set(techResults.map((t) => t.code));
+    for (const [code, holding] of holdings) {
+      if (techCodes.has(code) || holding.qty <= 0) continue;
+      // 보유 중인데 가격 없음 → 1회 재시도
+      const stockMeta = allActiveStocks.find((s) => s.code === code);
+      if (!stockMeta) continue;
+      try {
+        const retryPrice = await getOverseasPrice(stockMeta.code, stockMeta.exchange);
+        if (retryPrice.currentPrice > 0) {
+          // 재시도 성공 → 최소 TechResult 생성 (SL 체크 가능)
+          techResults.push({
+            code: stockMeta.code,
+            name: stockMeta.name,
+            exchange: stockMeta.exchange,
+            sector: stockMeta.sector ?? '',
+            price: retryPrice,
+            signal: 'NEUTRAL',
+            score: 0,
+            rsi: 50,
+            adx: 20,
+            trendStrength: 'WEAK',
+            dayRangePct: 50,
+            isMomentum: false,
+            isBigMover: false,
+            aboveMA20: false,
+            aboveMA60: false,
+            bollingerSqueeze: false,
+            bollingerBreakout: 'NONE',
+            atrPct: 2.0,
+          });
+          logger.warn(`🔴 보유종목 ${code} 가격 재시도 성공 $${retryPrice.currentPrice} → SL 체크 활성`, { component: 'OVERSEAS' });
+          continue;
+        }
+      } catch { /* 재시도도 실패 */ }
+      // 재시도 실패 → avgPrice 기반 비상 TechResult (최소한 손절 판단 가능)
+      logger.error(`🚨 보유종목 ${code} 가격 조회 완전 실패 → avgPrice($${holding.avgPrice}) 기반 비상 SL 활성`, { component: 'OVERSEAS' });
+      techResults.push({
+        code: stockMeta.code,
+        name: stockMeta.name,
+        exchange: stockMeta.exchange,
+        sector: stockMeta.sector ?? '',
+        price: {
+          stockCode: stockMeta.code,
+          stockName: stockMeta.name,
+          currentPrice: holding.avgPrice, // 최소한 본절 기준으로 SL 체크
+          changePrice: 0,
+          changePct: 0,
+          volume: 0,
+          exchange: stockMeta.exchange,
+          dayHigh: holding.avgPrice,
+          dayLow: holding.avgPrice,
+          dayOpen: holding.avgPrice,
+        } as OverseasPrice,
+        signal: 'SELL', // 보수적: 가격 실패 시 매도 신호
+        score: -50,     // 강한 매도 점수
+        rsi: 50,
+        adx: 20,
+        trendStrength: 'WEAK',
+        dayRangePct: 50,
+        isMomentum: false,
+        isBigMover: false,
+        aboveMA20: false,
+        aboveMA60: false,
+        bollingerSqueeze: false,
+        bollingerBreakout: 'NONE',
+        atrPct: 2.0,
+      });
     }
 
     // ── 1-c. 세션 캐시 저장 ──
@@ -929,6 +1001,38 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
       }
     }
 
+    // ── 3.5 Anti-Drawdown Shield — 포트폴리오 전체 고점 대비 드로다운 체크 ──
+    try {
+      const { checkDrawdownShield } = await import('../automation/portfolio-guard.js');
+      const shield = checkDrawdownShield(portfolioValue, isPaper());
+      if (shield.action === 'LIQUIDATE' || shield.action === 'SELL_WORST') {
+        logger.warn(`🛡️ ${shield.reason}`, { component: 'OVERSEAS' });
+        await sendTelegramMessage(`🛡️ Anti-Drawdown: ${shield.reason}`).catch(() => {});
+        if (shield.action === 'LIQUIDATE') {
+          // 전량 청산: 모든 보유종목을 AI 매도 신호로 주입
+          for (const [code] of holdings) {
+            aiMap.set(code, { code, action: 'SELL', confidence: 0.99, reasoning: shield.reason });
+          }
+        } else {
+          // 최악 포지션 매도: PnL 가장 낮은 종목 1~2개 강제 매도
+          const sorted = [...holdings.entries()]
+            .map(([code, h]) => {
+              const tech = techResults.find((t) => t.code === code);
+              const curPrice = tech?.price.currentPrice ?? h.avgPrice;
+              const pnl = h.avgPrice > 0 ? ((curPrice - h.avgPrice) / h.avgPrice) * 100 : 0;
+              return { code, pnl };
+            })
+            .sort((a, b) => a.pnl - b.pnl);
+          const worstCount = Math.min(2, sorted.length);
+          for (let wi = 0; wi < worstCount; wi++) {
+            aiMap.set(sorted[wi].code, { code: sorted[wi].code, action: 'SELL', confidence: 0.95, reasoning: `${shield.reason} (최악${wi + 1}위: ${sorted[wi].pnl.toFixed(1)}%)` });
+          }
+        }
+      }
+    } catch (err) {
+      logger.warn(`Anti-Drawdown Shield 실패 (스킵): ${err}`, { component: 'OVERSEAS' });
+    }
+
     // ── 4. 매도 판단 (→ overseas/sell-logic.ts) — 방어 모드 트레일 타이트닝 반영 ──
     const effectiveVixRegime =
       defenseSignal.trailTighten > 0
@@ -1313,6 +1417,7 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
         sectorMomentumMap,
         newsThemeSectors,
         newsSentimentScore,
+        allocRiskData: allocRisk,
       });
 
       // ── Paper→Live 브릿지: paper 매수 후보를 live에 전달 ──
@@ -1408,23 +1513,22 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
         );
       }
 
-      // ── 종가베팅 (조건부): 장이 나쁘면 마감 30분 전에만 매수, 좋으면 스윙 ──
-      // 장세 판단: breadth(상승종목 비율) + VIX + 방어모드
+      // ── 종가베팅 (조건부): 극단 약세장만 마감 30분 전 제한, 나머지는 스윙 ──
+      // v15: 기존 breadth<35% OR VIX STRESS면 차단 → 거의 매일 차단되어 매수 0건
+      // 변경: CRISIS + 방어 동시 발동 시만 종가베팅 모드 (= 극단 상황만 제한)
       const { isUSMarketLastNMinutes, getMinutesToUSClose } = await import('./overseas/session.js');
       const isEodWindow = isUSMarketLastNMinutes(30);
       const isBadMarket =
-        freshBreadth < 0.35 ||
-        vixRegime.regime === 'STRESS' ||
-        vixRegime.regime === 'CRISIS' ||
-        defenseSignal.blockNewBuys;
+        (freshBreadth < 0.25 && vixRegime.regime === 'CRISIS') || // 극단 약세: breadth 25% 미만 + VIX CRISIS
+        defenseSignal.blockNewBuys; // 드로다운 쉴드 발동
       const eodBlockBuys = !isPaper() && openRegions.has('US') && !isEodWindow && isBadMarket;
       if (eodBlockBuys && buyTargets.length > 0) {
         logger.info(
           `⏰ 종가베팅: 약세장(breadth=${(freshBreadth * 100).toFixed(0)}% VIX=${vixRegime.regime}) 마감 ${getMinutesToUSClose()}분 전 — 후보 ${buyTargets.length}종목 대기`,
           { component: 'OVERSEAS' },
         );
-      } else if (openRegions.has('US') && !isBadMarket) {
-        logger.info(`📈 스윙모드: 정상장(breadth=${(freshBreadth * 100).toFixed(0)}%) — 매수 활성`, {
+      } else if (openRegions.has('US')) {
+        logger.info(`📈 스윙모드: breadth=${(freshBreadth * 100).toFixed(0)}% VIX=${vixRegime.regime} — 매수 활성`, {
           component: 'OVERSEAS',
         });
       }
@@ -1444,6 +1548,8 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
         `🔧 매수 루프: slots=${slotsAvailable} (max=${MAX_POSITIONS} held=${currentHoldingCount} kill=${killSwitchBuyBlockFresh} defense=${defenseBlockBuys}) cash=$${cash.toFixed(0)} targets=${buyTargets.length}`,
         { component: 'OVERSEAS' },
       );
+      // Trade Tuner 오버라이드 1회 로드 (매도측 sell-logic.ts:113과 동일 패턴)
+      const tunerOverrides: Record<string, number> = await getTunerOverrides(isPaper()).catch(() => ({}));
       for (const target of buyTargets.slice(0, slotsAvailable)) {
         // 상관관계 차단: 같은 그룹 내 보유 초과 (Paper: 학습용 바이패스)
         const corrBlock = checkCorrelationLimit(target.code, updatedHoldings);
@@ -1641,6 +1747,7 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
           vixRegime,
           isMomentum: target.isMomentum,
           atrPct: entryAtrPct,
+          tunerOverrides,
         });
         // TACTICAL: -1.5% SL (오버나이트 갭 최소화), SNIPER: -2.0% SL (고확신이므로 타이트하게)
         const effectiveSlPct = targetBucket === 'TACTICAL' ? 1.5 : effectiveBucket === 'SNIPER' ? 2.0 : dynSlPct;

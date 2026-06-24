@@ -123,10 +123,12 @@ export async function applyHardRules(params: {
     // 일반주: 기존 유지 (-3.5% ~ -6%)
     const isMegaCap = MEGA_CAP_PRIORITY_CODES.has(chain.stock_code);
     const holdMs = chain.opened_at ? Date.now() - new Date(chain.opened_at).getTime() : Infinity;
-    const EARLY_HOLD_MS = isMegaCap ? 30 * 60_000 : 10 * 60_000; // 대형주 30분, 일반 10분
-    const EARLY_BUFFER = isMegaCap ? 2.0 : 0.5; // 대형주 2%, 일반 0.5%
-    const HARD_FLOOR = isMegaCap ? -7.0 : -6.0; // 대형주 -7%, 일반 -6%
-    const earlyBuffer = holdMs < EARLY_HOLD_MS ? EARLY_BUFFER : 0;
+    // 초기 보유 버퍼: 매수 직후 변동성에 흔들리지 않도록 손절폭 확대
+    // 대형주 45분/2.0%, 일반주 30분/1.2% (기존 10분/0.5% → 너무 짧아 조기 청산 유발)
+    const EARLY_HOLD_MS = isMegaCap ? 45 * 60_000 : 30 * 60_000;
+    const EARLY_BUFFER = isMegaCap ? 2.0 : 1.2;
+    const HARD_FLOOR = isMegaCap ? -7.0 : -6.0;
+    const earlyBuffer = holdMs < EARLY_HOLD_MS ? EARLY_BUFFER * (1 - holdMs / EARLY_HOLD_MS) : 0; // 점진적 감소
     // 대형주 기본 손절폭 확대: baseStop이 -3.5%면 → -5.5%로 확대
     const effectiveBaseStop = isMegaCap ? Math.min(baseStop, -5.5) : baseStop;
     const stopPct = Math.max(effectiveBaseStop - earlyBuffer, HARD_FLOOR);

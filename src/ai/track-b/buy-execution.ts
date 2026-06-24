@@ -151,13 +151,14 @@ async function calcDomesticKelly(days: number = 30): Promise<DomesticKellyResult
 
     // 적응형 Kelly: 연속 스케일링 — 샘플 보정 + 승률별 분수 적용
     const confidenceAdj = 1.0 - Math.max(0, (30 - total) / 30) * 0.3; // 샘플 보정 0.7~1.0
+    // v15 Hyper: 국내 Kelly 공격적 (수수료0.21% 저렴 → 크게 베팅 가능)
     const kellyFraction =
       winRate >= 0.7
-        ? 0.5 * confidenceAdj // 고승률: Half-Kelly
+        ? 0.65 * confidenceAdj // v15: 0.5→0.65 고승률: 65% Kelly
         : winRate >= 0.5
-          ? 0.4 * confidenceAdj // 중승률: 40% Kelly
-          : 0.25; // 저승률: Quarter-Kelly
-    const quarterKelly = Math.max(0.03, Math.min(0.25, fullKelly * kellyFraction));
+          ? 0.50 * confidenceAdj // v15: 0.4→0.50 중승률: Half-Kelly
+          : 0.30; // v15: 0.25→0.30 저승률
+    const quarterKelly = Math.max(0.05, Math.min(0.35, fullKelly * kellyFraction)); // v15: cap 25→35%
 
     logger.info(
       `📊 국내 Kelly (${days}d, ${total}건): 승률 ${(winRate * 100).toFixed(0)}%, 평균수익 +${avgWin.toFixed(1)}%, 평균손실 -${avgLoss.toFixed(1)}% → ${kellyFraction === 0.5 ? 'Half' : 'Quarter'}-Kelly ${(quarterKelly * 100).toFixed(1)}%`,
@@ -198,8 +199,8 @@ export async function executeBuyDecisions(
   // 소자산: 3종목 분산 불가 시 50%까지 집중 허용 (80%는 2종목 = 100% 초과 위험)
   // 기준: effectiveMaxPos(=totalAssets×25%)로 1주 최소가(1만원) 3개 이상 살 수 없으면 소자산
   const canDiversify3 = (totalAssets ?? 0) > 0 && (totalAssets ?? 0) * 0.25 >= 30_000;
-  // v12.3: Hard Cap — 소자산 50% 집중, 일반 25% (안전 기본), 시장+확신 조합은 allocPct에서 동적 처리
-  const maxPosFraction = !canDiversify3 ? 0.5 : 0.25;
+  // v15 Hyper: 국내 포지션 비중 확대 (수수료 저렴, 빠른 회전 전략)
+  const maxPosFraction = !canDiversify3 ? 0.6 : 0.30;
   const effectiveMaxPos = totalAssets
     ? Math.min(maxPositionKrw, Math.round(totalAssets * maxPosFraction))
     : maxPositionKrw;
@@ -210,7 +211,7 @@ export async function executeBuyDecisions(
   let scoreTierParams: Array<{ tier_min: number; tier_max: number; alloc_pct: number; sample_count: number }> = [];
   try {
     const { rows } = await getPool().query(
-      `SELECT tier_min, tier_max, alloc_pct::float, sample_count FROM score_tier_params ORDER BY tier_min`,
+      `SELECT tier_min, tier_max, alloc_pct::float, sample_count FROM score_tier_params WHERE market = 'KR' ORDER BY tier_min`,
     );
     scoreTierParams = rows;
   } catch {
@@ -274,6 +275,37 @@ export async function executeBuyDecisions(
         }
       }),
     );
+  }
+
+  // ─── 일중 가격위치 분석: 고점 근처 매수 페널티 / 저점 근처 매수 가산 ───
+  // 프로 퀀트 기준: dayRange = (high - current) / (high - low), 0=고점, 1=저점
+  const intradayPriceAdj = new Map<string, { adj: number; pos: number; limitAdj: number }>();
+  for (const cand of candidates) {
+    const p = cand.price;
+    const range = p.highPrice - p.lowPrice;
+    if (range > 0 && p.highPrice > 0) {
+      const pos = (p.highPrice - p.currentPrice) / range; // 0=고점, 1=저점
+      let adj = 0;
+      let limitAdj = 0; // 지정가 조정 비율
+      if (pos <= 0.1) {
+        // 일중 최고가 근처 (상위 10%) → 강력 감점 + 지정가 낮춤
+        adj = -8;
+        limitAdj = -0.003; // 0.3% 낮은 지정가 (풀백 대기)
+      } else if (pos <= 0.25) {
+        // 고점 근처 (상위 25%) → 감점
+        adj = -4;
+        limitAdj = -0.002;
+      } else if (pos >= 0.7) {
+        // 저점 근처 (하위 30%) → 가산 (풀백 매수 보상)
+        adj = +6;
+        limitAdj = 0;
+      } else if (pos >= 0.5) {
+        // 중하단 → 소폭 가산
+        adj = +3;
+        limitAdj = 0;
+      }
+      intradayPriceAdj.set(cand.stock_code, { adj, pos, limitAdj });
+    }
   }
 
   // ─── 점수 기반 교체매매: 고점수 신호 왔는데 현금 부족 시 저점수 보유종목 청산 ───
@@ -348,7 +380,8 @@ export async function executeBuyDecisions(
   let remainingCash = orderableCash;
   // Paper: 15종목 (모의매매 — 데이터 수집 극대화) / SNIPER: 2 / 일반 SWING: 5
   const ctxPaper = getCtxIsPaper();
-  const maxBuys = ctxPaper ? 15 : mode === 'SNIPER' ? 2 : 5;
+  // v15 Hyper: 국내 매수 한도 확대 (수수료0.21% — 빈도↑ 전략)
+  const maxBuys = ctxPaper ? 15 : mode === 'SNIPER' ? 3 : 7;
   const splitCount = strategyParams.splitCount || 2;
 
   // 하락장 전면차단 — blockNewBuys=true(kospiRegime.todayDown 포함) 시 실전 신규매수 완전 차단
@@ -457,6 +490,16 @@ export async function executeBuyDecisions(
     // DEFENSE/SCALPING은 절반 비율 적용 (보수 운용)
     const techScore = Math.min(100, cand.tech.score + (cand.candleBonus ?? 0) * 0.5);
     let blendedScore = aiScore > 0 ? techScore * 0.5 + aiScore * 0.5 : techScore;
+
+    // ── 일중 가격위치 점수 보정: 고점 매수 억제, 저점 매수 보상 ──────────────
+    const pricePos = intradayPriceAdj.get(cand.stock_code);
+    if (pricePos && pricePos.adj !== 0) {
+      blendedScore = Math.max(0, Math.min(100, blendedScore + pricePos.adj));
+      logger.info(
+        `  📍 ${cand.stock_code}: 일중위치 ${(pricePos.pos * 100).toFixed(0)}% (0=고점,100=저점) → ${pricePos.adj > 0 ? '+' : ''}${pricePos.adj}점 blend=${blendedScore.toFixed(0)}`,
+        { component: 'TRACK_B' },
+      );
+    }
 
     // ── 핑거프린트 패턴 피드백: 과거 동일 패턴 승률 기반 점수 보정 ──────────
     const smaAlign =
@@ -847,8 +890,8 @@ export async function executeBuyDecisions(
       stock_code: cand.stock_code,
       quantity,
       price_type: 'MARKET',
-      limit_price: cand.price.currentPrice,
-      reasoning: `기술적 매수: score=${cand.tech.score}(blend=${blendedScore.toFixed(0)}) cat=${cand.tech.catTrend}/${cand.tech.catMomentum}/${cand.tech.catVolatility}/${cand.tech.catVolume}(${cand.tech.catPositive}/4)${cand.candleBonus > 0 ? `+${cand.candleBonus}캔들` : ''}${idBonus !== 0 ? `${idBonus > 0 ? '+' : ''}${idBonus}분봉` : ''} RSI=${cand.tech.rsi14.toFixed(0)} MACD=${cand.tech.macdCrossover} ADX=${cand.tech.adx14.toFixed(0)}(${cand.tech.trendStrength}) vol=${cand.tech.volumeRatio.toFixed(2)}x SMA=${smaAlign}${cand.tech.goldenCross ? ' 골든크로스' : ''}${isPriority ? ' [우선테마]' : ''}${allocStr}${patternFb.scoreAdj !== 0 ? ` [패턴${patternFb.scoreAdj > 0 ? '+' : ''}${patternFb.scoreAdj}]` : ''}${winRateSummary(cand.stock_code, winRates?.get(cand.stock_code))} fp=${fpKey}${srTag}`,
+      limit_price: Math.round(cand.price.currentPrice * (1 + (pricePos?.limitAdj ?? 0))),
+      reasoning: `기술적 매수: score=${cand.tech.score}(blend=${blendedScore.toFixed(0)}) cat=${cand.tech.catTrend}/${cand.tech.catMomentum}/${cand.tech.catVolatility}/${cand.tech.catVolume}(${cand.tech.catPositive}/4)${cand.candleBonus > 0 ? `+${cand.candleBonus}캔들` : ''}${idBonus !== 0 ? `${idBonus > 0 ? '+' : ''}${idBonus}분봉` : ''} RSI=${cand.tech.rsi14.toFixed(0)} MACD=${cand.tech.macdCrossover} ADX=${cand.tech.adx14.toFixed(0)}(${cand.tech.trendStrength}) vol=${cand.tech.volumeRatio.toFixed(2)}x SMA=${smaAlign}${cand.tech.goldenCross ? ' 골든크로스' : ''}${isPriority ? ' [우선테마]' : ''}${allocStr}${patternFb.scoreAdj !== 0 ? ` [패턴${patternFb.scoreAdj > 0 ? '+' : ''}${patternFb.scoreAdj}]` : ''}${winRateSummary(cand.stock_code, winRates?.get(cand.stock_code))} fp=${fpKey}${srTag}${pricePos ? ` [일중${(pricePos.pos * 100).toFixed(0)}%]` : ''}`,
       confidence: Math.min(
         0.95,
         Math.max(

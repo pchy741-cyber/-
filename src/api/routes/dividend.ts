@@ -596,6 +596,131 @@ dividendRoutes.get('/dividend/top5', async (c) => {
   }
 });
 
+// ── 배당 ETF 종합 수익률 순위 (배당수익률 + 시세변동) ──
+dividendRoutes.get('/dividend/ranking', async (c) => {
+  try {
+    const topETFs = await getTopDividendETFs(6);
+    const pool = getPool();
+
+    // 각 ETF의 보유현황 + 시세변동 조회
+    const rankings = await Promise.all(
+      topETFs.map(async (etf) => {
+        let priceChange30d = 0;
+        try {
+          const { rows } = await pool.query(
+            `SELECT current_price, avg_buy_price FROM overseas_holdings
+             WHERE stock_code = $1 AND quantity > 0 LIMIT 1`,
+            [etf.code],
+          );
+          if (rows[0]) {
+            const cur = Number(rows[0].current_price || rows[0].last_price || 0);
+            const avg = Number(rows[0].avg_buy_price || 0);
+            if (avg > 0) priceChange30d = ((cur - avg) / avg) * 100;
+          }
+        } catch { /* 미보유 시 0 */ }
+
+        const totalReturn = etf.netYield + priceChange30d;
+        const monthlyEstUsd = (1000 * etf.netYield / 100 / 12); // $1000 투자 기준
+        const yearlyEstUsd = (1000 * etf.netYield / 100);
+
+        return {
+          rank: 0,
+          code: etf.code,
+          exchange: etf.exchange,
+          grossYield: +etf.grossYield.toFixed(2),
+          netYield: +etf.netYield.toFixed(2),
+          priceChange30d: +priceChange30d.toFixed(2),
+          totalReturn: +totalReturn.toFixed(2),
+          monthlyEstUsd: +monthlyEstUsd.toFixed(2),
+          yearlyEstUsd: +yearlyEstUsd.toFixed(2),
+          risk: etf.grossYield > 10 ? '중' : etf.grossYield > 5 ? '낮음' : '매우낮음',
+        };
+      }),
+    );
+
+    // 종합수익률 기준 순위 매기기
+    rankings.sort((a, b) => b.totalReturn - a.totalReturn);
+    rankings.forEach((r, i) => (r.rank = i + 1));
+
+    return c.json({ rankings: rankings.slice(0, 5), updatedAt: new Date().toISOString() });
+  } catch (e: any) {
+    return c.json({ error: 'Internal server error' }, 500);
+  }
+});
+
+// ── 종가베팅 결과 조회 (배당탭 통합) ──
+dividendRoutes.get('/dividend/eod-betting', async (c) => {
+  try {
+    const isPaper = resolveRequestMode(c);
+    const pool = getPool();
+    const todayKST = `(DATE_TRUNC('day', NOW() AT TIME ZONE 'Asia/Seoul')) AT TIME ZONE 'Asia/Seoul'`;
+
+    // 오늘 종가베팅 매수 종목
+    const { rows: todayBets } = await pool.query(
+      `SELECT tc.stock_code, tc.stock_name, tc.avg_buy_price AS buy_price,
+              tc.strategy_mode, tc.opened_at
+       FROM transaction_chains tc
+       WHERE tc.strategy_mode = 'EOD_BETTING' AND tc.is_paper = $1
+         AND tc.status IN ('OPEN', 'AVERAGING', 'PROFIT_TAKING')
+         AND tc.opened_at >= ${todayKST}
+       ORDER BY tc.opened_at DESC`,
+      [isPaper],
+    );
+
+    // 어제 종가베팅 매도 결과
+    const { rows: yesterdayResults } = await pool.query(
+      `SELECT tc.stock_code, tc.stock_name, tc.realized_pnl AS pnl,
+              CASE WHEN tc.total_invested > 0 THEN (tc.realized_pnl / tc.total_invested * 100) ELSE 0 END AS pnl_pct,
+              tc.closed_at
+       FROM transaction_chains tc
+       WHERE tc.strategy_mode = 'EOD_BETTING' AND tc.is_paper = $1
+         AND tc.status = 'CLOSED'
+         AND tc.closed_at >= ${todayKST} - INTERVAL '1 day'
+         AND tc.closed_at < ${todayKST}
+       ORDER BY tc.closed_at DESC`,
+      [isPaper],
+    );
+
+    // 최근 7일 통계
+    const { rows: statsRows } = await pool.query(
+      `SELECT COUNT(*) AS count,
+              COUNT(*) FILTER (WHERE realized_pnl > 0) AS wins,
+              COALESCE(AVG(CASE WHEN total_invested > 0 THEN realized_pnl / total_invested * 100 END), 0) AS avg_pnl_pct,
+              COALESCE(SUM(realized_pnl), 0) AS total_pnl
+       FROM transaction_chains
+       WHERE strategy_mode = 'EOD_BETTING' AND is_paper = $1
+         AND status = 'CLOSED'
+         AND closed_at >= NOW() - INTERVAL '7 days'`,
+      [isPaper],
+    );
+    const stats = statsRows[0] ?? {};
+    const count = Number(stats.count ?? 0);
+
+    return c.json({
+      todayBets: todayBets.map((b: any) => ({
+        stock_code: b.stock_code,
+        name: b.stock_name || b.stock_code,
+        buyPrice: Number(b.buy_price),
+      })),
+      yesterdayResults: yesterdayResults.map((r: any) => ({
+        stock_code: r.stock_code,
+        name: r.stock_name || r.stock_code,
+        pnl: Number(r.pnl),
+        pnlPct: +Number(r.pnl_pct).toFixed(2),
+      })),
+      stats7d: {
+        count,
+        wins: Number(stats.wins ?? 0),
+        winRate: count > 0 ? +((Number(stats.wins ?? 0) / count) * 100).toFixed(1) : 0,
+        avgPnlPct: +Number(stats.avg_pnl_pct ?? 0).toFixed(2),
+        totalPnlKrw: Number(stats.total_pnl ?? 0),
+      },
+    });
+  } catch (e: any) {
+    return c.json({ error: 'Internal server error' }, 500);
+  }
+});
+
 // ── Trade Tuner 결과 조회 + 수동 실행 ──
 
 dividendRoutes.get('/trade-tuner/result', async (c) => {

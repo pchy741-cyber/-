@@ -10,13 +10,76 @@ import { callVertexGemini } from '../utils/vertex-gemini.js';
 import { logger } from '../utils/logger.js';
 import { sleep } from '../utils/sleep.js';
 import { calcPiotroskiFScore } from './piotroski.js';
+import { getPool } from '../db/client.js';
 
 const COMP = 'DART_RESEARCH';
 const DART_BASE = 'https://opendart.fss.or.kr/api';
 
-// 24시간 결과 캐시 — Track A 반복 호출 + DART API rate limit 보호
+// 24시간 인메모리 캐시 — Track A 반복 호출 + DART API rate limit 보호 (성능)
 const _resultCache = new Map<string, { result: DartResearchResult; fetchedAt: number }>();
 const RESULT_CACHE_TTL_MS = 24 * 60 * 60_000;
+
+// ── DB 캐시: 분기별 결과 영구 저장 (재시작/재배포 생존) ──
+
+/** 현재 분기 계산 */
+function getCurrentQuarter(): { year: string; quarter: string } {
+  const now = new Date();
+  const m = now.getMonth(); // 0-indexed
+  // 가장 최근 공시된 분기 (공시 lag 감안)
+  if (m < 5) return { year: String(now.getFullYear() - 1), quarter: 'annual' };
+  if (m < 8) return { year: String(now.getFullYear()), quarter: 'q1' };
+  if (m < 11) return { year: String(now.getFullYear()), quarter: 'h1' };
+  return { year: String(now.getFullYear()), quarter: 'q3' };
+}
+
+/** DB 캐시에서 분기별 결과 조회 */
+async function getDbCachedResult(stockCode: string, year: string, quarter: string): Promise<DartResearchResult | null> {
+  try {
+    const { rows } = await getPool().query(
+      `SELECT result FROM dart_research_cache WHERE stock_code = $1 AND year = $2 AND quarter = $3`,
+      [stockCode, year, quarter],
+    );
+    if (rows[0]?.result) {
+      logger.debug(`DART DB캐시 히트: ${stockCode}/${year}/${quarter}`, { component: COMP });
+      return rows[0].result as DartResearchResult;
+    }
+  } catch { /* DB 없으면 무시 (마이그레이션 전) */ }
+  return null;
+}
+
+/** DB 캐시에 결과 UPSERT */
+async function upsertDbCache(stockCode: string, year: string, quarter: string, result: DartResearchResult): Promise<void> {
+  try {
+    await getPool().query(
+      `INSERT INTO dart_research_cache (stock_code, year, quarter, result, fundamental_score, piotroski_score)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (stock_code, year, quarter)
+       DO UPDATE SET result = $4, fundamental_score = $5, piotroski_score = $6, analyzed_at = NOW()`,
+      [stockCode, year, quarter, JSON.stringify(result), result.fundamentalScore ?? null, result.piotroskiScore ?? null],
+    );
+  } catch (e) {
+    logger.debug(`DART DB캐시 저장 실패 (무시): ${e}`, { component: COMP });
+  }
+}
+
+/**
+ * 스마트 DART 분석 타겟 선택 — DB캐시 미스 종목만 필터
+ * 동일 분기 이미 분석된 종목은 재분석 불필요
+ */
+export async function getSmartDartTargets(allCodes: string[], limit: number): Promise<string[]> {
+  const { year, quarter } = getCurrentQuarter();
+  try {
+    const { rows } = await getPool().query(
+      `SELECT stock_code FROM dart_research_cache WHERE year = $1 AND quarter = $2 AND stock_code = ANY($3)`,
+      [year, quarter, allCodes],
+    );
+    const cached = new Set(rows.map((r: { stock_code: string }) => r.stock_code));
+    return allCodes.filter((c) => !cached.has(c)).slice(0, limit);
+  } catch {
+    // DB 미사용 시 전체 반환 (기존 동작 호환)
+    return allCodes.slice(0, limit);
+  }
+}
 
 // ── Types ──
 
@@ -55,13 +118,6 @@ export interface DartResearchResult {
   analyzedAt: string;
 }
 
-interface DartCompanyInfo {
-  status: string;
-  corp_code: string;
-  corp_name: string;
-  stock_code: string;
-}
-
 interface DartFinancialRow {
   sj_div: string;     // IS=손익, BS=재무상태, CF=현금흐름
   account_nm: string; // 계정명
@@ -69,42 +125,121 @@ interface DartFinancialRow {
   frmtrm_amount: string; // 전기
 }
 
-// ── Corp Code 동적 조회 (캐시) ──
+// ── Corp Code 동적 조회 (corpCode.xml ZIP 다운로드 → 전체 매핑) ──
 
 const _corpCodeCache = new Map<string, string>(); // stockCode → corpCode
+let _corpCodeLoaded = false;
+let _corpCodeLoadingPromise: Promise<void> | null = null;
 
-async function getCorpCode(apiKey: string, stockCode: string): Promise<string | null> {
-  if (_corpCodeCache.has(stockCode)) return _corpCodeCache.get(stockCode)!;
+/** DART corpCode.xml ZIP 다운로드 → stockCode→corpCode 매핑 캐시 (24시간 유효) */
+async function loadCorpCodeMap(apiKey: string): Promise<void> {
+  if (_corpCodeLoaded && _corpCodeCache.size > 100) return;
+  if (_corpCodeLoadingPromise) return _corpCodeLoadingPromise;
 
-  // 하드코딩 fallback (주요 종목 — dart-monitor.ts와 동기화)
-  const HARDCODED: Record<string, string> = {
-    '005930': '00126380', '000660': '00164779', '373220': '01620944',
-    '005380': '00164742', '009540': '00164785', '035420': '00401731',
-    '035720': '00258801', '006400': '00126362', '051910': '00356361',
-    '003670': '00140108', '012450': '00156360', '000270': '00164518',
-    '207940': '00935937', '105560': '00164902', '055550': '00131781',
-    '086790': '00148643', '316140': '00185610', '064350': '00112055',
-    '034020': '00159591', '047810': '00131016',
-  };
-  if (HARDCODED[stockCode]) {
-    _corpCodeCache.set(stockCode, HARDCODED[stockCode]);
-    return HARDCODED[stockCode];
-  }
+  _corpCodeLoadingPromise = (async () => {
+    try {
+      // 하드코딩 fallback (ZIP 다운로드 실패 시에도 주요 종목은 동작)
+      const HARDCODED: Record<string, string> = {
+        '005930': '00126380', '000660': '00164779', '373220': '01620944',
+        '005380': '00164742', '009540': '00164785', '035420': '00401731',
+        '035720': '00258801', '006400': '00126362', '051910': '00356361',
+        '003670': '00140108', '012450': '00156360', '000270': '00164518',
+        '207940': '00935937', '105560': '00164902', '055550': '00131781',
+        '086790': '00148643', '316140': '00185610', '064350': '00112055',
+        '034020': '00159591', '047810': '00131016',
+      };
+      for (const [sc, cc] of Object.entries(HARDCODED)) _corpCodeCache.set(sc, cc);
 
+      const url = `${DART_BASE}/corpCode.xml?crtfc_key=${apiKey}`;
+      const res = await fetch(url, { signal: AbortSignal.timeout(30000) });
+      if (!res.ok) {
+        logger.warn(`DART corpCode.xml HTTP ${res.status}`, { component: COMP });
+        _corpCodeLoaded = true;
+        return;
+      }
+
+      const buffer = await res.arrayBuffer();
+      // ZIP 내부의 CORPCODE.xml 파싱 (간이 ZIP 해제 — 단일 파일 ZIP)
+      const bytes = new Uint8Array(buffer);
+      const xmlStr = await extractXmlFromZip(bytes);
+      if (!xmlStr) {
+        logger.warn('DART corpCode.xml ZIP 해제 실패', { component: COMP });
+        _corpCodeLoaded = true;
+        return;
+      }
+
+      // XML 파싱: <list><corp_code>00126380</corp_code><stock_code>005930</stock_code>...</list>
+      const corpCodeRegex = /<corp_code>(\d+)<\/corp_code>/g;
+      const stockCodeRegex = /<stock_code>\s*(\d{6})\s*<\/stock_code>/g;
+      const listRegex = /<list>([\s\S]*?)<\/list>/g;
+      let match;
+      let count = 0;
+      while ((match = listRegex.exec(xmlStr)) !== null) {
+        const block = match[1];
+        const ccMatch = /<corp_code>(\d+)<\/corp_code>/.exec(block);
+        const scMatch = /<stock_code>\s*(\d{6})\s*<\/stock_code>/.exec(block);
+        if (ccMatch && scMatch) {
+          _corpCodeCache.set(scMatch[1], ccMatch[1]);
+          count++;
+        }
+      }
+      _corpCodeLoaded = true;
+      logger.info(`✅ DART corpCode 매핑 로드: ${count}개 종목 (캐시 총 ${_corpCodeCache.size}개)`, { component: COMP });
+    } catch (err) {
+      logger.warn(`DART corpCode 매핑 로드 실패: ${err}`, { component: COMP });
+      _corpCodeLoaded = true; // 실패해도 재시도 방지 (하드코딩으로 fallback)
+    } finally {
+      _corpCodeLoadingPromise = null;
+    }
+  })();
+  return _corpCodeLoadingPromise;
+}
+
+/** 단일 파일 ZIP에서 XML 텍스트 추출 (간이 구현 — deflate raw) */
+async function extractXmlFromZip(zipBytes: Uint8Array): Promise<string | null> {
   try {
-    const url = `${DART_BASE}/company.json?crtfc_key=${apiKey}&stock_code=${stockCode}`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
-    if (!res.ok) return null;
-    const data = (await res.json()) as DartCompanyInfo;
-    if (data.status === '000' && data.corp_code) {
-      _corpCodeCache.set(stockCode, data.corp_code);
-      return data.corp_code;
+    // ZIP local file header: PK\x03\x04 (offset 0)
+    if (zipBytes[0] !== 0x50 || zipBytes[1] !== 0x4B) return null;
+    const compressionMethod = zipBytes[8] | (zipBytes[9] << 8);
+    const compressedSize = zipBytes[18] | (zipBytes[19] << 8) | (zipBytes[20] << 16) | (zipBytes[21] << 24);
+    const fileNameLen = zipBytes[26] | (zipBytes[27] << 8);
+    const extraLen = zipBytes[28] | (zipBytes[29] << 8);
+    const dataOffset = 30 + fileNameLen + extraLen;
+
+    if (compressionMethod === 0) {
+      // Stored (비압축)
+      const decoder = new TextDecoder('utf-8');
+      return decoder.decode(zipBytes.slice(dataOffset, dataOffset + compressedSize));
+    } else if (compressionMethod === 8) {
+      // Deflate
+      const compressed = zipBytes.slice(dataOffset, dataOffset + compressedSize);
+      const ds = new DecompressionStream('deflate-raw');
+      const writer = ds.writable.getWriter();
+      const reader = ds.readable.getReader();
+      writer.write(compressed);
+      writer.close();
+      const chunks: Uint8Array[] = [];
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+      }
+      const totalLen = chunks.reduce((s, c) => s + c.length, 0);
+      const result = new Uint8Array(totalLen);
+      let offset = 0;
+      for (const chunk of chunks) { result.set(chunk, offset); offset += chunk.length; }
+      return new TextDecoder('utf-8').decode(result);
     }
     return null;
   } catch (err) {
-    logger.debug(`DART 기업코드 조회 실패 (${stockCode}): ${err}`, { component: 'DART_RESEARCH' });
+    logger.warn(`ZIP 해제 오류: ${err}`, { component: COMP });
     return null;
   }
+}
+
+async function getCorpCode(apiKey: string, stockCode: string): Promise<string | null> {
+  await loadCorpCodeMap(apiKey);
+  return _corpCodeCache.get(stockCode) ?? null;
 }
 
 // ── 재무제표 파싱 유틸 ──
@@ -328,11 +463,18 @@ export async function runDartResearch(
   const quarter = options?.quarter ?? 'annual';
   const cacheKey = `${stockCode}-${year}-${quarter}`;
 
-  // 24시간 캐시 — 재무제표는 매일 변하지 않음
+  // 1차: 인메모리 24시간 캐시 (재시작 사이 성능)
   const cached = _resultCache.get(cacheKey);
   if (cached && Date.now() - cached.fetchedAt < RESULT_CACHE_TTL_MS) {
-    logger.debug(`DART 캐시 히트: ${cacheKey}`, { component: COMP });
+    logger.debug(`DART 메모리캐시 히트: ${cacheKey}`, { component: COMP });
     return cached.result;
+  }
+
+  // 2차: DB 분기 캐시 (재시작/재배포 생존 — 동일 분기 재분석 방지)
+  const dbCached = await getDbCachedResult(stockCode, year, quarter);
+  if (dbCached) {
+    _resultCache.set(cacheKey, { result: dbCached, fetchedAt: Date.now() });
+    return dbCached;
   }
 
   const base: DartResearchResult = {
@@ -402,6 +544,12 @@ export async function runDartResearch(
   }
 
   _resultCache.set(cacheKey, { result: base, fetchedAt: Date.now() });
+
+  // DB 분기 캐시에 저장 (재시작 후에도 재분석 방지)
+  if (base.financial) {
+    await upsertDbCache(stockCode, year, quarter, base);
+  }
+
   return base;
 }
 

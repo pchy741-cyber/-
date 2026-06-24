@@ -20,7 +20,7 @@ export async function monitorVisionScalp(isPaper: boolean): Promise<void> {
       .query(
         `
       SELECT COUNT(*) AS cnt FROM orders
-      WHERE trading_mode = $1
+      WHERE (trading_mode = $1 OR ($1 = 'paper' AND trading_mode = 'p_arch'))
         AND trigger_source = 'OVERSEAS'
         AND ai_reasoning LIKE '%Vision단타%'
         AND created_at >= CURRENT_DATE

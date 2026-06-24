@@ -36,7 +36,7 @@ import {
 // ── Types ──
 
 export interface InsightParamChange {
-  field: 'mode' | 'stop_loss_pct' | 'take_profit_pct' | 'buy_threshold';
+  field: 'mode' | 'stop_loss_pct' | 'take_profit_pct' | 'buy_threshold' | 'trailing_stop_pct';
   value: string | number;
   reason: string;
 }
@@ -241,7 +241,7 @@ async function analyzeWithClaude(
     "confidence": 0.0-1.0,
     "sampleCount": 숫자,
     "recommendation": "구체적 행동 지침",
-    "paramChange": { "field": "stop_loss_pct|take_profit_pct|buy_threshold", "value": 숫자, "reason": "근거" } | null
+    "paramChange": { "field": "stop_loss_pct|take_profit_pct|buy_threshold|trailing_stop_pct|mode", "value": "숫자 또는 mode문자열(SWING|DEFENSE|SNIPER|SCALPING|BREAKOUT|BOTTOM_FISHING|EOD_BETTING|DIVIDEND)", "reason": "근거" } | null
   }
 ]
 
@@ -510,12 +510,12 @@ export async function getLearnedInsightsForPrompt(): Promise<string> {
 }
 
 export async function autoApplyInsights(insights: LearnedInsight[]): Promise<void> {
-  // v4: Live 모드에서도 고신뢰 인사이트 자동 적용 (신뢰도 0.85+ & 표본 15건+)
+  // Live 모드 점진적 자동적용 (신뢰도 0.75+ & 표본 8건+, blendWeight로 변경폭 조절)
   // Paper: 신뢰도 0.7+ (기존 유지)
-  // Live:  신뢰도 0.85+ & sampleCount 15+ (안전한 자동 적용)
+  // Live:  신뢰도 0.75+ & sampleCount 8+ (blendWeight 점진 적용)
   const isPaper = getCtxIsPaper();
-  const minConfidence = isPaper ? 0.7 : 0.85;
-  const minSamples = isPaper ? 0 : 15;
+  const minConfidence = isPaper ? 0.7 : 0.75;
+  const minSamples = isPaper ? 0 : 8;
   const toApply = insights.filter(
     (i) => i.confidence >= minConfidence && i.paramChange && !i.isApplied && (i.sampleCount ?? 0) >= minSamples,
   );
@@ -544,12 +544,14 @@ export async function autoApplyInsights(insights: LearnedInsight[]): Promise<voi
       take_profit_pct: 'take_profit_pct',
       buy_threshold: 'buy_threshold',
       mode: 'mode',
+      trailing_stop_pct: 'trailing_stop_pct',
     };
     // 안전 범위: 비정상 값 자동적용 방지 (gambler's ruin 방어)
     const PARAM_RANGES: Record<string, { min: number; max: number }> = {
       stop_loss_pct: { min: -30, max: -1 }, // -30% ~ -1%
       take_profit_pct: { min: 0.5, max: 50 }, // +0.5% ~ +50%
       buy_threshold: { min: 0, max: 100 },
+      trailing_stop_pct: { min: 1, max: 15 }, // 1% ~ 15%
     };
     // mode 필드 허용 값: LLM이 임의 문자열 주입 방지
     const VALID_MODES = new Set(['SWING', 'DEFENSE', 'SCALPING', 'DIVIDEND', 'SNIPER', 'BOTTOM_FISHING', 'EOD_BETTING', 'BREAKOUT']);
@@ -575,14 +577,23 @@ export async function autoApplyInsights(insights: LearnedInsight[]): Promise<voi
         }
       }
       const oldVal = current[field];
-      if (oldVal === value) continue;
+      // 점진적 가중치: Live 낮은 신뢰도 인사이트는 변경폭 축소
+      // confidence 0.75 + samples 8 → ~60% 적용, 0.85 + 15 → 100% 적용
+      let effectiveValue = value;
+      if (!isPaper && field !== 'mode' && typeof value === 'number' && typeof oldVal === 'number') {
+        const confWeight = Math.max(0, Math.min((insight.confidence - 0.7) / (0.85 - 0.7), 1)); // 0.7→0, 0.85→1
+        const sampleWeight = Math.max(0, Math.min(((insight.sampleCount ?? 0) - 5) / (15 - 5), 1)); // 5→0, 15→1
+        const blendWeight = confWeight * 0.6 + sampleWeight * 0.4;
+        effectiveValue = Math.round((oldVal + (value - oldVal) * blendWeight) * 100) / 100;
+      }
+      if (oldVal === effectiveValue) continue;
 
       await client.query(`UPDATE strategy_config SET ${safeCol} = $1 WHERE is_active = true AND is_paper = $2`, [
-        value,
+        effectiveValue,
         isPaper,
       ]);
       // 이전값 기록: 롤백 시 복원 + 효과 추적용
-      const prevDetails = { previous_value: oldVal, applied_field: field };
+      const prevDetails = { previous_value: oldVal, applied_field: field, blend_target: value };
       if (insight.id) {
         await client.query(
           `UPDATE learned_insights SET is_applied = true, applied_at = NOW(), details = COALESCE(details, '{}'::jsonb) || $2::jsonb WHERE id = $1`,
@@ -594,8 +605,8 @@ export async function autoApplyInsights(insights: LearnedInsight[]): Promise<voi
           [insight.category, insight.insight, JSON.stringify(prevDetails)],
         );
       }
-      applied.push(`${field}: ${oldVal} → ${value}`);
-      logger.info(`🤖 인사이트 자동 적용: ${field}=${value} (${insight.insight.slice(0, 40)}...)`, {
+      applied.push(`${field}: ${oldVal} → ${effectiveValue}${effectiveValue !== value ? ` (목표 ${value}, blend)` : ''}`);
+      logger.info(`🤖 인사이트 자동 적용: ${field}=${effectiveValue} (${insight.insight.slice(0, 40)}...)`, {
         component: 'LEARN',
       });
     }
@@ -628,6 +639,7 @@ export async function applyInsightById(insightId: string): Promise<{ ok: boolean
     const SAFE_COL_MAP: Record<string, string> = {
       stop_loss_pct: 'stop_loss_pct', take_profit_pct: 'take_profit_pct',
       buy_threshold: 'buy_threshold', mode: 'mode',
+      trailing_stop_pct: 'trailing_stop_pct',
     };
     const safeCol = SAFE_COL_MAP[field];
     if (!safeCol) return { ok: false, message: `허용되지 않은 필드: ${field}` };
@@ -637,6 +649,7 @@ export async function applyInsightById(insightId: string): Promise<{ ok: boolean
       stop_loss_pct: { min: -30, max: -1 },
       take_profit_pct: { min: 0.5, max: 50 },
       buy_threshold: { min: 0, max: 100 },
+      trailing_stop_pct: { min: 1, max: 15 },
     };
     const range = PARAM_RANGES[field];
     if (range && typeof value === 'number' && (value < range.min || value > range.max)) {
@@ -785,7 +798,10 @@ async function _runLearningForMode(isPaper: boolean): Promise<void> {
     } catch (e) {
       logger.warn(`황금비율 자동조정 실패: ${e}`, { component: 'LEARN' });
     }
-    await calibrateScoreTierParams().catch((e) => logger.warn(`티어 파라미터 보정 실패: ${e}`, { component: 'LEARN' }));
+    await Promise.all([
+      calibrateScoreTierParams('KR').catch((e) => logger.warn(`티어 파라미터 보정 [KR] 실패: ${e}`, { component: 'LEARN' })),
+      calibrateScoreTierParams('US').catch((e) => logger.warn(`티어 파라미터 보정 [US] 실패: ${e}`, { component: 'LEARN' })),
+    ]);
     // 앙상블 가중치 자동 튜닝 — 모델별 실거래 성과 기반
     await autoTuneEnsembleWeights().catch((e) => logger.warn(`앙상블 가중치 튜닝 실패: ${e}`, { component: 'LEARN' }));
     // 적용된 인사이트 효과 평가 → 악화 시 자동 롤백

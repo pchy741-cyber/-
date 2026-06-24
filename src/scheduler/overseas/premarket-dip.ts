@@ -27,7 +27,7 @@ const BLUE_CHIP_CODES = new Set([
   'ORCL',
   'CRM',
   'AMD',
-  'AAPL',
+  'TSLA',
 ]);
 
 // 딥바이 파라미터 (수수료 0.7% 커버 후 순익 확보)
@@ -246,6 +246,9 @@ export async function checkDipBuyFills(isPaper = true): Promise<string[]> {
 
     const remaining = [];
     const holdings = await getHoldings(isPaper);
+    // 🛡️ 현금을 로컬 추적 (매 체결마다 getCash 재조회 → 이전 체결 반영 안 됨 방지)
+    let localCash = await getCash(isPaper);
+    let localCashInitialized = true;
 
     for (const order of orders) {
       try {
@@ -260,10 +263,9 @@ export async function checkDipBuyFills(isPaper = true): Promise<string[]> {
           const fillPrice = price.currentPrice;
           const totalCost = order.qty * fillPrice * (1 + OVERSEAS_FEE_PCT);
 
-          // 현금 확인
-          const cash = await getCash(isPaper);
-          if (cash < totalCost) {
-            logger.info(`💰 딥바이 ${order.code} 현금 부족 ($${cash.toFixed(0)} < $${totalCost.toFixed(0)})`, {
+          // 현금 확인 (로컬 추적 — 다중 체결 시 이전 차감 반영)
+          if (localCash < totalCost) {
+            logger.info(`💰 딥바이 ${order.code} 현금 부족 ($${localCash.toFixed(0)} < $${totalCost.toFixed(0)})`, {
               component: 'DIP_BUY',
             });
             remaining.push(order);
@@ -291,10 +293,11 @@ export async function checkDipBuyFills(isPaper = true): Promise<string[]> {
             const scalpTpPrice = +(exec.filledPrice * (1 + TP_PCT / 100)).toFixed(2);
             const scalpSlPrice = +(exec.filledPrice * (1 - SL_PCT / 100)).toFixed(2);
 
+            localCash -= exec.filledQty * exec.filledPrice * (1 + OVERSEAS_FEE_PCT);
             await updateTradeState({
               code: order.code, exchange: order.exchange,
               qty: exec.finalQty, avgPrice: exec.finalAvgPrice,
-              newCash: cash - exec.filledQty * exec.filledPrice * (1 + OVERSEAS_FEE_PCT),
+              newCash: localCash,
               isPaper,
             });
 

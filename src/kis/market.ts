@@ -127,49 +127,66 @@ export async function getDailyChart(stockCode: string, days: number = 60): Promi
     return cached.data;
   }
 
-  const kstNow = getKSTNow();
-  const endDate = kstNow.toISOString().split('T')[0].replace(/-/g, '');
-  const startDate = new Date(kstNow.getTime() - days * 24 * 60 * 60 * 1000).toISOString().split('T')[0].replace(/-/g, '');
+  try {
+    const kstNow = getKSTNow();
+    const endDate = kstNow.toISOString().split('T')[0].replace(/-/g, '');
+    const startDate = new Date(kstNow.getTime() - days * 24 * 60 * 60 * 1000).toISOString().split('T')[0].replace(/-/g, '');
 
-  await marketDataRateLimiter.acquire();
-  const res = await kisRequest({
-    path: '/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice',
-    trId: KIS_TR_ID.QUOTE.DAILY_CHART,
-    useRealUrl: true,
-    skipRateLimiter: true,
-    params: {
-      FID_COND_MRKT_DIV_CODE: 'J',
-      FID_INPUT_ISCD: stockCode,
-      FID_INPUT_DATE_1: startDate,
-      FID_INPUT_DATE_2: endDate,
-      FID_PERIOD_DIV_CODE: 'D',
-      FID_ORG_ADJ_PRC: '0',
-    },
-  });
+    await marketDataRateLimiter.acquire();
+    const res = await kisRequest({
+      path: '/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice',
+      trId: KIS_TR_ID.QUOTE.DAILY_CHART,
+      useRealUrl: true,
+      skipRateLimiter: true,
+      params: {
+        FID_COND_MRKT_DIV_CODE: 'J',
+        FID_INPUT_ISCD: stockCode,
+        FID_INPUT_DATE_1: startDate,
+        FID_INPUT_DATE_2: endDate,
+        FID_PERIOD_DIV_CODE: 'D',
+        FID_ORG_ADJ_PRC: '0',
+      },
+    });
 
-  // KIS API는 output 또는 output2로 반환 (API 버전에 따라 다름)
-  const items = (res.output2 ?? res.output ?? []) as unknown as Record<string, string>[];
-  if (!Array.isArray(items)) return [];
+    // KIS API는 output 또는 output2로 반환 (API 버전에 따라 다름)
+    const items = (res.output2 ?? res.output ?? []) as unknown as Record<string, string>[];
+    if (!Array.isArray(items)) {
+      // API 응답 이상 → stale 캐시 fallback
+      if (cached?.data?.length) {
+        logger.warn(`📊 일봉 API 응답 이상 → stale 캐시 서빙: ${stockCode}`, { component: 'KIS' });
+        return cached.data;
+      }
+      return [];
+    }
 
-  // DESC 정렬 보장 (최신 [0]) — analyzeTechnicals() 계약: closes[0] = 현재가
-  const result = items
-    .map((c) => ({
-      date: c.stck_bsop_date ?? '',
-      open: safeNum(c.stck_oprc),
-      high: safeNum(c.stck_hgpr),
-      low: safeNum(c.stck_lwpr),
-      close: safeNum(c.stck_clpr),
-      volume: safeNum(c.acml_vol),
-      tradingValueEok: safeNum(c.acml_tr_pbmn) / 100_000_000,
-    }))
-    .sort((a, b) => b.date.localeCompare(a.date));
+    // DESC 정렬 보장 (최신 [0]) — analyzeTechnicals() 계약: closes[0] = 현재가
+    const result = items
+      .map((c) => ({
+        date: c.stck_bsop_date ?? '',
+        open: safeNum(c.stck_oprc),
+        high: safeNum(c.stck_hgpr),
+        low: safeNum(c.stck_lwpr),
+        close: safeNum(c.stck_clpr),
+        volume: safeNum(c.acml_vol),
+        tradingValueEok: safeNum(c.acml_tr_pbmn) / 100_000_000,
+      }))
+      .sort((a, b) => b.date.localeCompare(a.date));
 
-  // 캐시 저장
-  if (result.length > 0) {
-    _dailyChartCache.set(cacheKey, { data: result, expiresAt: Date.now() + getDailyChartCacheTtlMs() });
+    // 캐시 저장
+    if (result.length > 0) {
+      _dailyChartCache.set(cacheKey, { data: result, expiresAt: Date.now() + getDailyChartCacheTtlMs() });
+    }
+
+    return result;
+  } catch (err) {
+    // KIS API 실패 → 만료된 캐시라도 서빙 (빈 차트보다 stale 차트가 나음)
+    if (cached?.data?.length) {
+      logger.warn(`📊 일봉 API 실패 → stale 캐시 서빙: ${stockCode} (${err instanceof Error ? err.message : String(err)})`, { component: 'KIS' });
+      return cached.data;
+    }
+    logger.warn(`📊 일봉 조회 실패 (캐시 없음): ${stockCode} - ${err instanceof Error ? err.message : String(err)}`, { component: 'KIS' });
+    return [];
   }
-
-  return result;
 }
 
 // ── 분봉 차트 ──

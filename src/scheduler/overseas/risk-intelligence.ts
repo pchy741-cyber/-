@@ -101,10 +101,10 @@ export async function getGradualCooldown(isPaper?: boolean): Promise<GradualCool
       if (isSectorConcentrated) {
         return { level: 1, cooldownMs: 4 * 60 * 60_000, sizingPenalty: 0.9, message: `섹터집중 ${lossCount}건 → 해당종목만 4h 쿨다운` };
       }
-      return { level: 2, cooldownMs: 4 * 60 * 60_000, sizingPenalty: 0.8, message: `${lossCount}건 손절 → 4h 전체 쿨다운` };
+      return { level: 2, cooldownMs: 2 * 60 * 60_000, sizingPenalty: 0.85, message: `${lossCount}건 손절 → 2h 전체 쿨다운` }; // v15 Hyper: 4h→2h, 0.8→0.85
     }
     if (lossCount >= 2) {
-      return { level: 1, cooldownMs: 2 * 60 * 60_000, sizingPenalty: 1.0, message: `${lossCount}건 손절 → 해당 종목 2h 쿨다운` };
+      return { level: 1, cooldownMs: 1 * 60 * 60_000, sizingPenalty: 1.0, message: `${lossCount}건 손절 → 해당 종목 1h 쿨다운` }; // v15 Hyper: 2h→1h
     }
     return { level: 0, cooldownMs: 0, sizingPenalty: 1.0, message: '' };
   } catch (e) {
@@ -249,7 +249,24 @@ export interface PartialTpStage {
   sellRatio: number;
 }
 
-export function getPartialTpStages(sector: string, bucket?: string): PartialTpStage[] {
+export interface MomentumContext {
+  isMomentum?: boolean;
+  rsi?: number;
+  adx?: number;
+  volumeRatio?: number; // 현재거래량 / 평균거래량
+  vwapPosition?: 'ABOVE' | 'BELOW' | 'AT';
+}
+
+/** 모멘텀 가속 감지 — 부분익절 지연 여부 결정 */
+export function isMomentumAccelerating(ctx: MomentumContext): boolean {
+  if (!ctx) return false;
+  const { isMomentum, rsi = 50, adx = 20, volumeRatio = 1.0, vwapPosition } = ctx;
+  // 조건: (모멘텀 플래그 or ADX≥28) + RSI 상승구간(45~75) + VWAP 위 + 거래량 1.5배+
+  if (isMomentum) return true;
+  return adx >= 28 && rsi >= 45 && rsi <= 75 && vwapPosition === 'ABOVE' && volumeRatio >= 1.5;
+}
+
+export function getPartialTpStages(sector: string, bucket?: string, momentum?: MomentumContext): PartialTpStage[] {
   // SNIPER: 고확신 집중 포지션 — 4%@30% 선확정 후 8%+ 잔여 전량
   if (bucket === 'SNIPER') {
     return [
@@ -260,33 +277,34 @@ export function getPartialTpStages(sector: string, bucket?: string): PartialTpSt
 
   const isHighBeta = SECTOR_CLASS.HIGH_BETA.includes(sector);
   const isDefense = SECTOR_CLASS.DEFENSE.includes(sector);
+  // v15 Ultra Quick Win: 모멘텀 가속 중이면 기존(높은) 트리거 유지 → 위너 라이딩
+  // 비모멘텀이면 Stage 1을 낮춰서 빠른 수익 확정 → 승률↑
+  const accel = momentum ? isMomentumAccelerating(momentum) : false;
 
-  // v12.3: 부분익절 1단계 트리거 상향 — 기존 +1.5~2%에서 조기 확정 → 위너 라이딩 방해
-  // 승자 종목이 +5~10% 가는데 +2%에서 25% 확정 → 수익 잠식
   if (isHighBeta) {
     return [
-      { stage: 1, triggerPct: 3.5, sellRatio: 0.20 }, // v12.3: +2→+3.5%, 25→20%
-      { stage: 2, triggerPct: 5.0, sellRatio: 0.20 },
-      { stage: 3, triggerPct: 8.0, sellRatio: 0.20 },
-      { stage: 4, triggerPct: 12.0, sellRatio: 0.20 },
-      { stage: 5, triggerPct: 18.0, sellRatio: 0.20 },
+      { stage: 1, triggerPct: accel ? 3.0 : 1.2, sellRatio: 0.25 }, // v15: 수수료0.7% 감안, 1.2% = 순이익 0.5%
+      { stage: 2, triggerPct: 4.0, sellRatio: 0.20 },
+      { stage: 3, triggerPct: 7.0, sellRatio: 0.20 },
+      { stage: 4, triggerPct: 11.0, sellRatio: 0.20 },
+      { stage: 5, triggerPct: 16.0, sellRatio: 0.15 },
     ];
   }
   if (isDefense) {
     return [
-      { stage: 1, triggerPct: 2.5, sellRatio: 0.25 }, // v12.3: +1.5→+2.5%, 30→25%
-      { stage: 2, triggerPct: 4.0, sellRatio: 0.25 },
-      { stage: 3, triggerPct: 6.0, sellRatio: 0.25 },
-      { stage: 4, triggerPct: 9.0, sellRatio: 0.25 },
+      { stage: 1, triggerPct: accel ? 2.0 : 1.0, sellRatio: 0.25 }, // v15: 방어 1.0%
+      { stage: 2, triggerPct: 3.5, sellRatio: 0.25 },
+      { stage: 3, triggerPct: 5.5, sellRatio: 0.25 },
+      { stage: 4, triggerPct: 8.0, sellRatio: 0.25 },
     ];
   }
   // 일반 종목
   return [
-    { stage: 1, triggerPct: 3.0, sellRatio: 0.20 }, // v12.3: +1.5→+3.0%, 25→20%
-    { stage: 2, triggerPct: 5.0, sellRatio: 0.20 },
-    { stage: 3, triggerPct: 7.0, sellRatio: 0.20 },
-    { stage: 4, triggerPct: 10.0, sellRatio: 0.20 },
-    { stage: 5, triggerPct: 15.0, sellRatio: 0.20 },
+    { stage: 1, triggerPct: accel ? 2.5 : 1.2, sellRatio: 0.25 }, // v15: 1.5→1.2% (수수료 감안 합리적 수준)
+    { stage: 2, triggerPct: 4.0, sellRatio: 0.20 },
+    { stage: 3, triggerPct: 6.0, sellRatio: 0.20 },
+    { stage: 4, triggerPct: 9.0, sellRatio: 0.20 },
+    { stage: 5, triggerPct: 14.0, sellRatio: 0.15 },
   ];
 }
 
@@ -427,20 +445,21 @@ export function calcDynamicTpSl(params: {
     }
   }
 
-  // ── R:R 비율 검증 — v10.9.4: R:R < 1.5 시 SL 축소 우선 (기존: TP 확대 → 도달 불가능한 TP) ──
+  // ── R:R 비율 검증 — v10.9.4: R:R < minRR 시 SL 축소 우선 (기존: TP 확대 → 도달 불가능한 TP) ──
+  const minRR = tunerOverrides?.risk_reward_ratio ?? 1.5;
   const rr = tpPct / slPct;
   if (rr > 4.0) {
     tpPct = Math.round(slPct * 4.0 * 10) / 10;
-  } else if (rr < 1.5) {
+  } else if (rr < minRR) {
     // TP를 올리는 대신 SL을 줄여서 R:R 보정 (단, SL 하한 유지)
-    const adjustedSl = Math.round((tpPct / 1.5) * 10) / 10;
+    const adjustedSl = Math.round((tpPct / minRR) * 10) / 10;
     const slFloor = isHighBeta ? 3.0 : 2.0;
     if (adjustedSl >= slFloor) {
       slPct = adjustedSl;
     } else {
       // SL이 하한에 걸리면 TP 보정 (기존 방식 폴백)
       slPct = slFloor;
-      tpPct = Math.round(slFloor * 1.5 * 10) / 10;
+      tpPct = Math.round(slFloor * minRR * 10) / 10;
     }
   }
 
@@ -452,7 +471,7 @@ export function calcDynamicTpSl(params: {
   if (vixTpAdj) parts.push(`VIX${vixTpAdj > 0 ? '+' : ''}${vixTpAdj}`);
   if (atrPct && atrPct > 0) parts.push(`ATR${atrPct.toFixed(1)}`);
   if (rr > 4.0) parts.push('RR>4→TP축소');
-  else if (rr < 1.5) parts.push('RR<1.5→조정');
+  else if (rr < minRR) parts.push(`RR<${minRR}→조정`);
 
   return { tpPct, slPct, tpLabel: parts.join('/') };
 }

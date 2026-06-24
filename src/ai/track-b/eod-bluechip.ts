@@ -85,31 +85,47 @@ export function applyEodBluechipStrategy(decisions: TradeDecision[], ctx: EodCon
     }
   }
 
-  // ── EOD 매수: 하락장 블루칩 줍줍 (14:50~14:59, 당일 -0.5% 이상 하락) ──
-  if (isEodBuyWindow && isBearDay && !blockNewBuys) {
+  // ── EOD 매수: 블루칩 줍줍 (14:50~14:59) ──
+  // 조건 확장: 하락장 외에도 개별 종목 일중 풀백 시 진입 (mean reversion)
+  // - 하락장: 당일 -0.5%↓ 블루칩 (기존)
+  // - 중립/상승장: 당일 -1.0%↓ 이상 개별 하락 + 일중고점 대비 -1.5%↓ 풀백
+  if (isEodBuyWindow && !blockNewBuys) {
     for (const code of EOD_BLUECHIP_CODES) {
       if (openChains.some((c) => c.stock_code === code && Number(c.total_quantity) > 0)) continue;
       const p = livePrices.get(code);
-      if (!p || p.currentPrice <= 0 || p.changePct > -0.5) continue;
-      // 총자산 10% 직접 사용 (pipeline cascading multiplier 우회 — EOD 단타는 별도 사이징)
-      const eodPositionKrw = Math.round(totalAssets * 0.1);
+      if (!p || p.currentPrice <= 0) continue;
+
+      // 진입 조건 분기: 하락장 vs 중립/상승장
+      const intradayDropFromHigh = p.highPrice > 0 ? ((p.currentPrice - p.highPrice) / p.highPrice) * 100 : 0;
+      const isEodCandidate = isBearDay
+        ? p.changePct <= -0.5 // 하락장: -0.5% 이상 하락
+        : p.changePct <= -1.0 && intradayDropFromHigh <= -1.5; // 중립/상승장: 개별 -1.0% + 고점 대비 -1.5% 풀백
+
+      if (!isEodCandidate) continue;
+
+      // 사이징: 하락장 10%, 중립장 7% (보수적)
+      const eodAllocPct = isBearDay ? 0.10 : 0.07;
+      const eodPositionKrw = Math.round(totalAssets * eodAllocPct);
       const qty = Math.floor(eodPositionKrw / p.currentPrice);
       if (qty <= 0) continue;
       const alreadyBuying = result.some(
         (d) => d.stock_code === code && (d.action === 'BUY' || d.action === 'AVERAGE_DOWN'),
       );
       if (alreadyBuying) continue;
+      const reason = isBearDay
+        ? `EOD줍줍: 하락장 블루칩 (당일${p.changePct.toFixed(1)}%) → 익일 장시작 청산 예정`
+        : `EOD풀백: 일중 고점 대비 ${intradayDropFromHigh.toFixed(1)}% 조정 (당일${p.changePct.toFixed(1)}%) → 익일 청산`;
       result.push({
         action: 'BUY',
         stock_code: code,
         quantity: qty,
         price_type: 'MARKET',
         limit_price: p.currentPrice,
-        reasoning: `EOD줍줍: 하락장 블루칩 (당일${p.changePct.toFixed(1)}%) → 익일 장시작 청산 예정`,
-        confidence: 0.8,
+        reasoning: reason,
+        confidence: isBearDay ? 0.8 : 0.7,
         trigger_source: 'EOD_BLUECHIP',
       });
-      logger.info(`🛒 EOD줍줍 매수: ${code} x${qty} @${p.currentPrice} (당일${p.changePct.toFixed(1)}%)`, {
+      logger.info(`🛒 EOD${isBearDay ? '줍줍' : '풀백'}: ${code} x${qty} @${p.currentPrice} (당일${p.changePct.toFixed(1)}% 고점대비${intradayDropFromHigh.toFixed(1)}%)`, {
         component: 'EOD_BLUECHIP',
       });
     }

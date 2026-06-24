@@ -1,15 +1,22 @@
 import { isMemoryMode, queryWithRetry } from '../pool.js';
 import { memGetActiveWatchlist, memUpsertWatchlistItem } from '../memory-store.js';
 import type { WatchlistItem } from '../models.js';
+import { getKSTNow } from '../../utils/time.js';
+
+/** 장중(09:00~15:30): 2분, 장후: 10분 — 장중 새 편입 종목 빠른 반영 */
+function getWatchlistTtl(): number {
+  const kst = getKSTNow();
+  const t = kst.getUTCHours() * 100 + kst.getUTCMinutes();
+  return t >= 900 && t <= 1530 ? 120 : 600;
+}
 
 export async function getActiveWatchlist(): Promise<WatchlistItem[]> {
   if (isMemoryMode()) return memGetActiveWatchlist();
-  // 10분 캐시 — 워치리스트는 자주 변하지 않음 (Track B 매 사이클 DB hit 제거)
   const { cacheGet, cacheSet } = await import('../../cache/memory.js');
   const cached = cacheGet<WatchlistItem[]>('db:watchlist:active');
   if (cached) return cached;
   const { rows } = await queryWithRetry('SELECT * FROM watchlist WHERE is_active = true ORDER BY added_at ASC');
-  cacheSet('db:watchlist:active', rows, 600); // 10분 TTL
+  cacheSet('db:watchlist:active', rows, getWatchlistTtl());
   return rows;
 }
 

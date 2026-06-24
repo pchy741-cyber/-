@@ -101,7 +101,7 @@ async function loadPaperLedger(force = false): Promise<PaperLedgerState> {
   const { rows } = await pool.query(
     `SELECT stock_code, side, filled_quantity, filled_price
        FROM orders
-      WHERE trading_mode = 'paper'
+      WHERE trading_mode IN ('paper', 'p_arch')
         AND status = 'FILLED'
         AND stock_code ~ '^[0-9]{6}$'
       ORDER BY created_at ASC, id ASC`,

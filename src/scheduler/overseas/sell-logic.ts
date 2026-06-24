@@ -14,6 +14,8 @@ import {
   calcDynamicTrailDrop,
   getPartialTpStageNum,
   getPartialTpStages,
+  isMomentumAccelerating,
+  type MomentumContext,
   type RegimeAdjustment,
   setPartialTpStageNum,
 } from './risk-intelligence.js';
@@ -127,7 +129,34 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
     }
     // v10.11: O(1) Map 조회 (기존: O(n) find per holding)
     const tech = techByCode.get(code);
-    if (!tech) continue;
+    if (!tech) {
+      // 🚨 안전망: 가격 데이터 완전 실패 → 비상 시장가 매도 (절대 손실 방치 금지)
+      // overseas-job.ts에서 재시도+fallback 후에도 여기 도달하면 = 심각한 장애
+      logger.error(`🚨 비상매도: ${code} 가격 데이터 완전 누락 → 매입가 기준 청산 시도 (보유 ${holding.qty}주, 매입가 $${holding.avgPrice})`, { component: 'OVERSEAS' });
+      try {
+        // avgPrice를 fallback 가격으로 사용 (executor가 price<=0을 거부하므로)
+        const emergencyPrice = holding.avgPrice > 0 ? holding.avgPrice : 1;
+        const exec = await executeOverseasOrder(
+          code, 'SELL', holding.qty, emergencyPrice, holding.exchange,
+          `🚨 비상매도: 가격 데이터 완전 실패 — 손실 방지 긴급 청산 (매입가 $${holding.avgPrice})`,
+          holding.qty, holding.avgPrice, { isPaper: paperMode },
+        );
+        if (exec.submitted && exec.filledQty > 0) {
+          cash += exec.filledPrice * exec.filledQty * (1 - OVERSEAS_FEE_PCT);
+          sellOrders.push(`${code} 🚨비상매도 ${exec.filledQty}주`);
+          if (exec.filledQty >= holding.qty) {
+            await updateTradeState({ code, exchange: holding.exchange, qty: 0, avgPrice: 0, newCash: cash, isPaper: paperMode });
+            await cleanupPositionState(code, paperMode);
+          } else {
+            const remainQty = holding.qty - exec.filledQty;
+            await updateTradeState({ code, exchange: holding.exchange, qty: remainQty, avgPrice: holding.avgPrice, newCash: cash, isPaper: paperMode });
+          }
+        }
+      } catch (emergErr) {
+        logger.error(`🚨 비상매도 실행 실패: ${code} — ${emergErr}`, { component: 'OVERSEAS' });
+      }
+      continue;
+    }
 
     const curPrice = tech.price.currentPrice;
     if (holding.avgPrice <= 0 || curPrice <= 0) continue; // 비정상 데이터 방어
@@ -253,9 +282,16 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
     // v10.11: 클램핑 추가 — 양수 되면 트레일 비활성화 (VIX+고수익 동시 → 무방비)
     // v14: trail floor -0.5→-1.5% (기존: 고수익+VIX 시 -0.5% = 정상 변동성에도 매도 트리거)
     const effectiveTrailDropPct = Math.min(-1.5, dynamicTrailDrop + vixRegime.trailTighten + profitTighten);
+    // v15: 모멘텀 가속 감지 → 트레일 넓히기 (위너 라이딩)
+    const _momCtx: MomentumContext = { isMomentum: tech.isMomentum, rsi: tech.rsi, adx: tech.adx, vwapPosition: tech.vwapPosition };
+    const _isAccel = isMomentumAccelerating(_momCtx);
+    // v15 Smart Trail After Partial: 이미 부분익절 진행한 포지션은 트레일 즉시 활성화
+    const partialTpDone = await getPartialTpStageNum(code, paperMode);
     // v10.9: 트레일 활성화 대폭 하향 (기존 5~10% → 2~4%) — 소액 계좌 수익 보호
+    // v15: 모멘텀 가속 시 활성화 기준 +2% 상향 (너무 빨리 트레일 걸리면 위너 절단)
+    // v15: 부분익절 1단계+ 완료 → 활성화 기준 = 0% (이미 수익 확정 시작, 잔여분 즉시 보호)
     const baseTrailActivate = isHighBeta ? 4.0 : isMediumBeta ? 3.0 : 2.0;
-    const trailActivatePct = tunerOverrides.trail_activate_pct ?? baseTrailActivate;
+    const trailActivatePct = partialTpDone >= 1 ? 0 : (tunerOverrides.trail_activate_pct ?? baseTrailActivate) + (_isAccel ? 2.0 : 0);
     const minAiSellConf = isHighBeta ? MIN_AI_SELL_CONF_HIGH_BETA : MIN_AI_SELL_CONF_DEFAULT;
     const holdingDays = (Date.now() - new Date(holding.boughtAt).getTime()) / MS_PER_DAY;
     // 🔧 강한 매도 신호(score≤-30 + 과매수) → minHold 완화 (HIGH_BETA 3→1일)
@@ -309,7 +345,10 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
       } else if (tws.action === 'HOLD') {
         // Phase 1 휩소 방어 중 — 구조적 SL만 허용, 일반 손절은 차단
         // v10.8: 단, 하드 TP/ATR 트레일링/수익 확정은 HOLD에서도 허용 (수익 실현 차단 방지)
-        if (pnlPct >= hardTpPct) {
+        // 🛡️ 절대 하드플로어: HOLD 중에도 -6% 이상 손실은 절대 허용 안 함
+        if (pnlPct <= -6.0) {
+          sellReason = `HOLD 하드플로어 손절(-6%): ${pnlPct.toFixed(1)}% (Phase1 중에도 절대 한계 초과)`;
+        } else if (pnlPct >= hardTpPct) {
           sellReason = `익절(${hardTpPct}%): +${pnlPct.toFixed(1)}% (HOLD 중 TP 도달)`;
         } else if (holdingDays >= 0.5 && maxPnlPct >= trailActivatePct && drawdownFromPeak <= effectiveTrailDropPct) {
           sellReason = `ATR트레일(HOLD중): 고점 +${maxPnlPct.toFixed(1)}% → 현재 ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%`;
@@ -468,7 +507,20 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
     // ATR 급확장(ADX 35+ & ATR 3%+)일 때만 보류
     const atrExpanding = atrPctValue > 3.0 && tech.adx >= 35;
     if (!sellReason && holding.qty >= 2 && !atrExpanding) {
-      const tpStages = getPartialTpStages(sector, holding.bucket);
+      // v15: 모멘텀 컨텍스트 전달 → 가속 중이면 Stage 1 트리거 유지, 아니면 낮춤 (Quick Win)
+      const momentumCtx: MomentumContext = {
+        isMomentum: tech.isMomentum,
+        rsi: tech.rsi,
+        adx: tech.adx,
+        volumeRatio: tech.price.volume > 0 ? undefined : undefined, // 평균거래량 없으면 undefined
+        vwapPosition: tech.vwapPosition,
+      };
+      const tpStages = getPartialTpStages(sector, holding.bucket, momentumCtx);
+      // v15 Self-Learning Turbo: tuner가 학습한 최적 Stage 1 트리거 적용
+      const tunerStage1 = tunerOverrides[`partial_tp_stage1_${sector}`] ?? tunerOverrides.partial_tp_stage1_pct;
+      if (tunerStage1 != null && tpStages.length > 0 && tpStages[0].stage === 1) {
+        tpStages[0].triggerPct = tunerStage1;
+      }
       const currentStage = await getPartialTpStageNum(code);
       // 수수료 반영: 왕복 수수료(0.7%) 를 트리거에 가산하여 실질 수익 보장
       const roundTripFee = OVERSEAS_FEE_PCT * 2 * 100; // 0.7%

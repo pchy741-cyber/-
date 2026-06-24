@@ -93,7 +93,7 @@ export async function runSnapshotJob(): Promise<void> {
             `SELECT COALESCE(SUM(realized_pnl), 0)::numeric AS total
              FROM transaction_chains
              WHERE status = 'CLOSED' AND is_paper = $1
-               AND closed_at >= (NOW() AT TIME ZONE 'Asia/Seoul')::DATE`,
+               AND closed_at >= (DATE_TRUNC('day', NOW() AT TIME ZONE 'Asia/Seoul')) AT TIME ZONE 'Asia/Seoul'`,
             [isPaper],
           );
           todayRealizedPnl = Number(realizedRows[0]?.total ?? 0);
@@ -146,7 +146,7 @@ export async function runSnapshotJob(): Promise<void> {
               const { rows: realizedRows } = await getPool().query(
                 `SELECT COALESCE(SUM(realized_pnl), 0)::numeric AS total
                  FROM transaction_chains
-                 WHERE status = 'CLOSED' AND is_paper = false AND closed_at >= (NOW() AT TIME ZONE 'Asia/Seoul')::DATE`,
+                 WHERE status = 'CLOSED' AND is_paper = false AND closed_at >= (DATE_TRUNC('day', NOW() AT TIME ZONE 'Asia/Seoul')) AT TIME ZONE 'Asia/Seoul'`,
               );
               todayRealizedPnl = Number(realizedRows[0]?.total ?? 0);
             } catch { /* ignore */ }
@@ -191,7 +191,7 @@ export async function runSnapshotJob(): Promise<void> {
             const { rows: realizedRows } = await getPool().query(
               `SELECT COALESCE(SUM(realized_pnl), 0)::numeric AS total
                FROM transaction_chains
-               WHERE status = 'CLOSED' AND is_paper = true AND closed_at >= (NOW() AT TIME ZONE 'Asia/Seoul')::DATE`,
+               WHERE status = 'CLOSED' AND is_paper = true AND closed_at >= (DATE_TRUNC('day', NOW() AT TIME ZONE 'Asia/Seoul')) AT TIME ZONE 'Asia/Seoul'`,
             );
             todayRealizedPnl = Number(realizedRows[0]?.total ?? 0);
           } catch { /* ignore */ }

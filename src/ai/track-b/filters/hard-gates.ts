@@ -103,9 +103,9 @@ export function isHardBlocked(input: HardGateInput): boolean {
     return true;
   }
 
-  // v10.3: 4시간 이내 매도 재진입 쿨다운 (반복매매=적자 주범)
+  // v15 Hyper: 국내 매도 후 쿨다운 2h (기존 4h → 빠른 재진입 허용, 수수료0.21%)
   if (recentlySoldCodes?.has(code) && !isPaper) {
-    logger.info(`  🕐 ${code}(${name}): 매도 후 4h 쿨다운 — 재진입 대기`, { component: 'TRACK_B' });
+    logger.info(`  🕐 ${code}(${name}): 매도 후 2h 쿨다운 — 재진입 대기`, { component: 'TRACK_B' });
     return true;
   }
 

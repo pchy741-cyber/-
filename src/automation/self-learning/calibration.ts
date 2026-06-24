@@ -13,6 +13,7 @@ const SAFE_COLUMN_MAP: Record<string, string> = {
   take_profit_pct: 'take_profit_pct',
   buy_threshold: 'buy_threshold',
   mode: 'mode',
+  trailing_stop_pct: 'trailing_stop_pct',
 };
 function safeColumnName(field: string): string | null {
   return SAFE_COLUMN_MAP[field] ?? null;
@@ -112,22 +113,24 @@ export async function analyzeBuyThreshold(): Promise<LearnedInsight[]> {
   }
 }
 
-export async function calibrateScoreTierParams(): Promise<void> {
+export async function calibrateScoreTierParams(market: 'KR' | 'US' = 'KR'): Promise<void> {
   try {
-    // v9-fix: 데이터 스누핑 방지 — 최근 14일 제외 (holdout gap)
+    // v9-fix: 데이터 스누핑 방지 — holdout gap (KR: 14일, US: 7일 — T+1 결제)
+    const holdoutDays = market === 'US' ? 7 : 14;
+    const marketFilter = market === 'US' ? `AND market = 'US'` : `AND (market IS NULL OR market = 'KR')`;
     const { rows: accuracyData } = await getPool().query(
       `SELECT entry_score, outcome, realized_pnl_pct
        FROM score_accuracy
-       WHERE recorded_at BETWEEN NOW() - INTERVAL '120 days' AND NOW() - INTERVAL '14 days'
+       WHERE recorded_at BETWEEN NOW() - INTERVAL '120 days' AND NOW() - INTERVAL '${holdoutDays} days'
          AND entry_score IS NOT NULL
          AND is_paper = $1
-         AND (market IS NULL OR market = 'KR')
+         ${marketFilter}
        ORDER BY recorded_at DESC`,
       [getCtxIsPaper()],
     );
 
     if (accuracyData.length < 30) {
-      logger.info('점수 티어 보정: 데이터 부족 (최소 30건 필요)', { component: 'LEARN' });
+      logger.info(`점수 티어 보정 [${market}]: 데이터 부족 (최소 30건 필요)`, { component: 'LEARN' });
       return;
     }
 
@@ -206,7 +209,7 @@ export async function calibrateScoreTierParams(): Promise<void> {
       let allocPct = kelly;
       if (stats.data.length < 10) {
         const { rows: currentRows } = await getPool()
-          .query(`SELECT alloc_pct FROM score_tier_params WHERE tier_min = $1 AND tier_max = $2`, [tier.min, tier.max])
+          .query(`SELECT alloc_pct FROM score_tier_params WHERE tier_min = $1 AND tier_max = $2 AND market = $3`, [tier.min, tier.max, market])
           .catch(() => ({ rows: [] }));
 
         if (currentRows.length > 0) {
@@ -226,12 +229,14 @@ export async function calibrateScoreTierParams(): Promise<void> {
     }
 
     for (const update of updates) {
+      // score_tier_params_tier_market_uniq: (tier_min, tier_max, market)
+      // KR='KR'(기본값), US='US' → 서로 다른 행
       await getPool().query(
-        `INSERT INTO score_tier_params (tier_min, tier_max, alloc_pct, win_rate, avg_pnl_pct, sample_count, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, NOW())
-         ON CONFLICT (tier_min, tier_max)
+        `INSERT INTO score_tier_params (tier_min, tier_max, alloc_pct, win_rate, avg_pnl_pct, sample_count, market, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+         ON CONFLICT (tier_min, tier_max, market)
          DO UPDATE SET alloc_pct=$3, win_rate=$4, avg_pnl_pct=$5, sample_count=$6, updated_at=NOW()`,
-        [update.tier_min, update.tier_max, update.alloc_pct, update.win_rate, update.avg_pnl_pct, update.sample_count],
+        [update.tier_min, update.tier_max, update.alloc_pct, update.win_rate, update.avg_pnl_pct, update.sample_count, market],
       );
     }
 
@@ -241,10 +246,10 @@ export async function calibrateScoreTierParams(): Promise<void> {
           `[${u.tier_min}-${u.tier_max}: ${(u.alloc_pct * 100).toFixed(1)}%, 승률 ${(u.win_rate * 100).toFixed(0)}%, n=${u.sample_count}]`,
       )
       .join(' ');
-    logger.info(`점수 티어 파라미터 갱신: ${summary}`, { component: 'LEARN' });
-    await logSystem('INFO', 'LEARN', `점수 티어 보정: ${summary}`).catch(() => {});
+    logger.info(`점수 티어 파라미터 갱신 [${market}]: ${summary}`, { component: 'LEARN' });
+    await logSystem('INFO', 'LEARN', `점수 티어 보정 [${market}]: ${summary}`).catch(() => {});
   } catch (err) {
-    logger.warn(`점수 티어 보정 실패: ${err}`, { component: 'LEARN' });
+    logger.warn(`점수 티어 보정 [${market}] 실패: ${err}`, { component: 'LEARN' });
   }
 }
 

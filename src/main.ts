@@ -599,7 +599,7 @@ async function bootstrap() {
       );
       if (rows.length > 0) {
         const { restorePreTpPeakMap } = await import('./ai/track-b/sell-signals.js');
-        restorePreTpPeakMap(rows);
+        restorePreTpPeakMap(rows, baseIsPaper);
       }
     })().catch((e: any) => logger.warn(`Pre-TP peak 복원 실패 (무시): ${e.message}`, { component: 'BOOT' })),
   ]);

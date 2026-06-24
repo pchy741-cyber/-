@@ -129,9 +129,10 @@ export async function getAccessTokenForMode(mode: 'paper' | 'live'): Promise<str
       };
       if (!data.access_token) throw new Error(`KIS 토큰 발급 실패 [${mode}]`);
 
-      const expiresAt = new Date(data.access_token_token_expired ?? '');
-      if (isNaN(expiresAt.getTime())) {
-        logger.warn(`KIS 토큰 [${mode}] 만료 시각 파싱 실패: ${data.access_token_token_expired}`, { component: 'KIS_AUTH' });
+      let expiresAt = new Date(data.access_token_token_expired ?? '');
+      if (isNaN(expiresAt.getTime()) || expiresAt.getTime() <= Date.now()) {
+        logger.warn(`KIS 토큰 [${mode}] 만료 시각 이상 (${data.access_token_token_expired}) → +23h 폴백`, { component: 'KIS_AUTH' });
+        expiresAt = new Date(Date.now() + 23 * 60 * 60 * 1000); // KIS 토큰 유효기간 ~24h, 안전하게 23h
       }
 
       const token: KISToken = {

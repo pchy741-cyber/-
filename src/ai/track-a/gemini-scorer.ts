@@ -34,7 +34,7 @@ ${JSON.stringify(stocks, null, 2)}
 
   const content = await callVertexGemini(systemPrompt, userMessage, {
     temperature: 0.2,
-    maxOutputTokens: 16384,
+    maxOutputTokens: 6000, // v15: 70개 종목 JSON ~2-3KB, 16384 과다 → 비용 절감
     label: 'TrackA-스코어링',
     useVertex: true,
   });

@@ -33,8 +33,12 @@ export async function checkHoldingsNews(
   // Gemini OFF 시 빈 배열 → overseas-job은 규칙기반만 사용
   const { config } = await import('../config/index.js');
   if (!config.geminiEnabled) return [];
-  // 5종목 초과 시 손실 큰 순으로 우선 체크
-  const sorted = [...holdings].sort((a, b) => a.pnlPct - b.pnlPct);
+  // v15 AI Cost Optimizer: 위험 포지션만 뉴스 체크 (비용 절감)
+  // 손실 -1% 미만 또는 수익 8%+ (TP 근접) → 뉴스 영향 큰 구간만 체크
+  // 중간 구간(0~8% 수익)은 기술적 지표로 충분 → AI 호출 생략
+  const atRisk = holdings.filter((h) => h.pnlPct < -1 || h.pnlPct >= 8);
+  if (atRisk.length === 0) return [];
+  const sorted = [...atRisk].sort((a, b) => a.pnlPct - b.pnlPct);
   const targets = sorted.slice(0, 5);
 
   // 쿨다운 필터

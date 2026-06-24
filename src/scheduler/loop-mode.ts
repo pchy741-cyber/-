@@ -85,7 +85,7 @@ const state: LoopState = {
 
 let timer: ReturnType<typeof setTimeout> | null = null;
 let _autoStopTimer: ReturnType<typeof setTimeout> | null = null;
-const LOOP_MAX_DURATION_MS = 6 * 60 * 60_000; // 6시간 자동 정지 — advisory lock 무한 점유 방지
+const LOOP_MAX_DURATION_MS = 12 * 60 * 60_000; // 12시간 자동 정지 — 국내+미국장 커버 (advisory lock 무한 점유 방지)
 
 // ── DB 헬퍼 (실패해도 루프 진행) ──
 
@@ -446,14 +446,22 @@ function adaptiveInterval(cachedRegions?: Set<string>, cachedPhase?: USMarketPha
     }
   }
 
-  // 미국장 시간대별 차등 (캐시된 phase 사용)
+  // 미국장 시간대별 차등 (캐시된 phase 사용) — 황금시간 집중, 죽은장 절약
   const usPhase = cachedPhase ?? getUSMarketPhase();
-  if (usPhase === 'OPEN_VOLATILE' || usPhase === 'PRIME' || usPhase === 'POWER_HOUR') {
-    state.adaptiveIntervalMs = FAST_INTERVAL_MS;
+  if (usPhase === 'OPEN_VOLATILE') {
+    state.adaptiveIntervalMs = TURBO_INTERVAL_MS; // 2분 — 미장 개장 직후 변동성 최대 (황금타임)
     return;
   }
-  if (usPhase === 'LUNCH' || usPhase === 'MIDDAY') {
-    state.adaptiveIntervalMs = SLOW_INTERVAL_MS;
+  if (usPhase === 'PRIME' || usPhase === 'POWER_HOUR') {
+    state.adaptiveIntervalMs = FAST_INTERVAL_MS; // 3분 — 미장 핵심 시간대
+    return;
+  }
+  if (usPhase === 'LUNCH') {
+    state.adaptiveIntervalMs = DEEP_IDLE_INTERVAL_MS; // 15분 — 미장 점심 죽은장 (토큰 절약)
+    return;
+  }
+  if (usPhase === 'MIDDAY') {
+    state.adaptiveIntervalMs = SLOW_INTERVAL_MS; // 8분 — 오전/오후 전환구간
     return;
   }
   // 미국 프리/포스트마켓 (US_EXTENDED) — 정규장보다 느리지만 매도감시 유지
@@ -596,7 +604,9 @@ async function releaseLoopLock(): Promise<void> {
 
 export async function startLoop(): Promise<{ ok: boolean; error?: string; warning?: string }> {
   if (state.active) return { ok: false, error: '이미 실행 중' };
-  if (isKillSwitchActive('OVERSEAS')) return { ok: false, error: 'Kill Switch 활성 — 먼저 해제하세요' };
+  // Kill Switch는 tick() 내부에서 차단 (시작은 허용 — PAUSED 상태로 대기 후 해제 시 자동 재개)
+  const allKilled = isKillSwitchActive('KR') && isKillSwitchActive('OVERSEAS');
+  if (allKilled) return { ok: false, error: 'Kill Switch 전체 활성 — 먼저 해제하세요' };
 
   // 강화 P1-5: 다른 인스턴스/Claude /loop이 이미 활성이면 차단
   const lockAcquired = await acquireLoopLock();
@@ -621,12 +631,11 @@ export async function startLoop(): Promise<{ ok: boolean; error?: string; warnin
   state.lastRunResult = null;
   state.adaptiveIntervalMs = DEFAULT_INTERVAL_MS;
 
-  // 6시간 자동 정지 — advisory lock 무한 점유 방지
+  // 12시간 자동 정지 — 국내+미국장 커버 (advisory lock 무한 점유 방지)
   _autoStopTimer = setTimeout(() => {
-    logger.warn('Loop 6시간 자동 정지 — 최대 세션 시간 초과', { component: 'LOOP' });
-    stopLoop('6시간 자동 정지').catch((err) => {
-      // 6시간 안전장치 실패 → 강제 상태 초기화 (무한 루프 방지)
-      logger.error(`⛔ 6시간 자동 정지 실패 → 강제 플래그 해제: ${err}`, { component: 'LOOP' });
+    logger.warn('Loop 12시간 자동 정지 — 최대 세션 시간 초과', { component: 'LOOP' });
+    stopLoop('12시간 자동 정지').catch((err) => {
+      logger.error(`⛔ 12시간 자동 정지 실패 → 강제 플래그 해제: ${err}`, { component: 'LOOP' });
       state.active = false;
       state.phase = 'STOPPED';
     });

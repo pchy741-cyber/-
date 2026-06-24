@@ -13,6 +13,9 @@ import {
   type TechnicalFallbackParams,
 } from './technical-fallback-types.js';
 
+// 가격 연속 미수신 카운터 (1회 API 장애로 정상 포지션 강제청산 방지)
+const _priceMissCounter = new Map<string, number>();
+
 // TP 도달 전 수익권 포지션 최고 수익률 추적
 // 서버 재시작 시 DB peak_price_since_open에서 복원 (restorePreTpPeakMap 호출)
 // Paper/Live 분리: 모드별 독립 맵 (크로스오염 방지)
@@ -25,11 +28,13 @@ function _getPeakMap(): Map<string, number> {
 
 /** 서버 부팅 시 DB 오픈 체인의 peak_price_since_open → _preTpPeakMap 복원 */
 export function restorePreTpPeakMap(
-  chains: Array<{ stock_code: string; avg_buy_price: number | string | null; peak_price_since_open?: number | null }>,
+  chains: Array<{ stock_code: string; avg_buy_price: number | string | null; peak_price_since_open?: number | null; is_paper?: boolean }>,
+  isPaper?: boolean,
 ): void {
-  // v10.11: paper+live 양쪽 맵 모두 복원 (기존: live만 복원 → paper 피크 유실)
+  // 🛡️ is_paper 구분하여 올바른 맵에만 복원 (크로스오염 방지)
   if (!_preTpPeakMap.has('live')) _preTpPeakMap.set('live', new Map());
   if (!_preTpPeakMap.has('paper')) _preTpPeakMap.set('paper', new Map());
+  const targetKey = isPaper != null ? (isPaper ? 'paper' : 'live') : null;
   const liveMap = _preTpPeakMap.get('live')!;
   const paperMap = _preTpPeakMap.get('paper')!;
   for (const c of chains) {
@@ -38,9 +43,13 @@ export function restorePreTpPeakMap(
     if (avg > 0 && peak > 0) {
       const peakPnlPct = ((peak - avg) / avg) * 100;
       if (peakPnlPct > 0) {
-        // paper/live 구분 정보 없으므로 양쪽 모두 복원 (각 모드에서 실제 체인과 매칭)
-        liveMap.set(c.stock_code, peakPnlPct);
-        paperMap.set(c.stock_code, peakPnlPct);
+        if (targetKey === 'paper') paperMap.set(c.stock_code, peakPnlPct);
+        else if (targetKey === 'live') liveMap.set(c.stock_code, peakPnlPct);
+        else {
+          // 호환성: isPaper 미전달 시 양쪽 복원
+          liveMap.set(c.stock_code, peakPnlPct);
+          paperMap.set(c.stock_code, peakPnlPct);
+        }
       }
     }
   }
@@ -162,7 +171,33 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
   const processedSellChains = new Set<string>(); // chain.id 기반 중복 방지
   for (const chain of openChains) {
     const price = livePrices.get(chain.stock_code);
-    if (!price || !chain.avg_buy_price) continue;
+    if (!price || !chain.avg_buy_price) {
+      // 🚨 안전망: 가격 데이터 누락 → 연속 3회 이상 시에만 긴급 청산
+      // (1회 API 장애로 정상 포지션 청산 방지)
+      if (chain.avg_buy_price && chain.total_quantity > 0) {
+        const missKey = `price_miss_${chain.stock_code}`;
+        const missCount = (_priceMissCounter.get(missKey) ?? 0) + 1;
+        _priceMissCounter.set(missKey, missCount);
+        if (missCount >= 3) {
+          logger.error(`🚨 국내 비상매도: ${chain.stock_code} 연속 ${missCount}회 가격 누락 → 긴급 청산 (보유 ${chain.total_quantity}주)`, { component: 'SELL_SIG' });
+          decisions.push({
+            action: 'FORCE_CLOSE',
+            stock_code: chain.stock_code,
+            quantity: chain.total_quantity,
+            price_type: 'MARKET',
+            reasoning: `🚨 긴급청산: 연속 ${missCount}회 가격 데이터 수신 실패 — 손실 방지 (매입가 ${Number(chain.avg_buy_price).toLocaleString()}원)`,
+            confidence: 0.99,
+          });
+          processedSellChains.add(chain.id);
+          _priceMissCounter.delete(missKey); // 청산 후 카운터 리셋
+        } else {
+          logger.warn(`⚠️ ${chain.stock_code} 가격 누락 ${missCount}/3회 — 다음 사이클 재시도`, { component: 'SELL_SIG' });
+        }
+      }
+      continue;
+    }
+    // 가격 정상 수신 → 카운터 리셋
+    _priceMissCounter.delete(`price_miss_${chain.stock_code}`);
 
     const avgBuy = Number(chain.avg_buy_price);
     const pnlPct = ((price.currentPrice - avgBuy) / avgBuy) * 100;

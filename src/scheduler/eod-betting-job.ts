@@ -198,6 +198,11 @@ export async function runEodBettingJob(): Promise<void> {
       if (heldCodes.has(stock.stock_code)) continue;
       const modeKey = isPaper ? 'paper' : 'live';
       if (_eodBoughtToday.get(modeKey)?.has(stock.stock_code)) continue;
+      // 🛡️ Closing Bell에서 이미 매수한 종목 제외 (이중 매수 방지)
+      try {
+        const { getClosingBellBoughtToday } = await import('./closing-bell-job.js');
+        if (getClosingBellBoughtToday(isPaper).has(stock.stock_code)) continue;
+      } catch { /* closing-bell 미로드 시 무시 */ }
 
       // 거래대금 (억원, KIS acml_tr_pbmn 공식값)
       const tradeValueEok = p.tradingValueEok;
@@ -362,24 +367,24 @@ export async function runEodMorningSell(): Promise<void> {
       const openedH = openedKst.getUTCHours();
       if (openedH < 15) continue; // 15시 이전 매수는 종가베팅이 아님
 
-      // 동일 종목에 EOD_BETTING 외 전략 체인이 공존하면 스킵 (executor가 chain_id로 구분 불가)
+      // 동일 종목에 EOD_BETTING 외 전략 체인이 공존 → PARTIAL_SELL로 EOD 수량만 정확히 매도
       const conflictChain = openChains.find(
         (c) => c.stock_code === chain.stock_code && c.strategy_mode !== 'EOD_BETTING' && Number(c.total_quantity) > 0,
       );
       if (conflictChain) {
-        logger.warn(
-          `🌅 종가베팅 익일청산 스킵: ${chain.stock_code} — ${conflictChain.strategy_mode} 포지션 공존 (수동청산 필요)`,
+        logger.info(
+          `🌅 종가베팅 익일청산 (공존포지션): ${chain.stock_code} — EOD ${chain.total_quantity}주만 PARTIAL_SELL (${conflictChain.strategy_mode} 보존)`,
           { component: 'EOD_BETTING' },
         );
-        continue;
       }
 
+      // PARTIAL_SELL로 EOD 수량만 정확히 매도 (다른 전략 포지션 보존)
       sellDecisions.push({
-        action: 'FORCE_CLOSE',
+        action: conflictChain ? 'PARTIAL_SELL' : 'FORCE_CLOSE',
         stock_code: chain.stock_code,
         quantity: Number(chain.total_quantity),
         price_type: 'MARKET',
-        reasoning: '종가베팅 익일청산: 기계적 매도 (갭수익/손절)',
+        reasoning: `종가베팅 익일청산: 기계적 매도 ${chain.total_quantity}주 (갭수익/손절)${conflictChain ? ` — ${conflictChain.strategy_mode} 보존` : ''}`,
         confidence: 1.0,
       });
 

@@ -45,6 +45,12 @@ const MIN_POSITION_KRW = 100_000; // 최소 10만원
 const _boughtToday = new Map<string, Set<string>>(); // key: 'paper'|'live'
 let _boughtDate = '';
 
+/** 🛡️ Closing Bell 당일 매수 종목 조회 (EOD Betting 이중 매수 방지용) */
+export function getClosingBellBoughtToday(isPaper: boolean): Set<string> {
+  const key = isPaper ? 'paper' : 'live';
+  return _boughtToday.get(key) ?? new Set();
+}
+
 /**
  * 🎯 종가 개떡락 줍줍 — 15:10 KST 크론에서 호출
  */

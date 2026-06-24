@@ -33,7 +33,9 @@ export async function enforceConcentrationCap(params: {
     if (posWeight <= CONC_CAP) continue;
     // 🛡️ 손실 중 보류: 비중 25~30%이고 손실 중이면 회복 대기
     //   비중 30% 이상이면 손실 무관 강제 분산 (추가 손실 방지)
-    const pnlPctAtSell = ((capTech.price.currentPrice - capHolding.avgPrice) / capHolding.avgPrice) * 100;
+    //   avgPrice가 0/NaN이면 PnL 판단 불가 → 강제 분산 실행 (안전)
+    const safeAvgPrice = Number.isFinite(capHolding.avgPrice) && capHolding.avgPrice > 0 ? capHolding.avgPrice : 0;
+    const pnlPctAtSell = safeAvgPrice > 0 ? ((capTech.price.currentPrice - safeAvgPrice) / safeAvgPrice) * 100 : 0;
     if (pnlPctAtSell < 0 && posWeight < 0.30) {
       logger.info(
         `⏸️ 집중도 캡 보류: ${capCode} 비중 ${(posWeight * 100).toFixed(0)}% PnL ${pnlPctAtSell.toFixed(1)}% (손실 중, 30% 미만) → 수익 전환 후 재평가`,

@@ -10,6 +10,7 @@ import { getOverseasDynamic } from '../../config/constants.js';
 import { getPool, logSystem } from '../../db/client.js';
 import type { EarningsEvent, MarketSentiment } from '../../market/external-signals.js';
 import { interpretMarketSentiment } from '../../market/external-signals.js';
+import { getAllocRisk } from '../../db/alloc-risk-cache.js';
 import { getOverseasLossTiers } from '../../risk/seed-capital.js';
 import { logger } from '../../utils/logger.js';
 import type { OverseasWinRate } from './analytics.js';
@@ -36,6 +37,7 @@ import {
 import { buildScaleInReservation, processScaleIns, shouldUseScaleIn } from './scale-in-manager.js';
 import type { TechResult } from './sell-logic.js';
 import { getActiveSessionBrief } from './session-strategy.js';
+import { getTunerOverrides } from './trade-tuner.js';
 import { modeKey, overseasState } from './session.js';
 import { classifyBucket, getBucketWeight, getHoldings, updateTradeState } from './state.js';
 import { GLOBAL_WATCHLIST, WATCHLIST_BY_CODE } from './watchlist.js';
@@ -135,6 +137,28 @@ export async function executeBuyLoop(params: BuyLoopParams): Promise<BuyLoopResu
     );
   }
 
+  // ── 해외 일일 매수 횟수 제한 + 섹터별 비중 한도 로드 ──
+  let dailyTradeBlocked = false;
+  const allocRiskData = await getAllocRisk(isPaperMode).catch(() => null);
+  try {
+    if (allocRiskData) {
+      const { rows: dtRows } = await getPool().query(
+        `SELECT COUNT(*)::int AS cnt FROM orders
+         WHERE trigger_source = 'OVERSEAS' AND side = 'BUY' AND status = 'FILLED'
+           AND (trading_mode = $1 OR ($1 = 'paper' AND trading_mode = 'p_arch'))
+           AND created_at >= CURRENT_DATE`,
+        [isPaperMode ? 'paper' : 'live'],
+      );
+      const todayBuys = Number(dtRows[0]?.cnt ?? 0);
+      if (todayBuys >= allocRiskData.maxDailyTrades) {
+        dailyTradeBlocked = true;
+        logger.info(`🚫 해외 일일 매수 한도 도달: ${todayBuys}/${allocRiskData.maxDailyTrades}회 → 신규 매수 차단`, { component: 'OVERSEAS' });
+      }
+    }
+  } catch (e) {
+    logger.debug(`일일 매수 횟수 조회 실패 (무시): ${(e as Error).message}`, { component: 'OVERSEAS' });
+  }
+
   // ── 포트폴리오 배분 비중 체크 ──
   let allocBlocked = false;
   if (!isPaperMode) {
@@ -189,13 +213,14 @@ export async function executeBuyLoop(params: BuyLoopParams): Promise<BuyLoopResu
     }
   }
 
-  /** Minimum cash ratio to allow new buys (Paper: 15% buffer, Live: 5% buffer) */
-  const MIN_CASH_RATIO = isPaperMode ? 0.15 : 0.05;
+  /** v15: 해외 현금 유보 소폭 축소 (안정적 운용) */
+  const MIN_CASH_RATIO = isPaperMode ? 0.10 : 0.03;
   const minCashForBuy = portfolioValue * MIN_CASH_RATIO;
-  if (riskBlocked || allocBlocked || currentHoldingCount >= MAX_POSITIONS || cash < minCashForBuy) {
+  if (riskBlocked || allocBlocked || dailyTradeBlocked || currentHoldingCount >= MAX_POSITIONS || cash < minCashForBuy) {
     const reasons: string[] = [];
     if (riskBlocked) reasons.push(`리스크차단(-${lossPctOfPortfolio.toFixed(1)}%)`);
     if (allocBlocked) reasons.push('해외비중초과');
+    if (dailyTradeBlocked) reasons.push('일일매수한도');
     if (currentHoldingCount >= MAX_POSITIONS) reasons.push(`보유풀(${currentHoldingCount}/${MAX_POSITIONS})`);
     if (cash < minCashForBuy) reasons.push(`현금부족($${cash.toFixed(0)}<$${minCashForBuy.toFixed(0)})`);
     logger.info(`🚫 매수 블록 진입 불가 — ${reasons.join(', ')}`, { component: 'OVERSEAS' });
@@ -349,6 +374,7 @@ export async function executeBuyLoop(params: BuyLoopParams): Promise<BuyLoopResu
     sectorMomentumMap,
     newsThemeSectors: params.newsThemeSectors,
     newsSentimentScore: params.newsSentimentScore,
+    allocRiskData,
   });
 
   if (buyTargets.length === 0) {
@@ -475,6 +501,12 @@ export async function executeBuyLoop(params: BuyLoopParams): Promise<BuyLoopResu
 
     if (exec.submitted && exec.filledQty > 0) {
       cash -= exec.filledQty * exec.filledPrice * (1 + OVERSEAS_FEE_PCT);
+      // 🛡️ 물타기 후 보유수량/평균단가/현금 DB 동기화 (기존 누락 → 잔고 불일치 수정)
+      await updateTradeState({
+        code, exchange: tech.exchange,
+        qty: exec.finalQty, avgPrice: exec.finalAvgPrice,
+        newCash: cash, isPaper: isPaperMode,
+      });
       // DB 물타기 횟수 증가 + initial_avg_price 기록
       getPool().query(
         `UPDATE overseas_holdings SET averaging_count = COALESCE(averaging_count, 0) + 1,
@@ -507,6 +539,11 @@ export async function executeBuyLoop(params: BuyLoopParams): Promise<BuyLoopResu
     if (aiDec.confidence < RECOVERY_MIN_CONF) continue;
     if (updatedHoldings.has(code)) continue; // 이미 보유 중이면 스킵
     if (pendingOrderStocks.has(code)) continue;
+    // 🛡️ 손절 쿨다운/대형 손실 차단 — 손절 직후 재매수 방지
+    if (lossCooldownSet.has(code)) {
+      logger.info(`🚫 RECOVERY_BUY 차단: ${code} 손절 쿨다운 중 (24h/30d 차단)`, { component: 'OVERSEAS' });
+      continue;
+    }
 
     const tech = techByCode.get(code);
     if (!tech) continue;
@@ -596,6 +633,11 @@ export async function executeBuyLoop(params: BuyLoopParams): Promise<BuyLoopResu
   );
 
   const vixRegime = effectiveVixRegime;
+  // Trade Tuner 오버라이드 1회 로드 (매도측 sell-logic.ts:113과 동일 패턴)
+  const tunerOverrides: Record<string, number> = await getTunerOverrides(isPaperMode).catch(() => ({}));
+  // v15 Adaptive Entry: 최근 10거래 승률 기반 진입 공격도 조정
+  const { getAdaptiveEntryAdj } = await import('../../automation/portfolio-guard.js');
+  const adaptiveAdj = await getAdaptiveEntryAdj(isPaperMode).catch(() => ({ thresholdAdj: 0, sizingMult: 1.0, streakWinRate: 0.5, reason: '' }));
   for (const target of buyTargets.slice(0, slotsAvailable)) {
     const corrBlock = checkCorrelationLimit(target.code, updatedHoldings);
     if (corrBlock && !isPaperMode) {
@@ -625,6 +667,8 @@ export async function executeBuyLoop(params: BuyLoopParams): Promise<BuyLoopResu
     const stockEV = evMultipliers.get(target.code);
     const evMult = stockEV?.evMultiplier ?? 1.0;
     const wrData = overseasWinRates.get(target.code);
+    // v15: Adaptive Entry sizing 반영 (연승 시 확대, 연패 시 축소)
+    const combinedSessionMult = (brief?.sizingMultiplier ?? 1.0) * adaptiveAdj.sizingMult;
     const { sizingMult, positionSize } = calcPositionSize({
       target,
       portfolioValue,
@@ -635,7 +679,7 @@ export async function executeBuyLoop(params: BuyLoopParams): Promise<BuyLoopResu
       isPaper: isPaperMode,
       evMultiplier: evMult,
       mtfBonus,
-      sessionSizingMult: brief?.sizingMultiplier,
+      sessionSizingMult: combinedSessionMult,
       winRate: wrData?.winRate,
       winRateSamples: wrData?.sampleCount,
       marketBreadth: freshBreadth,
@@ -787,6 +831,7 @@ export async function executeBuyLoop(params: BuyLoopParams): Promise<BuyLoopResu
       vixRegime,
       isMomentum: target.isMomentum,
       atrPct: entryAtrPct,
+      tunerOverrides,
     });
     const effectiveSlPct = targetBucket === 'TACTICAL' ? 1.5 : effectiveBucket === 'SNIPER' ? 2.0 : dynSlPct;
     await updateTradeState({

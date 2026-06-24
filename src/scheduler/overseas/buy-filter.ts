@@ -3,6 +3,7 @@
  * overseas-job.ts에서 추출 (순수 필터 + 정렬, 사이드이펙트 없음)
  */
 import { SECTOR_CLASS } from '../../config/constants.js';
+import { type AllocRisk, getAllocRisk } from '../../db/alloc-risk-cache.js';
 import { type EarningsEvent, hasEarningsRisk, type interpretMarketSentiment } from '../../market/external-signals.js';
 import { logger } from '../../utils/logger.js';
 import type { RegimeAdjustment } from './risk-intelligence.js';
@@ -50,6 +51,7 @@ export interface BuyFilterContext {
   // v12.3: 뉴스 테마/감성 데이터 (매매 방향성 반영)
   newsThemeSectors?: Set<string>; // 오늘 뉴스 테마 관련 섹터 코드 (TECH, AI_SEMI 등)
   newsSentimentScore?: number; // 매크로 뉴스 감성 점수 (-1 ~ +1)
+  allocRiskData?: AllocRisk | null; // DB 섹터별 비중 한도
 }
 
 export type BuyTarget = TechResult & { ai?: AIDecision; _effectiveConf?: number };
@@ -58,13 +60,24 @@ export type BuyTarget = TechResult & { ai?: AIDecision; _effectiveConf?: number 
 /** Small account threshold (USD) for relaxed filter bypass */
 const SMALL_ACCOUNT_USD = 500;
 /** AI re-entry threshold for recent loss stocks */
-const REENTRY_CONF_THRESHOLD = 0.70; // v12.1: 0.80→0.70 (기존: 재진입 70% 차단, 회복 기회 상실)
+const REENTRY_CONF_THRESHOLD = 0.60; // v15 Hyper: 0.70→0.60 (재진입 문턱 하향 — 빠른 복구 거래)
 /** RSI threshold for oversold bounce detection
  * v12.2: 33→28 (Connors RSI-2 연구: 승률 76%, Wilder 1978: 30 이하 과매도)
  * 33은 약한 조정만 포착 → 28로 낮춰 진짜 과매도 반등 포착 */
 const RSI_OVERSOLD = 28;
-/** Sector concentration weight limit */
-const SECTOR_WEIGHT_LIMIT = 0.3;
+/** Sector concentration weight limit (fallback) */
+const SECTOR_WEIGHT_LIMIT_DEFAULT = 0.3;
+
+/** 해외 섹터 → DB AllocRisk 필드 매핑 */
+function getSectorLimitPct(sector: string, ar: AllocRisk | null): number {
+  if (!ar) return SECTOR_WEIGHT_LIMIT_DEFAULT * 100;
+  const s = sector.toUpperCase();
+  if (['AI_SEMI', 'TW_SEMI'].includes(s)) return ar.sectorSemiconductor;
+  if (['HEALTH'].includes(s)) return ar.sectorBio;
+  if (['DEFENSE'].includes(s)) return ar.sectorDefense;
+  if (['FINANCE', 'JP_BANK'].includes(s)) return ar.sectorFinance;
+  return ar.sectorEtc; // TECH, EV, CRYPTO, GROWTH, INFRA, INDUSTRIAL, CLOUD, JP_AUTO, JP_TECH 등
+}
 
 // ── 개선#3: 미국 시간대별 진입 가중치 (DST 대응) ──
 // v10.10.5: 자정 랩핑 버그 수정 — 00:00~05:00 KST 구간에서 open(22:30) 대비 비교 실패 → 항상 0점
@@ -127,6 +140,7 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
     userFavorites,
     kospiPenalty,
     sectorMomentumMap,
+    allocRiskData,
   } = ctx;
 
   // 🔒 isPaper undefined → false 기본값 (undefined가 live로 취급되는 크로스오염 방지)
@@ -303,8 +317,9 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         }
         const sectorValue = sectorValues.get(t.sector) ?? 0;
         const sectorWeight = portfolioValue > 0 ? sectorValue / portfolioValue : 0;
-        if (sectorWeight >= SECTOR_WEIGHT_LIMIT) {
-          logger.info(`📊 섹터 집중도 초과: ${t.code}(${t.sector}) ${(sectorWeight * 100).toFixed(0)}% ≥ 30%`, {
+        const sectorLimitPct = getSectorLimitPct(t.sector, allocRiskData ?? null);
+        if (sectorWeight >= sectorLimitPct / 100) {
+          logger.info(`📊 섹터 집중도 초과: ${t.code}(${t.sector}) ${(sectorWeight * 100).toFixed(0)}% ≥ ${sectorLimitPct}%`, {
             component: 'OVERSEAS',
           });
           return false;
@@ -316,16 +331,19 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         const ai = aiMap.get(t.code);
         const isOversold = t.rsi <= RSI_OVERSOLD && t.trendStrength !== 'WEAK';
         const isAbove50 = t.rsi >= 50;
-        // RSI "developing zone" (38-49): 추세 발전 중, ADX가 확인해주면 진입 허용
-        const isDeveloping = t.rsi >= 38 && t.rsi < 50 && t.adx >= 20 && t.aboveMA20;
+        // RSI "developing zone" (35-49): 추세 발전/회복 중, ADX 확인 시 진입 허용
+        // v15: RSI 38→35, ADX 20→15, MA20 제거 — 조정 후 회복 종목 진입 허용
+        const isDeveloping = t.rsi >= 35 && t.rsi < 50 && t.adx >= 15;
         // v14: ADX Paper/Live 통합 15 (기존 Live 18 → 진입 지연으로 타이밍 악화)
         const adxThreshold = 15;
         // 조정장 급락: RSI ≤ 30 + 당일 -3% → 트렌드 필터 무시 (저점 매수)
         const isDipBuyEntry = (t.rsi <= 30 && t.price.changePct <= -2.5)
           || (t.rsi <= 25 && t.price.changePct <= -1.5)
           || t.rsi <= 20;
+        // v15: RSI 28-35 구간도 강한 추세(ADX≥25)면 진입 허용 (깊은 조정 후 반등 포착)
+        const isNearOversold = t.rsi > RSI_OVERSOLD && t.rsi <= 35 && t.adx >= 25;
         const trendFilterOk =
-          t.isMomentum || t.isBigMover || isOversold || isDeveloping || isDipBuyEntry || (isAbove50 && t.adx > adxThreshold);
+          t.isMomentum || t.isBigMover || isOversold || isDeveloping || isDipBuyEntry || isNearOversold || (isAbove50 && t.adx > adxThreshold);
         if (!trendFilterOk) {
           logger.info(`  ⛔ 진입 필터 탈락: ${t.code} RSI=${t.rsi.toFixed(0)} ADX=${t.adx.toFixed(0)}`, {
             component: 'OVERSEAS',
@@ -379,14 +397,14 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         // v14: Paper/Live 통합 — Live 과필터링으로 고점수 승률 17% (Paper 100%)
         // Paper 검증 결과 낮은 바닥이 더 좋은 진입 타이밍 → Live도 동일 적용
         const baseMinConf = recoveryMode
-          ? 0.75
+          ? 0.70 // v15: 0.75→0.70 (회복모드 약간 완화)
           : mq === 'GREAT'
-            ? 0.58 // v14: Paper/Live 통합 (기존 Live 0.65)
+            ? 0.55 // v15: 0.58→0.55 (GREAT 장 소폭 완화)
             : mq === 'CAUTIOUS'
-              ? 0.63 // v14: Paper/Live 통합 (기존 Live 0.68)
+              ? 0.60 // v15: 0.63→0.60
               : mq === 'DANGER'
-                ? 0.75
-                : 0.60; // v14: Paper/Live 통합 (기존 Live 0.65)
+                ? 0.72 // v15: 0.75→0.72
+                : 0.57; // v15: 0.60→0.57 (기본 소폭 하향)
         const minConf =
           (isBigMoverTarget
             ? Math.max(0.5, baseMinConf - 0.05 + breadthAdj) // v14: Paper/Live 통합 0.5 (기존 Live 0.6)
@@ -463,18 +481,16 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         // 4. Bollinger 돌파 + 모멘텀
         if (t.bollingerBreakout === 'UP' && t.score >= 20 && t.aboveMA20 && t.rsi >= 38 && t.rsi <= 75)
           return true;
-        // 5. BUY 시그널 + 트렌드 확인 (ADX 확인, RSI 적정 범위)
-        if (t.signal === 'BUY' && t.score >= 30 && t.adx >= 20 && t.rsi >= 42 && t.rsi <= 70 && t.aboveMA20)
+        // 5. BUY 시그널 + 트렌드 확인 (v15: score 30→25, RSI floor 42→38 완화)
+        if (t.signal === 'BUY' && t.score >= 25 && t.adx >= 18 && t.rsi >= 38 && t.rsi <= 70 && t.aboveMA20)
           return true;
-        // 5b. v14: BUY 완화 Paper/Live 통합 — positiveCats<3 점수 반감 구제
-        // (기존 Paper 전용 → Live에서도 score≥20+BUY+ADX20 조건 충족 시 진입)
+        // 5b. v15: BUY 완화 — MA20 아래도 ADX 강하면 진입 (조정 후 회복 종목)
         if (
           t.signal === 'BUY' &&
-          t.score >= 20 &&
+          t.score >= 15 &&
           t.adx >= 20 &&
-          t.rsi >= 45 &&
+          t.rsi >= 35 &&
           t.rsi <= 68 &&
-          t.aboveMA20 &&
           !effectiveBadWR
         ) {
           logger.info(
@@ -483,8 +499,16 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
           );
           return true;
         }
-        // 6. 과매도 반등 (RSI ≤ 35 + 트렌드 약하지 않음)
-        if (isOversold && t.aboveMA60 && t.score >= 20) return true;
+        // 6. 과매도 반등 (v15: score 20→15 — RSI 28 이하 깊은 과매도는 진입 문턱 낮춤)
+        if (isOversold && t.aboveMA60 && t.score >= 15) return true;
+        // 6-extra. 극단 과매도 (RSI ≤ 25) + 강한 추세(ADX≥25) → MA60 무관 진입
+        if (t.rsi <= 25 && t.adx >= 25 && t.score >= 10 && !effectiveBadWR) {
+          logger.info(
+            `  🎯 극단과매도 진입: ${t.code} RSI=${t.rsi.toFixed(0)} ADX=${t.adx.toFixed(0)} score=${t.score}`,
+            { component: 'OVERSEAS' },
+          );
+          return true;
+        }
         // 6b. 조정장 급락 매수 (Connors RSI-2 + Jegadeesh 단기반전 근거)
         // MA60 하방이어도 허용 — 큰 조정 시 우량주가 MA60 이하로 밀릴 때 매수 기회
         // 조건 완화: A) RSI≤30 + -2.5% B) RSI≤25 + -1.5% C) RSI≤20 (극단 과매도)
@@ -541,8 +565,22 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
           );
           return true;
         }
-        // 9. AI 미사용시 기술적 보통 진입 — NEUTRAL 장에서도 양호한 셋업 진입
-        // 조건: AI 결과 없음 + score>0 + MA20↑ + RSI 적정 + ADX 추세 확인 + 과열 아님
+        // 9. AI BUY 추천 종목 — AI가 매수 추천하면 기술점수 낮아도 진입
+        // v15: NEUTRAL 종목도 AI가 BUY + confidence ≥ 60% → 진입 허용
+        if (
+          ai?.action === 'BUY' &&
+          effectiveConf >= 0.60 &&
+          t.rsi >= 30 &&
+          t.rsi <= 72 &&
+          !effectiveBadWR
+        ) {
+          logger.info(
+            `  ✅ AI추천진입: ${t.code} AI=${(effectiveConf * 100).toFixed(0)}% sig=${t.signal} score=${t.score} RSI=${t.rsi.toFixed(0)}`,
+            { component: 'OVERSEAS' },
+          );
+          return true;
+        }
+        // 9b. AI 미사용시 기술적 보통 진입 — NEUTRAL 장에서도 양호한 셋업 진입
         if (
           aiMap.size === 0 &&
           t.score >= 10 &&
@@ -565,12 +603,16 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         );
         return false;
       })
-      // 10. 장외시간 필터 (Paper: 시뮬레이션이므로 무조건 통과, 소액 계좌: STRONG_BUY도 허용)
+      // 10. 장외시간 필터 (Paper: 무조건 통과 / Live: BUY↑ + score≥25 허용)
+      // v15: 기존 -3% 바겐/BigMover만 허용 → 프리마켓에서 거의 매수 불가
+      // 프리마켓은 정규장 시세 기반 지정가 매수 가능 → BUY 이상 신호면 허용
       .filter((t) => {
         if (!isUSExtended || isPaper) return true;
         const isBargin = t.price.changePct <= -3.0;
         const isBigUp = t.isBigMover;
         if (isBargin || isBigUp) return true;
+        // BUY/STRONG_BUY + 기술점수 양호 → 프리마켓 진입 허용
+        if ((t.signal === 'STRONG_BUY' || t.signal === 'BUY') && t.score >= 25 && t.aboveMA20) return true;
         // 소액 계좌: 장외에서도 STRONG_BUY 매수 기회 확보
         if (!isPaper && portfolioValue < SMALL_ACCOUNT_USD && t.signal === 'STRONG_BUY' && t.score >= 40) return true;
         return false;

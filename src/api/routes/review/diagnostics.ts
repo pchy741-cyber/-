@@ -77,7 +77,7 @@ app.get('/review/diag', async (c) => {
           ROUND(SUM(COALESCE(filled_price, price) * quantity)::numeric, 2) as total_volume,
           ROUND(SUM(CASE WHEN side='SELL' AND avg_buy_price>0
             THEN (COALESCE(filled_price,price)-avg_buy_price)*quantity ELSE 0 END)::numeric, 2) as realized_pnl
-        FROM orders WHERE trigger_source='OVERSEAS' AND trading_mode='paper' AND status='FILLED'
+        FROM orders WHERE trigger_source='OVERSEAS' AND trading_mode IN ('paper','p_arch') AND status='FILLED'
         GROUP BY side`);
       const { rows: osState } = await pool.query(
         "SELECT key, value FROM overseas_state WHERE key IN ('cash_paper','cash')",
@@ -117,14 +117,14 @@ app.post('/review/paper-reset', async (c) => {
       SELECT stock_code, filled_quantity::numeric as qty, filled_price::numeric as price,
              avg_buy_price::numeric as avg_buy, created_at
       FROM orders
-      WHERE trading_mode = 'paper' AND status = 'FILLED' AND side = 'SELL'
+      WHERE trading_mode IN ('paper','p_arch') AND status = 'FILLED' AND side = 'SELL'
         AND trigger_source = 'OVERSEAS'
       ORDER BY created_at`);
     const { rows: buyRows } = await pool.query(`
       SELECT stock_code, SUM(filled_quantity::numeric * filled_price::numeric) as total_cost,
              COUNT(*) as cnt
       FROM orders
-      WHERE trading_mode = 'paper' AND status = 'FILLED' AND side = 'BUY'
+      WHERE trading_mode IN ('paper','p_arch') AND status = 'FILLED' AND side = 'BUY'
         AND trigger_source = 'OVERSEAS'
       GROUP BY stock_code`);
 

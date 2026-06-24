@@ -47,7 +47,7 @@ async function recordOverseasScoreAccuracy(params: {
     const { rows: buyRows } = await pool.query(
       `SELECT created_at FROM orders
        WHERE stock_code = $1 AND side = 'BUY' AND status = 'FILLED'
-         AND trigger_source = 'OVERSEAS' AND trading_mode = $2
+         AND trigger_source = 'OVERSEAS' AND (trading_mode = $2 OR ($2 = 'paper' AND trading_mode = 'p_arch'))
        ORDER BY created_at DESC LIMIT 1`,
       [stockCode, isPaper ? 'paper' : 'live'],
     );
@@ -66,6 +66,26 @@ async function recordOverseasScoreAccuracy(params: {
     logger.info(`📝 해외 스코어 기록: ${stockCode} ${outcome} (${pnlPct > 0 ? '+' : ''}${pnlPct.toFixed(2)}%)`, {
       component: 'OVERSEAS',
     });
+
+    // 마이크로 피드백: 최근 6시간 내 5건 중 80%+ 손실 → minBuyScore 임시 상향
+    try {
+      const { rows: recentRows } = await pool.query(
+        `SELECT outcome FROM score_accuracy
+         WHERE market = 'US' AND is_paper = $1 AND recorded_at > NOW() - INTERVAL '6 hours'
+         ORDER BY recorded_at DESC LIMIT 5`,
+        [isPaper],
+      );
+      if (recentRows.length >= 5) {
+        const lossCount = recentRows.filter((r: { outcome: string }) => r.outcome === 'LOSS').length;
+        if (lossCount >= 4) {
+          const { setOverride } = await import('../../ai/ai-overrides.js');
+          await setOverride('threshold', 'minBuyScore', 85, `micro_feedback: ${lossCount}/${recentRows.length} losses in 6h`, 120, isPaper);
+          logger.warn(`🛡️ 마이크로 피드백: 최근 ${lossCount}/${recentRows.length} 손실 → minBuyScore=85 (2h TTL)`, { component: 'OVERSEAS' });
+        }
+      }
+    } catch (fbErr) {
+      logger.warn(`마이크로 피드백 처리 실패: ${fbErr}`, { component: 'OVERSEAS' });
+    }
   } catch (err) {
     logger.warn(`해외 스코어 기록 실패: ${err}`, { component: 'OVERSEAS' });
   }
@@ -148,11 +168,13 @@ export async function executeOverseasOrder(
       }).catch(() => {});
     }
     const finalQty = side === 'BUY' ? previousQty + qty : Math.max(0, previousQty - qty);
+    // NaN 방어: previousAvgPrice가 NaN/Infinity이면 fillPrice로 대체
+    const safePrevAvg = Number.isFinite(previousAvgPrice) && previousAvgPrice > 0 ? previousAvgPrice : fillPrice;
     const finalAvgPrice =
       side === 'BUY' && finalQty > 0
-        ? (previousAvgPrice * previousQty + fillPrice * qty) / finalQty
+        ? (safePrevAvg * previousQty + fillPrice * qty) / finalQty
         : finalQty > 0
-          ? previousAvgPrice
+          ? safePrevAvg
           : 0;
     return {
       submitted: true,

@@ -26,8 +26,8 @@ export const FALLBACK_FX_RATE = Number(process.env.FALLBACK_FX_RATE) || 1_520; /
 export const SCHEDULE = {
   // Track A: 무거운 분석 (하루 4회 — 파워풀 모드)
   TRACK_A_CRON: ['30 7 * * 1-5', '0 9 * * 1-5', '30 9 * * 1-5', '0 10 * * 1-5', '30 12 * * 1-5', '0 18 * * 1-5'], // 07:30, 09:00, 09:30, 10:00, 12:30, 18:00 KST 평일
-  // Track B: 실시간 감시 (장중 3분 간격 — 트레일링 반응 속도 개선)
-  TRACK_B_INTERVAL_MINUTES: 3,
+  // v15 Hyper: 실시간 감시 2분 간격 (기존 3분 → 빠른 반응)
+  TRACK_B_INTERVAL_MINUTES: 2,
 } as const;
 
 // ── 주문 관련 Enum ──
@@ -92,16 +92,16 @@ export const STRATEGY_PARAMS = {
     // │ splitCount 1: 분할매수 제거 (고확신 일괄진입)                         │
     // │ maxDailyTrades 2: 3→2 (양보다 질)                                    │
     // └─────────────────────────────────────────────────────────────────────┘
-    buyThreshold: 80, // v12.1: 83→80 (기존 95% 후보 차단 → 진입 기회 +20%)
-    splitCount: 1, // v11: 2→1 (분할 제거, 일괄 진입)
+    buyThreshold: 75, // v15: 80→75 (적당히 진입 확대, 무리하지 않음)
+    splitCount: 1, // 일괄 진입 유지
     averageDownPct: 0,
     maxAveragingCount: 0,
     earlyTpPct: 0,
-    takeProfitPct: 7.0, // v11: 5.0%→7.0% (손익분기 WR 29.1% — 실전WR30% 초과 → 흑자)
+    takeProfitPct: 6.0, // v15: 7.0%→6.0% (수수료0.7% 감안 순이익5.3%, 회전속도 약간 개선)
     takeProfitRatio: 0.5,
-    stopLossPct: -2.5, // v10.7: -3.5%→-2.5% (손실 빨리 차단, 소액계좌 드로다운 축소)
-    maxHoldingDays: 20, // v12.1: 15→20 (21바 사이클 완주 허용, 15일은 사이클 직전 조기 청산)
-    maxDailyTrades: 3, // v10.3: 5→3 (과잉거래=구조적 적자의 주범, 수수료 절감)
+    stopLossPct: -2.2, // v15: -2.5%→-2.2% (약간 타이트, R:R=2.73:1, 손익분기WR 26.8%)
+    maxHoldingDays: 15, // v15: 20→15 (시간으로 올리되 죽은 포지션은 정리)
+    maxDailyTrades: 3, // v15: 3 유지 (해외는 수수료 무겁다 — 질 중심)
   },
 
   DEFENSE: {
@@ -155,7 +155,7 @@ export const STRATEGY_PARAMS = {
     // │ 익절 +8% / 손절 -3% (고확신 = 틀리면 빠르게 손절)                 │
     // │ v13: 물타기 제거 — averageDown -3% = SL -3% 충돌 버그 수정         │
     // └────────────────────────────────────────────────────────────────────┘
-    buyThreshold: 85, // v11: 88→85 (진입 소폭 확장, 실전 유지)
+    buyThreshold: 78, // v15 Hyper: 85→78 (SNIPER 진입 확장 → 고확신 거래 빈도↑)
     splitCount: 1, // 분할 없음 — 단번에 풀 포지션
     averageDownPct: 0, // v13: 물타기 제거 (averageDown -3% = SL -3% 동일 트리거 충돌)
     maxAveragingCount: 0,
@@ -209,7 +209,7 @@ export const STRATEGY_PARAMS = {
     // │ R:R = 8:5 = 1.6:1 / 손익분기 승률 38.5%                           │
     // │ 1등 주도주 + 강한 거래대금 쏠림 종목만 진입 (미모사 원칙)          │
     // └────────────────────────────────────────────────────────────────────┘
-    buyThreshold: 70, // v11: 0→70 (AI 품질 필터 추가 — 기술적 신호+AI 최저선)
+    buyThreshold: 60, // v15 Hyper: 70→60 (돌파매매 진입 확대)
     splitCount: 2, // 돌파확인 + 2차 진입
     averageDownPct: 0, // v11: -3.0→0 (물타기 제거 — 돌파 실패 시 손실 확대 방지)
     maxAveragingCount: 0, // v11: 1→0
@@ -602,10 +602,10 @@ export const OVERSEAS_FEE_PCT = 0.0035;
 // SWING 50% + CORE 30% + TACTICAL 5% + CASH 15% = 100%
 // SWING 38.2→50% 완화 (2~3종목만 보유해도 38% 초과하여 매수 차단 방지)
 export const ALLOCATION_GOLDEN = {
-  SWING_PCT: 0.5, // 중타 (TP +7~25%, 보유 3~14일)
-  CORE_PCT: 0.3, // 장타 우량주 (TP +15~30%, 보유 14~30일)
-  TACTICAL_PCT: 0.05, // 단타 장중매매 (TP +3.5~5%, 당일~1일)
-  CASH_PCT: 0.15, // 현금 유보 (폭락장 방어 + 기회 대기)
+  SWING_PCT: 0.50, // 중타 유지
+  CORE_PCT: 0.30, // 장타 우량주 유지
+  TACTICAL_PCT: 0.10, // v15: 0.05→0.10 (단타 비중 소폭 확대)
+  CASH_PCT: 0.10, // v15: 0.15→0.10 (해외는 적당한 현금 유보)
 } as const;
 
 export type StrategyBucket = 'SWING' | 'CORE' | 'TACTICAL';
@@ -659,10 +659,10 @@ export function getOverseasDynamic(portfolioUsd: number, isPaper = false, posCap
   const posPct = tier === 'large' ? Math.min(0.18, posCapPct) : posCapPct;
   const holdDays = tier === 'micro' ? 14 : tier === 'small' ? 21 : 30;
 
-  // v10.11: Paper 15 → 8 (과다 분산 → 70% 현금 잠금 해결)
+  // v15 Hyper: 최대 보유 종목 수 확대 (분산+회전 병행)
   const maxPos = isPaper
-    ? Math.max(3, Math.min(8, Math.floor(1 / posPct)))     // Paper: Live와 동일 로직 (기존 15 고정)
-    : Math.max(2, Math.min(8, Math.floor(1 / posPct)));
+    ? Math.max(4, Math.min(12, Math.floor(1 / posPct)))    // Paper: 최대 12종목
+    : Math.max(3, Math.min(10, Math.floor(1 / posPct)));   // Live: 최대 10종목 (기존 8)
   // v10.11: $5k 하드캡 → $10k (수천만원 계좌에서 소액만 매수하는 문제 해결)
   const positionCap = isPaper ? 10000 : 5000;
   return {
@@ -711,6 +711,6 @@ export const TRADING_VALUE = {
 
 // ── 월간 MDD 한도 (Single Source of Truth) ──
 export const MDD_LIMIT = {
-  LIVE: 8,   // 실전: 월간 최대 낙폭 8%
+  LIVE: 12,  // v15: 8→12% (드로다운쉴드 -7%청산 + 복구 여유 확보, 월간 한도와 세션 쉴드 정합성)
   PAPER: 40, // 연습: 월간 최대 낙폭 40%
 } as const;

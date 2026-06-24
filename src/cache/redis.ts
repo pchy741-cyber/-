@@ -1,6 +1,7 @@
 import { Redis } from '@upstash/redis';
 import type { AIScore } from '../db/models.js';
 import { logger } from '../utils/logger.js';
+import { getKSTNow } from '../utils/time.js';
 
 /**
  * Upstash Redis — 서버리스 초고속 캐시
@@ -68,12 +69,20 @@ export async function getCachedScores(stockCodes: string[]): Promise<AIScore[]> 
 
   const results = await pipeline.exec();
   const scores: AIScore[] = [];
+  const todayDate = getKSTNow().toISOString().split('T')[0]; // KST 기준 "YYYY-MM-DD"
 
   for (const result of results) {
     if (result) {
       try {
         const parsed = typeof result === 'string' ? JSON.parse(result) : result;
-        scores.push(parsed as AIScore);
+        const score = parsed as AIScore;
+        // 날짜 검증: 오늘자가 아닌 스코어는 무시 → DB fallback 유도
+        const sd = score.score_date ? String(score.score_date).slice(0, 10) : '';
+        if (sd && sd !== todayDate) {
+          logger.debug(`🗑️ Redis stale 스코어 무시: ${score.stock_code} (${sd} ≠ ${todayDate})`, { component: 'CACHE' });
+          continue;
+        }
+        scores.push(score);
       } catch {
         /* skip invalid */
       }
@@ -88,9 +97,14 @@ export async function getScoresWithFallback(stockCodes: string[]): Promise<AISco
   if (stockCodes.length === 0) return [];
   try {
     const cached = await getCachedScores(stockCodes);
-    if (cached.length > 0) return cached;
+    // Redis에서 모든 종목 커버되면 바로 반환, 아니면 누락분 DB fallback
+    if (cached.length >= stockCodes.length) return cached;
+    const cachedCodes = new Set(cached.map((s) => s.stock_code));
+    const missingCodes = stockCodes.filter((c) => !cachedCodes.has(c));
+    if (missingCodes.length === 0) return cached;
     const { getLatestScores } = await import('../db/client.js');
-    return await getLatestScores(stockCodes);
+    const dbScores = await getLatestScores(missingCodes);
+    return [...cached, ...dbScores];
   } catch {
     return [];
   }
