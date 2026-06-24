@@ -40,8 +40,9 @@ export function calcPortfolioStressLevel(
 
   const unrealizedPct = (totalUnrealized / totalAssets) * 100;
 
-  if (unrealizedPct <= -3.5) return 2;
-  if (unrealizedPct <= -2.0) return 1;
+  // v12.3: -3.5% → -5%로 완화 (조정장 회복 매수 허용, 기존 -3.5%는 너무 빈번히 차단)
+  if (unrealizedPct <= -5.0) return 2;
+  if (unrealizedPct <= -3.0) return 1;
   return 0;
 }
 

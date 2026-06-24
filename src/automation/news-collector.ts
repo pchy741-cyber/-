@@ -341,6 +341,8 @@ export async function collectMacroNews(): Promise<string> {
   }
 
   macroNewsCache = { headlines, collectedAt: now };
+  // v12.3: 매크로 뉴스도 수집 성공으로 기록 → 배포 후 Cold Start 시 "뉴스 끊김" 차단 방지
+  if (headlines.length > 0) lastNewsSuccessAt = Date.now();
   logger.info(`📰 매크로 뉴스 ${headlines.length}건 수집 (Reuters/CNBC/AP/MarketWatch/연합뉴스)`, {
     component: 'NEWS',
   });

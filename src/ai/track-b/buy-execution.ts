@@ -198,8 +198,8 @@ export async function executeBuyDecisions(
   // 소자산: 3종목 분산 불가 시 50%까지 집중 허용 (80%는 2종목 = 100% 초과 위험)
   // 기준: effectiveMaxPos(=totalAssets×25%)로 1주 최소가(1만원) 3개 이상 살 수 없으면 소자산
   const canDiversify3 = (totalAssets ?? 0) > 0 && (totalAssets ?? 0) * 0.25 >= 30_000;
-  // Hard Cap 25% — 일일손실 2.5% 방어 (소자산은 50% 집중 허용)
-  const maxPosFraction = !canDiversify3 ? 0.5 : 0.25;
+  // v12.3: Hard Cap 30% — 고가주 의미있는 수량 확보 (소자산은 50% 집중 허용)
+  const maxPosFraction = !canDiversify3 ? 0.5 : 0.30;
   const effectiveMaxPos = totalAssets
     ? Math.min(maxPositionKrw, Math.round(totalAssets * maxPosFraction))
     : maxPositionKrw;
@@ -534,44 +534,44 @@ export async function executeBuyDecisions(
     // 기술지표만 통과(AI 미허락) → 소액 탐색(4-5%)으로 제한
     const aiApproved = aiScore >= strategyParams.buyThreshold;
 
-    // 황금비율 v2: 확신도 비례 투입 (동적 maxPosFraction과 정합)
+    // 황금비율 v3: 확신도 비례 적극 투입 (고가 대형주도 의미있는 수량 매수)
     const hardcodedAllocPct = aiApproved
       ? mode === 'SNIPER'
-        ? // SNIPER: 단일 최고확신 종목 집중 — Hard Cap 25% 준수
+        ? // SNIPER: 단일 최고확신 종목 집중
           blendedScore >= 90
-          ? 0.25
+          ? 0.3
           : blendedScore >= 85
-            ? 0.22
-            : 0.18
+            ? 0.25
+            : 0.2
         : blendedScore >= 90
-          ? 0.25
-          : // 90+: 25% (Hard Cap, 일일손실 2.5% 방어)
+          ? 0.3
+          : // 90+: 30% (최고확신 적극 투입)
             blendedScore >= 85
-            ? 0.22
-            : // 85-89: 22%
+            ? 0.25
+            : // 85-89: 25%
               blendedScore >= 80
-              ? 0.15
-              : // 80-84: 15%
+              ? 0.2
+              : // 80-84: 20%
                 blendedScore >= 75
-                ? 0.12
-                : // 75-79: 12%
+                ? 0.15
+                : // 75-79: 15%
                   blendedScore >= 70
-                  ? 0.1
+                  ? 0.12
                   : 0.08
       : noAiScores || aiScore === 0
-        ? // v11: AI 부재 → 기술지표만으로 판단, 배분 축소 (미검증 과대배분 방지)
+        ? // v11: AI 부재 → 기술지표만으로 판단
           blendedScore >= 85
-          ? 0.1
+          ? 0.12
           : blendedScore >= 75
-            ? 0.07
-            : 0.04
-        : // AI 있지만 이 종목은 미허락 → 최소 탐색만
+            ? 0.08
+            : 0.05
+        : // AI 있지만 이 종목은 미허락 → 최소 탐색
           blendedScore >= 80
-          ? 0.06
-          : 0.04;
+          ? 0.08
+          : 0.05;
     // Kelly 사이징 우선: 10건+ 데이터 있으면 Kelly 기반, 없으면 기존 하드코딩 × 페널티
     const kellyAllocPct = kellyResult
-      ? Math.min(0.25, kellyResult.kellyPct * (blendedScore >= 85 ? 1.5 : blendedScore >= 70 ? 1.2 : 1.0)) // 점수 비례 스케일 (25% hard cap)
+      ? Math.min(0.30, kellyResult.kellyPct * (blendedScore >= 85 ? 1.5 : blendedScore >= 70 ? 1.2 : 1.0)) // 점수 비례 스케일 (30% hard cap)
       : null;
     const dbAllocPct = getDbAllocPct(blendedScore);
     let baseAllocPct = kellyAllocPct ?? dbAllocPct ?? hardcodedAllocPct * kellyNullPenalty;
@@ -728,14 +728,13 @@ export async function executeBuyDecisions(
       );
     }
 
-    // AI 고확신: 포지션 한도 확대 (최대 총자산 25% 캡 — portfolio-guard 집중도와 일치)
-    // 소자산(분산 불가)은 maxPosFraction=80%이므로 별도 상한 적용 안 함
+    // v12.3: AI 고확신 포지션 한도 확대 (최대 총자산 30%)
     const concentrationCap = !canDiversify3
       ? totalAssets
         ? totalAssets * 0.8
         : Infinity
       : totalAssets
-        ? totalAssets * 0.25
+        ? totalAssets * 0.30
         : Infinity;
     const aiMaxPos =
       aiPosMultiplier > 1.0 && totalAssets
@@ -779,9 +778,23 @@ export async function executeBuyDecisions(
     }
 
     let quantity = Math.floor(effectivePositionSize / cand.price.currentPrice);
+    // v12.3: 고가 대형주 최소 수량 보장 — 1주만 매수하면 의미 없는 포지션
+    // 50만원+ 주가, 75점+, 현금 충분 → 최소 2주 (effectiveMaxPos 상한 준수)
+    if (
+      quantity === 1 &&
+      cand.price.currentPrice >= 500_000 &&
+      blendedScore >= 75 &&
+      remainingCash >= cand.price.currentPrice * 2 &&
+      cand.price.currentPrice * 2 <= effectiveMaxPos
+    ) {
+      quantity = 2;
+      logger.info(
+        `  🏦 ${cand.stock_code}: 고가주 최소2주 보장 (주가${Math.round(cand.price.currentPrice / 10000)}만, score${blendedScore.toFixed(0)})`,
+        { component: 'TRACK_B' },
+      );
+    }
     if (quantity <= 0) {
       // 고가주(1주 > positionSize): 주가가 종목한도 이내이고 현금 충분하면 최소 1주
-      // 주가가 effectiveMaxPos 초과 시 1주 강제 매수하면 리스크 한도 우회됨 (Live ₩125K 주식 + ₩140K 계좌 → 89% 집중)
       if (remainingCash >= cand.price.currentPrice && cand.price.currentPrice <= effectiveMaxPos) {
         quantity = 1;
         logger.info(

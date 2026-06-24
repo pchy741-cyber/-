@@ -123,6 +123,12 @@ function withTimeout<T>(label: string, fn: () => Promise<T>, timeoutMs: number):
 export function startScheduler(): void {
   logger.info('📅 마스터 스케줄러 시작', { component: 'SCHEDULER' });
 
+  // v12.3: 서버 시작 직후 뉴스 수집 (배포/Cold Start 시 "뉴스 끊김" 차단 방지)
+  import('../api/routes/dashboard-news.js')
+    .then((m) => m.prefetchAllNews())
+    .then(() => logger.info('📰 서버 시작 뉴스 프리페치 완료', { component: 'SCHEDULER' }))
+    .catch((e) => logger.warn(`📰 서버 시작 뉴스 프리페치 실패: ${e}`, { component: 'SCHEDULER' }));
+
   // ═══════════════════════════════════════════
   //  장 시작 전 준비
   // ═══════════════════════════════════════════
