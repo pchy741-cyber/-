@@ -84,10 +84,15 @@ export function calcPositionSize(params: SizingParams): SizingResult {
     sessionSizingMult,
   } = params;
 
-  // ── 기술 점수 → confidence ──
+  // ── 기술 점수 + AI 신뢰도 → confidence ──
   const techConf = Math.min(1, Math.max(0.35, (target.score + 30) / 110));
   const momentumBoost = target.isMomentum ? 0.08 : target.isBigMover ? 0.1 : 0;
-  const effectiveConf = Math.min(1, techConf + momentumBoost);
+  // v14: AI 신뢰도 반영 — 기존 기술점수만 사용 → AI 40% 블렌딩
+  // AI 고확신(0.85) vs 저확신(0.50) → 사이즈 차이 14% (기존: 0%)
+  const aiConf = target.ai?.confidence ?? 0;
+  const effectiveConf = aiConf > 0
+    ? Math.min(1, techConf * 0.6 + aiConf * 0.4 + momentumBoost)
+    : Math.min(1, techConf + momentumBoost);
 
   // ── 고승률 보너스 ──
   const wr = params.winRate ?? 0;

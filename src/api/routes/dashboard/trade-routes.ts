@@ -67,9 +67,11 @@ tradeRoutes.get('/trades', async (c) => {
     const domesticCodes = allCodes.filter((code: string) => /^[0-9]{6}$/.test(code));
     const overseasCodes = allCodes.filter((code: string) => !/^[0-9]{6}$/.test(code));
 
+    // v14: 해외 수수료 반영 (기존 0% → 0.35% 양방향, 왕복 0.7%)
+    const OVERSEAS_FEE = 0.0035;
     const calcFifoPnl = (pnlRows: any[], isUsd: boolean) => {
-      const BUY_FEE_PCT = isUsd ? 0 : KR_FEE.BUY_FEE_PCT;
-      const SELL_FEE_PCT = isUsd ? 0 : KR_FEE.SELL_FEE_PCT;
+      const BUY_FEE_PCT = isUsd ? OVERSEAS_FEE : KR_FEE.BUY_FEE_PCT;
+      const SELL_FEE_PCT = isUsd ? OVERSEAS_FEE : KR_FEE.SELL_FEE_PCT;
       const holdings = new Map<string, { qty: number; totalCost: number }>();
       for (const o of pnlRows as Array<any>) {
         const code = String(o.stock_code ?? '');
@@ -82,7 +84,7 @@ tradeRoutes.get('/trades', async (c) => {
         if (side === 'BUY') {
           const buyValue = qty * price;
           h.qty += qty;
-          h.totalCost += buyValue + (isUsd ? 0 : Math.round(buyValue * BUY_FEE_PCT));
+          h.totalCost += buyValue + (isUsd ? buyValue * BUY_FEE_PCT : Math.round(buyValue * BUY_FEE_PCT));
           holdings.set(code, h);
           continue;
         }
@@ -94,7 +96,7 @@ tradeRoutes.get('/trades', async (c) => {
         const avgCost = h.totalCost / h.qty;
         const costBasis = avgCost * matchedQty;
         const sellValue = matchedQty * price;
-        const sellFee = isUsd ? 0 : Math.round(sellValue * SELL_FEE_PCT);
+        const sellFee = isUsd ? sellValue * SELL_FEE_PCT : Math.round(sellValue * SELL_FEE_PCT);
         const pnl = sellValue - sellFee - costBasis;
         const pct = costBasis > 0 ? (pnl / costBasis) * 100 : null;
         // 수익률 100% 초과 = 입금으로 왜곡된 평단가 → 제외 (해외만)

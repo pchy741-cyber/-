@@ -665,11 +665,16 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         const newsThemeB = ctx.newsThemeSectors?.has(b.sector ?? '') ? 10 : 0;
         // v12.3: 뉴스 감성 가산점 — 긍정(+5) / 부정(-5) 전체 시장 분위기 반영
         const _nss = ctx.newsSentimentScore ?? 0;
-        const newsSentA = _nss > 0.3 ? 5 : _nss < -0.3 ? -5 : 0;
+        const newsSent = _nss > 0.3 ? 5 : _nss < -0.3 ? -5 : 0;
+        // v14: AI 신뢰도 정렬 반영 — 기존 기술점수만으로 정렬 → AI 고확신 종목 우선
+        const aiConfA = a.ai?.confidence ?? 0;
+        const aiConfB = b.ai?.confidence ?? 0;
+        const aiConfScoreA = aiConfA >= 0.85 ? 15 : aiConfA >= 0.75 ? 10 : aiConfA >= 0.65 ? 5 : 0;
+        const aiConfScoreB = aiConfB >= 0.85 ? 15 : aiConfB >= 0.75 ? 10 : aiConfB >= 0.65 ? 5 : 0;
         const sa =
-          techA + wrScoreA + losspenA + priorityA + favA + sectorBoostA + vwapA + atrEntryA + timeBonus + driftScoreA + sectorMomScoreA + fundAdjA + paperBridgeA + newsThemeA + newsSentA;
+          techA + wrScoreA + losspenA + priorityA + favA + sectorBoostA + vwapA + atrEntryA + timeBonus + driftScoreA + sectorMomScoreA + fundAdjA + paperBridgeA + newsThemeA + newsSent + aiConfScoreA;
         const sb =
-          techB + wrScoreB + losspenB + priorityB + favB + sectorBoostB + vwapB + atrEntryB + timeBonus + driftScoreB + sectorMomScoreB + fundAdjB + paperBridgeB + newsThemeB + newsSentA;
+          techB + wrScoreB + losspenB + priorityB + favB + sectorBoostB + vwapB + atrEntryB + timeBonus + driftScoreB + sectorMomScoreB + fundAdjB + paperBridgeB + newsThemeB + newsSent + aiConfScoreB;
         return sb - sa;
       })
   );
