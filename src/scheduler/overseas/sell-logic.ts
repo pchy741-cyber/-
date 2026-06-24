@@ -70,7 +70,8 @@ const MIN_AI_SELL_CONF_DEFAULT = 0.78;
 /** RSI threshold for BigMover overbought exit */
 const RSI_BIGMOVER_OVERBOUGHT = 82;
 /** Profit tightening thresholds (% from peak) */
-const PROFIT_TIGHTEN_THRESHOLDS = { HIGH: 20, MEDIUM: 15, LOW: 10 } as const;
+// v14: 10/15/20→15/20/25 (+10%에서 타이트닝 시작은 너무 이름 → 위너 라이딩 기회 확대)
+const PROFIT_TIGHTEN_THRESHOLDS = { HIGH: 25, MEDIUM: 20, LOW: 15 } as const;
 const PROFIT_TIGHTEN_VALUES = { HIGH: 1.5, MEDIUM: 1.0, LOW: 0.5 } as const;
 /** Milliseconds per day */
 const MS_PER_DAY = 1000 * 60 * 60 * 24;
@@ -250,7 +251,8 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
     // 예: trail=-4.0 + tighten=2.0 → -2.0 (2%드롭에서 트리거 = 더 빨리 보호)
     // 기존 버그: 빼면 -6.0 → 6%드롭까지 허용 = VIX 위기 시 오히려 더 느슨해짐
     // v10.11: 클램핑 추가 — 양수 되면 트레일 비활성화 (VIX+고수익 동시 → 무방비)
-    const effectiveTrailDropPct = Math.min(-0.5, dynamicTrailDrop + vixRegime.trailTighten + profitTighten);
+    // v14: trail floor -0.5→-1.5% (기존: 고수익+VIX 시 -0.5% = 정상 변동성에도 매도 트리거)
+    const effectiveTrailDropPct = Math.min(-1.5, dynamicTrailDrop + vixRegime.trailTighten + profitTighten);
     // v10.9: 트레일 활성화 대폭 하향 (기존 5~10% → 2~4%) — 소액 계좌 수익 보호
     const baseTrailActivate = isHighBeta ? 4.0 : isMediumBeta ? 3.0 : 2.0;
     const trailActivatePct = tunerOverrides.trail_activate_pct ?? baseTrailActivate;

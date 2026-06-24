@@ -12,7 +12,8 @@ import { modePrefix } from './utils.js';
 
 // ── Named constants ──
 /** Scale-in trigger: minimum PnL% above entry to execute additional buy */
-const SCALE_IN_TRIGGER_PCT = 1.2;
+// v14: 1.2→2.5% (기존: trail activation 2-4%과 0.8% 차이 → 추가매수 직후 즉시 트레일 손절 위험)
+const SCALE_IN_TRIGGER_PCT = 2.5;
 /** Maximum days to keep a scale-in reservation before auto-cancel */
 const SCALE_IN_MAX_DAYS = 2;
 /** Milliseconds per day */

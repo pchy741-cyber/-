@@ -344,9 +344,9 @@ export async function deployIdleCash(params: {
     const concKey = (params.isPaper ?? getCtxIsPaper()) ? 'p_concentration_code' : 'l_concentration_code';
     await getPool()
       .query(
-        `INSERT INTO overseas_state (key, value) VALUES ($2, $1)
-       ON CONFLICT (key) DO UPDATE SET value = $1`,
-        [bestCode, concKey],
+        `INSERT INTO overseas_state (key, value) VALUES ($1, $2)
+       ON CONFLICT (key) DO UPDATE SET value = $2`,
+        [concKey, bestCode],
       )
       .catch(() => {});
 

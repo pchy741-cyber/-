@@ -373,8 +373,9 @@ export function calcDynamicTpSl(params: {
   // 3.5/2.5/2.0% 기본 → 승자 빈도 ↑, 자본 회전 ↑
   const tunerTpAdj = tunerOverrides?.tp_base_pct;
   const tunerSlAdj = tunerOverrides?.sl_base_pct;
-  const baseTp = tunerTpAdj != null ? tunerTpAdj : isHighBeta ? 4.5 : isMediumBeta ? 2.5 : isDefense ? 2.0 : 2.5;
-  const baseSl = tunerSlAdj != null ? tunerSlAdj : isHighBeta ? 4.0 : isMediumBeta ? 2.5 : isDefense ? 2.0 : 2.5;
+  // v14: HIGH_BETA TP 4.5→5.5, SL 4.0→3.5 (기존 R:R=1.125 → 1.57, R:R 보정 불필요)
+  const baseTp = tunerTpAdj != null ? tunerTpAdj : isHighBeta ? 5.5 : isMediumBeta ? 2.5 : isDefense ? 2.0 : 2.5;
+  const baseSl = tunerSlAdj != null ? tunerSlAdj : isHighBeta ? 3.5 : isMediumBeta ? 2.5 : isDefense ? 2.0 : 2.5;
 
   const momentumExt =
     adx >= 35 && rsi >= 45 && rsi <= 68 ? 5.0 : adx >= 28 && rsi >= 45 && rsi <= 70 ? 2.0 : isMomentum ? 1.0 : 0;
@@ -421,7 +422,7 @@ export function calcDynamicTpSl(params: {
       // v12.3: ATR SL 상한 축소 (HIGH_BETA 8→6%, 기타 5→4%) — 과도한 SL 확대 방지
       const atrFloor = Math.round(atrPct * 1.5 * 10) / 10;
       if (atrFloor > slPct) {
-        slPct = Math.min(atrFloor, isHighBeta ? 6.0 : 4.0); // v12.3: 안전 상한 축소
+        slPct = Math.min(atrFloor, isHighBeta ? 5.0 : 4.0); // v14: HIGH_BETA 6→5% (복합 손실 위험 감소)
       }
     }
   }
