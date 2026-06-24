@@ -249,14 +249,22 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         }
         return true;
       })
-      // 6. 어닝 리스크
+      // 6. 어닝 리스크 → 재무 기반 기회/위험 판단
       .filter((t) => {
         if (t.isBigMover) return true;
-        if (hasEarningsRisk(t.code, upcomingEarnings, 3) || sentinelBlockedCodes.has(t.code)) {
-          logger.info(`📅 어닝 리스크 차단: ${t.code} (3일 이내 실적 발표)`, { component: 'OVERSEAS' });
-          return false;
+        const hasEarnings = hasEarningsRisk(t.code, upcomingEarnings, 3) || sentinelBlockedCodes.has(t.code);
+        if (!hasEarnings) return true;
+
+        // SEC 재무점수로 기회/위험 판단 (US 실적발표 = 주가 직결)
+        const secScore = getCachedSecFundamentalScore(t.code);
+        if (secScore != null && secScore >= 55) {
+          // 재무 우수 → 실적 서프라이즈 기대, 매수 허용
+          logger.info(`📈 어닝 기회: ${t.code} SEC재무${secScore}점 — 실적발표 전 매수 허용`, { component: 'OVERSEAS' });
+          return true;
         }
-        return true;
+        // 재무 취약/미산출 → 실적 쇼크 우려, 차단
+        logger.info(`📅 어닝 리스크 차단: ${t.code} SEC재무${secScore ?? '미산출'}점 (3일 이내 실적 발표)`, { component: 'OVERSEAS' });
+        return false;
       })
       // 7. 시장 센티먼트
       .filter((t) => {
