@@ -287,41 +287,36 @@ dashboardNewsRoutes.get('/news/summary', async (c) => {
   }
 });
 
-// ── 오늘의 테마 + 추천 종목 (Gemini 2.0 Flash) ──
-dashboardNewsRoutes.get('/news/theme', async (c) => {
-  try {
-    if (_newsThemeCache.data && Date.now() - _newsThemeCache.fetchedAt < NEWS_THEME_TTL) {
-      return c.json(_newsThemeCache.data);
-    }
+// ── 오늘의 테마 생성 (공용 함수 — API + 프리페치 공유) ──
+async function generateNewsTheme(macroRaw?: string): Promise<NewsTheme | null> {
+  if (_newsThemeCache.data && Date.now() - _newsThemeCache.fetchedAt < NEWS_THEME_TTL) {
+    return _newsThemeCache.data;
+  }
 
-    const { collectMacroNews } = await import('../../automation/news-collector.js');
-    const raw = await Promise.race([
-      collectMacroNews(),
-      new Promise<string>((resolve) => setTimeout(() => resolve(''), 20000)),
-    ]);
-    if (!raw) return c.json({ theme: '', reason: '', stocks: [] });
+  const raw = macroRaw ?? await Promise.race([
+    import('../../automation/news-collector.js').then((m) => m.collectMacroNews()),
+    new Promise<string>((resolve) => setTimeout(() => resolve(''), 20000)),
+  ]);
+  if (!raw) return null;
 
-    const headlines = raw
-      .split('\n')
-      .filter((l) => l.startsWith('- [') || (l.startsWith('- ') && l.length > 10))
-      .map((l) => {
-        const m = l.match(/^- \[(.+?)\]\(.+?\)\s*[—-]\s*(.+)$/);
-        return m ? `${m[1]} (${m[2]})` : l.replace(/^- /, '');
-      })
-      .slice(0, 20)
-      .join('\n');
+  const headlines = raw
+    .split('\n')
+    .filter((l) => l.startsWith('- [') || (l.startsWith('- ') && l.length > 10))
+    .map((l) => {
+      const m = l.match(/^- \[(.+?)\]\(.+?\)\s*[—-]\s*(.+)$/);
+      return m ? `${m[1]} (${m[2]})` : l.replace(/^- /, '');
+    })
+    .slice(0, 20)
+    .join('\n');
 
-    if (!headlines) return c.json({ theme: '', reason: '', stocks: [] });
+  if (!headlines) return null;
 
-    // Gemini OFF → 테마 분석 스킵
-    const { config } = await import('../../config/index.js');
-    if (!config.geminiEnabled) {
-      return c.json({ theme: '', reason: 'Gemini OFF', stocks: [] });
-    }
+  const { config } = await import('../../config/index.js');
+  if (!config.geminiEnabled) return null;
 
-    const { callVertexGemini: callVertexTheme } = await import('../../utils/vertex-gemini.js');
+  const { callVertexGemini: callVertexTheme } = await import('../../utils/vertex-gemini.js');
 
-    const themeUserMsg = `아래 글로벌 금융 뉴스 헤드라인을 분석해서 오늘 한국 주식시장에서 가장 주목받을 테마/섹터를 1개 선정하고, 관련 한국 상장주 3~5개를 추천하세요.
+  const themeUserMsg = `아래 글로벌 금융 뉴스 헤드라인을 분석해서 오늘 한국 주식시장에서 가장 주목받을 테마/섹터를 1개 선정하고, 관련 한국 상장주 3~5개를 추천하세요.
 
 헤드라인:
 ${headlines}
@@ -338,29 +333,30 @@ ${headlines}
 
 주의: code는 반드시 실제 한국거래소 6자리 종목코드, market은 KOSPI 또는 KOSDAQ`;
 
-    const text = await Promise.race([
-      callVertexTheme(
-        '당신은 한국 주식시장 전문가입니다. 뉴스 헤드라인을 분석하여 테마와 종목을 추천합니다.',
-        themeUserMsg,
-        { temperature: 0.2, useVertex: true, label: '뉴스-테마' },
-      ),
-      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('theme_timeout_20s')), 20000)),
-    ]);
+  const text = await Promise.race([
+    callVertexTheme(
+      '당신은 한국 주식시장 전문가입니다. 뉴스 헤드라인을 분석하여 테마와 종목을 추천합니다.',
+      themeUserMsg,
+      { temperature: 0.2, useVertex: true, label: '뉴스-테마' },
+    ),
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error('theme_timeout_20s')), 20000)),
+  ]);
 
-    const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/) ?? text.match(/(\{[\s\S]*\})/);
-    const jsonText = jsonMatch ? (jsonMatch[1] ?? jsonMatch[0]) : text;
+  const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/) ?? text.match(/(\{[\s\S]*\})/);
+  const jsonText = jsonMatch ? (jsonMatch[1] ?? jsonMatch[0]) : text;
 
-    let data: NewsTheme;
-    try {
-      data = JSON.parse(jsonText.trim()) as NewsTheme;
-      if (!data.theme || !Array.isArray(data.stocks)) throw new Error('invalid');
-    } catch {
-      logger.warn(`오늘의 테마 JSON 파싱 실패. raw: ${text.slice(0, 200)}`, { component: 'NEWS_THEME' });
-      return c.json({ theme: '', reason: '', stocks: [] });
-    }
+  const data = JSON.parse(jsonText.trim()) as NewsTheme;
+  if (!data.theme || !Array.isArray(data.stocks)) throw new Error('invalid');
 
-    _newsThemeCache = { data, fetchedAt: Date.now() };
-    return c.json(data);
+  _newsThemeCache = { data, fetchedAt: Date.now() };
+  return data;
+}
+
+// ── 오늘의 테마 API ──
+dashboardNewsRoutes.get('/news/theme', async (c) => {
+  try {
+    const data = await generateNewsTheme();
+    return c.json(data ?? { theme: '', reason: '', stocks: [] });
   } catch (err) {
     logger.error('오늘의 테마 생성 실패', { error: String(err), component: 'NEWS_THEME' });
     return c.json({ theme: '', reason: '', stocks: [] });
@@ -423,11 +419,18 @@ export async function prefetchAllNews(): Promise<void> {
       }
     }
 
-    // 3. 유튜브 캐시 워밍
+    // 3. 오늘의 테마 자동 생성 (기존: API 호출 시에만 생성 → 자동화)
+    try {
+      await generateNewsTheme(raw || undefined);
+    } catch (e) {
+      logger.debug(`테마 자동생성 실패 (무시): ${e}`, { component: 'NEWS_PREFETCH' });
+    }
+
+    // 4. 유튜브 캐시 워밍
     await fetchYouTubeVideos();
 
     logger.info(
-      `📰 뉴스 프리페치 완료: 요약=${_newsSummaryCache.summary ? 'OK' : 'SKIP'} 유튜브=${_ytCache.videos.length}건`,
+      `📰 뉴스 프리페치 완료: 요약=${_newsSummaryCache.summary ? 'OK' : 'SKIP'} 테마=${_newsThemeCache.data?.theme || 'SKIP'} 유튜브=${_ytCache.videos.length}건`,
       { component: 'NEWS_PREFETCH' },
     );
   } catch (e) {
