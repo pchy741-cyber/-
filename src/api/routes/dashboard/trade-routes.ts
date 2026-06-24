@@ -320,11 +320,13 @@ tradeRoutes.get('/trades/daily-summary', async (c) => {
             - (COALESCE(tc.avg_buy_price, o.avg_buy_price) * COALESCE(o.filled_quantity, o.quantity, 0))
           END
         ), 0) AS realized_pnl,
-        -- 해외: 주문 단위 PnL (수수료 없음 — KIS 실시간 반영)
+        -- v14-fix: 해외 PnL 수수료 0.35% 반영 (매수+매도 양방향)
         COALESCE(SUM(
           CASE WHEN o.side = 'SELL' AND o.stock_code !~ '^[0-9]{6}$'
-               AND COALESCE(o.avg_buy_price, tc.avg_buy_price) > 0 THEN
-            (COALESCE(o.filled_price, 0) - COALESCE(o.avg_buy_price, tc.avg_buy_price))
+               AND COALESCE(o.avg_buy_price, tc.avg_buy_price) > 0
+               AND o.filled_price > 0 THEN
+            (COALESCE(o.filled_price, 0) * (1 - ${OVERSEAS_FEE_PCT})
+             - COALESCE(o.avg_buy_price, tc.avg_buy_price) * (1 + ${OVERSEAS_FEE_PCT}))
             * COALESCE(o.filled_quantity, o.quantity, 0)
           END
         ), 0) AS realized_pnl_usd,
@@ -413,7 +415,7 @@ tradeRoutes.get('/trades/by-date/:date', async (c) => {
     const { rows } = await getPool().query(
       `SELECT o.*,
          COALESCE(w.stock_name, o.stock_code) AS stock_name,
-         tc.avg_buy_price,
+         COALESCE(o.avg_buy_price, tc.avg_buy_price) AS effective_avg_buy_price,
          tc.status AS chain_status,
          tc.strategy_mode
        FROM orders o
@@ -427,23 +429,28 @@ tradeRoutes.get('/trades/by-date/:date', async (c) => {
       [viewIsPaper, tradeMode, dateParam],
     );
 
-    // v14-fix: 주문 단위 PnL (FIFO 방식, chain PnL은 체인 전체값이라 중복됨)
+    // v14-fix: 주문 단위 PnL — 해외 수수료 0.35% 반영 + 컬럼 충돌 해결
+    const OVERSEAS_FEE_BY_DATE = 0.0035;
     const trades = rows.map((r: any) => {
       const isSell = r.side === 'SELL';
       if (!isSell) return { ...r, realized_pnl: null, realized_pnl_pct: null };
 
-      const avgBuy = Number(r.avg_buy_price ?? 0);
+      // v14-fix: effective_avg_buy_price 사용 (기존 tc.avg_buy_price가 o.avg_buy_price 덮어쓰기 버그)
+      const avgBuy = Number(r.effective_avg_buy_price ?? r.avg_buy_price ?? 0);
       const fillPrice = Number(r.filled_price ?? 0);
       const qty = Number(r.filled_quantity ?? r.quantity ?? 0);
       const isKr = /^[0-9]{6}$/.test(r.stock_code ?? '');
 
       if (avgBuy > 0 && fillPrice > 0 && qty > 0) {
         const sellValue = fillPrice * qty;
-        const sellFee = isKr ? Math.round(sellValue * KR_FEE.SELL_FEE_PCT) : 0;
-        const pnl = sellValue - sellFee - avgBuy * qty;
-        const pnlPct = ((sellValue - sellFee - avgBuy * qty) / (avgBuy * qty)) * 100;
+        const buyFee = isKr ? 0 : sellValue * OVERSEAS_FEE_BY_DATE;
+        const sellFee = isKr ? Math.round(sellValue * KR_FEE.SELL_FEE_PCT) : sellValue * OVERSEAS_FEE_BY_DATE;
+        const costBasis = avgBuy * qty + (isKr ? 0 : avgBuy * qty * OVERSEAS_FEE_BY_DATE);
+        const pnl = sellValue - sellFee - costBasis;
+        const pnlPct = costBasis > 0 ? (pnl / costBasis) * 100 : 0;
         return {
           ...r,
+          avg_buy_price: avgBuy, // 올바른 값으로 복원
           realized_pnl: Math.round(pnl * 100) / 100,
           realized_pnl_pct: Math.round(pnlPct * 100) / 100,
         };

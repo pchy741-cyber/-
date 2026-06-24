@@ -10,7 +10,7 @@ import { getPaperBalance } from '../../risk/engine.js';
 import { getKillSwitchStatusAll } from '../../risk/kill-switch.js';
 import { getLoopStatus } from '../../scheduler/loop-mode.js';
 import { getOpenMarketRegions } from '../../scheduler/overseas/session.js';
-import { KR_FEE, FALLBACK_FX_RATE } from '../../config/constants.js';
+import { KR_FEE, FALLBACK_FX_RATE, OVERSEAS_FEE_PCT } from '../../config/constants.js';
 import { logger } from '../../utils/logger.js';
 import { PAPER_INITIAL_CAPITAL } from '../../risk/paper-balance.js';
 import { resolveRequestMode } from '../guards/live-pin.js';
@@ -110,7 +110,8 @@ export async function getTodayTradeStats(isPaper?: boolean) {
         COALESCE(SUM(
           CASE WHEN o.side = 'SELL' AND o.stock_code !~ '^[0-9]{6}$'
                AND COALESCE(o.avg_buy_price, tc.avg_buy_price, 0) > 0 AND o.filled_price > 0 THEN
-            (o.filled_price - COALESCE(o.avg_buy_price, tc.avg_buy_price)) * COALESCE(o.filled_quantity, o.quantity, 0)
+            (o.filled_price * (1 - ${OVERSEAS_FEE_PCT}) - COALESCE(o.avg_buy_price, tc.avg_buy_price) * (1 + ${OVERSEAS_FEE_PCT}))
+            * COALESCE(o.filled_quantity, o.quantity, 0)
           END
         ), 0) AS us_realized_pnl_usd
       FROM orders o

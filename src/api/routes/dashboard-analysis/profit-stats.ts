@@ -68,31 +68,35 @@ profitStatsRoutes.get('/profit-stats', async (c) => {
     } else {
       // 해외: orders 테이블 SELL 기록 기반 (transaction_chains 없음)
       // PnL = (filled_price - avg_buy_price) * filled_quantity (USD)
-      // 수익률 100% 초과 = 비정상 (입금으로 왜곡된 평단가) → 제외
+      // v14-fix: ratio<=2.0 필터가 큰 손실(-50%+) 숨김 → 5.0으로 확대
+      // 5x = 400% 수익까지 허용 (입금 왜곡만 제거, 정상 손실은 전부 반영)
       const osFilter = `side = 'SELL' AND status = 'FILLED'
           AND trigger_source = 'OVERSEAS'
           AND avg_buy_price IS NOT NULL AND avg_buy_price > 0
           AND filled_price IS NOT NULL AND filled_price > 0
-          AND (filled_price / avg_buy_price) <= 2.0
-          AND (avg_buy_price / filled_price) <= 2.0`;
+          AND (filled_price / avg_buy_price) <= 5.0
+          AND (avg_buy_price / filled_price) <= 5.0`;
 
-      // v10.10.5c: 4 쿼리 병렬화
+      // v14-fix: 해외 수수료 0.35% 반영 (기존: 수수료 미적용 → PnL 과대 표시)
+      const OS_FEE = 0.0035; // 매수/매도 각 0.35%
       const modeFilter = `AND is_paper = $1 AND (trading_mode = $2::text OR ($2::text = 'paper' AND trading_mode = 'p_arch'))`;
+      // PnL = 매도금액*(1-fee) - 매수금액*(1+fee) = (sell - buy) - fee*(sell + buy)
+      const pnlExpr = `(filled_price * filled_quantity * (1 - ${OS_FEE}) - avg_buy_price * filled_quantity * (1 + ${OS_FEE}))`;
       const [{ rows: monthly }, { rows: total }, { rows: thisMonth }, { rows: firstTradeUs }] = await Promise.all([
         pool.query(
           `SELECT to_char(created_at AT TIME ZONE 'Asia/Seoul', 'YYYY-MM') AS month,
-                  SUM((filled_price - avg_buy_price) * filled_quantity) AS pnl, COUNT(*) AS trades
+                  SUM(${pnlExpr}) AS pnl, COUNT(*) AS trades
            FROM orders WHERE ${osFilter} ${modeFilter} AND created_at >= NOW() - INTERVAL '12 months'
            GROUP BY 1 ORDER BY 1 ASC`,
           [isPaper, tradingMode],
         ),
         pool.query(
-          `SELECT COALESCE(SUM((filled_price - avg_buy_price) * filled_quantity), 0) AS total_pnl
+          `SELECT COALESCE(SUM(${pnlExpr}), 0) AS total_pnl
            FROM orders WHERE ${osFilter} ${modeFilter}`,
           [isPaper, tradingMode],
         ),
         pool.query(
-          `SELECT COALESCE(SUM((filled_price - avg_buy_price) * filled_quantity), 0) AS pnl
+          `SELECT COALESCE(SUM(${pnlExpr}), 0) AS pnl
            FROM orders WHERE ${osFilter} ${modeFilter}
            AND created_at >= date_trunc('month', NOW() AT TIME ZONE 'Asia/Seoul')`,
           [isPaper, tradingMode],
