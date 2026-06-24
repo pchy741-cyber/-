@@ -346,10 +346,11 @@ export async function syncHoldingsFromKIS(): Promise<void> {
     // ── KIS 현재가 → DB last_price + 인메모리 캐시 업데이트 ──
     for (const [code, price] of kisPriceMap) {
       if (price > 0) {
+        const exch = allHoldings.get(code)?.exchange ?? 'NASDAQ';
         getPool()
           .query(
-            'UPDATE overseas_holdings SET last_price = $1, last_price_at = NOW() WHERE stock_code = $2 AND is_paper = false',
-            [price, code],
+            'UPDATE overseas_holdings SET last_price = $1, last_price_at = NOW() WHERE stock_code = $2 AND exchange = $3 AND is_paper = false',
+            [price, code, exch],
           )
           .catch(() => {});
         // SSE가 즉시 반영할 수 있도록 인메모리 캐시도 갱신
@@ -378,8 +379,8 @@ export async function syncHoldingsFromKIS(): Promise<void> {
           if (p?.currentPrice > 0) {
             getPool()
               .query(
-                'UPDATE overseas_holdings SET last_price = $1, last_price_at = NOW() WHERE stock_code = $2 AND is_paper = false',
-                [p.currentPrice, h.stock_code],
+                'UPDATE overseas_holdings SET last_price = $1, last_price_at = NOW() WHERE stock_code = $2 AND exchange = $3 AND is_paper = false',
+                [p.currentPrice, h.stock_code, h.exchange],
               )
               .catch(() => {});
             cacheSet(`overseas:lastprice:${h.stock_code}`, { price: p.currentPrice, changePct: 0, volume: 0 }, 7200);

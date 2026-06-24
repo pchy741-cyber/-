@@ -426,8 +426,8 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
         if (p?.currentPrice > 0) {
           r.last_price = p.currentPrice;
           safeQuery(
-            'UPDATE overseas_holdings SET last_price = $1, last_price_at = NOW() WHERE stock_code = $2 AND is_paper = $3',
-            [p.currentPrice, r.stock_code, viewIsPaper],
+            'UPDATE overseas_holdings SET last_price = $1, last_price_at = NOW() WHERE stock_code = $2 AND exchange = $3 AND is_paper = $4',
+            [p.currentPrice, r.stock_code, r.exchange, viewIsPaper],
           ).catch(() => {});
         }
       } catch { /* 시세 조회 실패 시 기존 폴백 사용 */ }

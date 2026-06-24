@@ -234,7 +234,7 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
       }
     }
     // DB 동기화 (대시보드 표시용) — v10.8: 루프 밖 static import 사용
-    updateHoldingTpSl(code, hardTpPct, stopLossPct, paperMode).catch(() => {});
+    updateHoldingTpSl(code, hardTpPct, stopLossPct, paperMode, holding.exchange).catch(() => {});
     const dynamicTrailDrop = calcDynamicTrailDrop({
       sector,
       atrPct: atrPctValue,

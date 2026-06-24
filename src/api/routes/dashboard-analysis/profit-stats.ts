@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { getKSTNow } from '../../../utils/time.js';
 import { getDinnerMoneyStats } from '../../../automation/profit-withdraw.js';
-import { KR_FEE } from '../../../config/constants.js';
+import { KR_FEE, OVERSEAS_FEE_PCT } from '../../../config/constants.js';
 import { getPool } from '../../../db/client.js';
 import { resolveRequestMode } from '../../guards/live-pin.js';
 
@@ -77,8 +77,8 @@ profitStatsRoutes.get('/profit-stats', async (c) => {
           AND (filled_price / avg_buy_price) <= 5.0
           AND (avg_buy_price / filled_price) <= 5.0`;
 
-      // v14-fix: 해외 수수료 0.35% 반영 (기존: 수수료 미적용 → PnL 과대 표시)
-      const OS_FEE = 0.0035; // 매수/매도 각 0.35%
+      // v14-fix: 해외 수수료 반영 (기존: 수수료 미적용 → PnL 과대 표시)
+      const OS_FEE = OVERSEAS_FEE_PCT; // 매수/매도 각 0.35%
       const modeFilter = `AND is_paper = $1 AND (trading_mode = $2::text OR ($2::text = 'paper' AND trading_mode = 'p_arch'))`;
       // PnL = 매도금액*(1-fee) - 매수금액*(1+fee) = (sell - buy) - fee*(sell + buy)
       const pnlExpr = `(filled_price * filled_quantity * (1 - ${OS_FEE}) - avg_buy_price * filled_quantity * (1 + ${OS_FEE}))`;

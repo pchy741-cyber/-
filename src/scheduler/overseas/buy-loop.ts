@@ -479,8 +479,8 @@ export async function executeBuyLoop(params: BuyLoopParams): Promise<BuyLoopResu
       getPool().query(
         `UPDATE overseas_holdings SET averaging_count = COALESCE(averaging_count, 0) + 1,
          initial_avg_price = CASE WHEN COALESCE(initial_avg_price, 0) = 0 THEN $2 ELSE initial_avg_price END
-         WHERE stock_code = $1 AND is_paper = $3`,
-        [code, holding.avgPrice, isPaperMode],
+         WHERE stock_code = $1 AND exchange = $3 AND is_paper = $4`,
+        [code, holding.avgPrice, tech.exchange, isPaperMode],
       ).catch(() => {});
 
       const newAvg = exec.finalAvgPrice;
@@ -801,9 +801,10 @@ export async function executeBuyLoop(params: BuyLoopParams): Promise<BuyLoopResu
       slPct: -effectiveSlPct,
     });
     getPool()
-      .query('UPDATE overseas_holdings SET strategy_bucket = $1 WHERE stock_code = $2 AND is_paper = $3', [
+      .query('UPDATE overseas_holdings SET strategy_bucket = $1 WHERE stock_code = $2 AND exchange = $3 AND is_paper = $4', [
         effectiveBucket,
         target.code,
+        target.exchange,
         isPaperMode,
       ])
       .catch(() => {});

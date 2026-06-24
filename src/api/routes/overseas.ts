@@ -747,13 +747,13 @@ overseasRoutes.patch('/overseas/holdings/:code/tpsl', async (c) => {
     const { updateHoldingTpSl } = await import('../../scheduler/overseas/state.js');
     // 개별 필드만 업데이트 가능하도록 기존값 유지
     const { rows } = await getPool().query(
-      'SELECT tp_pct, sl_pct FROM overseas_holdings WHERE stock_code = $1 AND is_paper = $2 AND quantity > 0',
+      'SELECT tp_pct, sl_pct, exchange FROM overseas_holdings WHERE stock_code = $1 AND is_paper = $2 AND quantity > 0',
       [code, isPaper],
     );
     if (rows.length === 0) return c.json({ error: '보유 종목 없음' }, 404);
     const finalTp = tpPct ?? (rows[0].tp_pct != null ? Number(rows[0].tp_pct) : null);
     const finalSl = slPct ?? (rows[0].sl_pct != null ? Number(rows[0].sl_pct) : null);
-    await updateHoldingTpSl(code, finalTp, finalSl, isPaper);
+    await updateHoldingTpSl(code, finalTp, finalSl, isPaper, rows[0].exchange);
 
     // 캐시 무효화
     const mode = isPaper ? 'paper' : 'live';

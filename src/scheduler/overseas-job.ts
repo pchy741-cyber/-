@@ -561,8 +561,8 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
       if (t && t.price.currentPrice > 0) {
         getPool()
           .query(
-            `UPDATE overseas_holdings SET last_price = $1, last_price_at = NOW() WHERE stock_code = $2 AND is_paper = $3`,
-            [t.price.currentPrice, code, isPaper()],
+            `UPDATE overseas_holdings SET last_price = $1, last_price_at = NOW() WHERE stock_code = $2 AND exchange = $3 AND is_paper = $4`,
+            [t.price.currentPrice, code, t.exchange, isPaper()],
           )
           .catch(() => {});
         // v10.9.4: SSE 인메모리 캐시도 갱신 (기존: DB만 갱신 → SSE에서 stale 가격 표시)
@@ -1658,9 +1658,10 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
         });
         // 황금비율/SNIPER 버킷 태깅
         getPool()
-          .query('UPDATE overseas_holdings SET strategy_bucket = $1 WHERE stock_code = $2 AND is_paper = $3', [
+          .query('UPDATE overseas_holdings SET strategy_bucket = $1 WHERE stock_code = $2 AND exchange = $3 AND is_paper = $4', [
             effectiveBucket,
             target.code,
+            target.exchange,
             isPaper(),
           ])
           .catch(() => {});

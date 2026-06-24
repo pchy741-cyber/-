@@ -329,12 +329,21 @@ export async function updateHoldingTpSl(
   tpPct: number | null,
   slPct: number | null,
   isPaper?: boolean,
+  exchange?: string,
 ): Promise<void> {
   const paper = isPaper ?? getCtxIsPaper();
-  await getPool().query(
-    `UPDATE overseas_holdings SET tp_pct = $1, sl_pct = $2 WHERE stock_code = $3 AND is_paper = $4 AND quantity > 0`,
-    [tpPct, slPct, code, paper],
-  );
+  if (exchange) {
+    await getPool().query(
+      `UPDATE overseas_holdings SET tp_pct = $1, sl_pct = $2 WHERE stock_code = $3 AND exchange = $4 AND is_paper = $5 AND quantity > 0`,
+      [tpPct, slPct, code, exchange, paper],
+    );
+  } else {
+    // exchange 미전달 시 기존 호환 (대시보드 수동 조절 등)
+    await getPool().query(
+      `UPDATE overseas_holdings SET tp_pct = $1, sl_pct = $2 WHERE stock_code = $3 AND is_paper = $4 AND quantity > 0`,
+      [tpPct, slPct, code, paper],
+    );
+  }
 }
 
 /**

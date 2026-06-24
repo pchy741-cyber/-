@@ -68,7 +68,7 @@ tradeRoutes.get('/trades', async (c) => {
     const overseasCodes = allCodes.filter((code: string) => !/^[0-9]{6}$/.test(code));
 
     // v14: 해외 수수료 반영 (기존 0% → 0.35% 양방향, 왕복 0.7%)
-    const OVERSEAS_FEE = 0.0035;
+    const OVERSEAS_FEE = OVERSEAS_FEE_PCT;
     const calcFifoPnl = (pnlRows: any[], isUsd: boolean) => {
       const BUY_FEE_PCT = isUsd ? OVERSEAS_FEE : KR_FEE.BUY_FEE_PCT;
       const SELL_FEE_PCT = isUsd ? OVERSEAS_FEE : KR_FEE.SELL_FEE_PCT;
@@ -429,8 +429,8 @@ tradeRoutes.get('/trades/by-date/:date', async (c) => {
       [viewIsPaper, tradeMode, dateParam],
     );
 
-    // v14-fix: 주문 단위 PnL — 해외 수수료 0.35% 반영 + 컬럼 충돌 해결
-    const OVERSEAS_FEE_BY_DATE = 0.0035;
+    // v14-fix: 주문 단위 PnL — 해외 수수료 반영 + 컬럼 충돌 해결
+    const OVERSEAS_FEE_BY_DATE = OVERSEAS_FEE_PCT;
     const trades = rows.map((r: any) => {
       const isSell = r.side === 'SELL';
       if (!isSell) return { ...r, realized_pnl: null, realized_pnl_pct: null };
