@@ -1102,6 +1102,15 @@ export function startScheduler(): void {
       resetUSSessionCache();
       logger.info('🇺🇸 미국장 세션 준비 완료 (21:00 기동 — 프리마켓 감시 시작)', { component: 'SCHEDULER' });
 
+      // v14: 블랙리스트 초기화 (CEO 지시 — 매매 기회 확대)
+      try {
+        const { setOverseasState } = await import('./overseas/utils.js');
+        await setOverseasState('user_blacklist', JSON.stringify([]));
+        logger.info('🔓 해외 블랙리스트 초기화 완료', { component: 'SCHEDULER' });
+      } catch (e) {
+        logger.warn(`블랙리스트 초기화 실패: ${e}`, { component: 'SCHEDULER' });
+      }
+
       // 📰 미국장 프리마켓 뉴스 + SEC 리서치 프리로드
       // 기존: 뉴스 15:33 종료, SEC는 개장 후 첫 사이클에서 온디맨드 → 4.5시간 공백
       // 개선: 21:00에 미리 돌려서 22:30 개장 시 바로 사용 가능

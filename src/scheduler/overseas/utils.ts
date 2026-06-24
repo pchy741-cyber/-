@@ -68,8 +68,8 @@ export async function getUserFavorites(): Promise<Set<string>> {
   return new Set(raw ? (JSON.parse(raw) as string[]) : []);
 }
 
-// CEO 기본 블랙리스트 (코드에서 관리 — 왠만하면 매수 금지 종목)
-const CEO_DEFAULT_BLACKLIST = new Set(['META']);
+// v14: 기본 블랙리스트 비움 — 매매 기회 확대 (CEO 지시)
+const CEO_DEFAULT_BLACKLIST = new Set<string>();
 
 /** 사용자 블랙리스트 종목 목록 (CEO 기본 + DB 저장분 합산) */
 export async function getUserBlacklist(): Promise<Set<string>> {

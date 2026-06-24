@@ -250,13 +250,9 @@ overseasRoutes.post('/overseas/favorites/seed', async (c) => {
   } else {
     results.push('favorites already exists');
   }
-  const existingBl = await getOverseasState('user_blacklist');
-  if (!existingBl) {
-    await setOverseasState('user_blacklist', JSON.stringify(['TSLA', 'AAPL', 'META']));
-    results.push('blacklist seeded: TSLA, AAPL, META');
-  } else {
-    results.push('blacklist already exists');
-  }
+  // v14: 블랙리스트 비움 (CEO 지시 — 매매 기회 확대)
+  await setOverseasState('user_blacklist', JSON.stringify([]));
+  results.push('blacklist cleared');
   return c.json({ ok: true, results });
 });
 
