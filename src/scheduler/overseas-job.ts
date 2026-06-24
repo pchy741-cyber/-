@@ -292,11 +292,14 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
             ? Math.max(userTargetPct, timeBasedPct)
             : timeBasedPct;
 
-          // 5) 현금캡용 배분비율: Paper는 별도 풀이라 캡 불필요, Live는 시간대별 적용
-          //    → Live에서도 사용자 목표 미만으로 내리지 않음
+          // 5) 현금캡용 배분비율
+          //    KR장 중: 국내에서 원화 전액 사용하므로 해외 캡은 시간대별(35%)만 적용
+          //    US장: 사용자 목표(70%)와 시간대별(80%) 중 큰 값
           const cashCapAllocPct = isPaper()
             ? 1.0 // Paper: 해외 시드 전체 사용 가능 (국내/해외 별도 풀)
-            : (userTargetPct != null ? Math.max(userTargetPct, timeBasedPct) : timeBasedPct);
+            : isKROpen
+              ? timeBasedPct // KR장 중: 국내 전액 활용, 해외는 시간대별(35%)만
+              : (userTargetPct != null ? Math.max(userTargetPct, timeBasedPct) : timeBasedPct);
 
           const OVERSEAS_ALLOC_PCT = cashCapAllocPct;
           const maxOverseasKrw = totalAccountKrw * OVERSEAS_ALLOC_PCT;

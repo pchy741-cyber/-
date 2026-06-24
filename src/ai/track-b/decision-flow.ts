@@ -253,6 +253,7 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
   {
     const { manageCashParking } = await import('./cash-manager.js');
     // 해외 목표 비중 조회 — cash-manager가 국내 파킹 예산 제한에 사용
+    // KR장 중에는 원화 100% 활용 (해외 예약 0) → 장 마감 후 overseas-job에서 70% 적용
     let overseasTargetPct = 0;
     if (!params.isPaper) {
       try {
@@ -260,7 +261,11 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
         const { rows } = await getPool().query(
           'SELECT us_pct FROM portfolio_allocation_config WHERE is_paper = false ORDER BY id DESC LIMIT 1',
         );
-        overseasTargetPct = Number(rows[0]?.us_pct ?? 0);
+        const dbPct = Number(rows[0]?.us_pct ?? 0);
+        // KR장 중(09~16시 KST)에는 해외 예약 없이 국내 전액 활용
+        const kstH = (new Date().getUTCHours() + 9) % 24;
+        const isKRActive = kstH >= 9 && kstH < 16;
+        overseasTargetPct = isKRActive ? 0 : dbPct;
       } catch { /* 기본값 0 유지 */ }
     }
     const cashDecisions = manageCashParking({
