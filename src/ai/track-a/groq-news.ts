@@ -141,16 +141,34 @@ score 기준: 100(극호재), 50(호재), 0(중립), -50(악재), -100(극악재
   }
 }
 
+// ── 키워드 기반 간이 감성 분석 (GROQ_API_KEY 없을 때 폴백) ──
+const BULL_KEYWORDS = ['상승', '급등', '반등', '신고가', '호재', '돌파', '매수', '랠리', '회복', '호실적', '어닝서프라이즈', '수주', '계약', 'surge', 'rally', 'record', 'bullish', 'beat'];
+const BEAR_KEYWORDS = ['하락', '급락', '폭락', '악재', '매도', '붕괴', '적자', '하향', '위기', '리스크', '공포', 'plunge', 'crash', 'bearish', 'miss', 'downgrade'];
+
+function keywordSentiment(headlines: string[]): { score: number; summary: string } {
+  if (headlines.length === 0) return { score: 0, summary: '뉴스 없음' };
+  const text = headlines.join(' ').toLowerCase();
+  let bull = 0;
+  let bear = 0;
+  for (const kw of BULL_KEYWORDS) if (text.includes(kw)) bull++;
+  for (const kw of BEAR_KEYWORDS) if (text.includes(kw)) bear++;
+  const raw = bull - bear;
+  const score = Math.max(-100, Math.min(100, raw * 20));
+  const mood = score > 20 ? '긍정' : score < -20 ? '부정' : '중립';
+  return { score, summary: `${mood} (헤드라인 ${headlines.length}건, 호재키워드 ${bull}건, 악재 ${bear}건)` };
+}
+
 /**
  * 감시목록 종목들의 뉴스 감성 분석
- * GROQ_API_KEY 없으면 빈 배열 반환 (파이프라인 차단 없음)
+ * GROQ_API_KEY 있으면 → Groq AI 분석
+ * GROQ_API_KEY 없으면 → RSS + 키워드 기반 간이 분석 (빈 배열 X)
  */
 export async function analyzeNewsWithGroq(
   stocks: Array<{ stockCode: string; companyName: string }>,
 ): Promise<GroqNewsSentiment[]> {
-  if (!process.env.GROQ_API_KEY) {
-    logger.debug('GROQ_API_KEY 미설정 → Groq 뉴스 분석 스킵', { component: 'GROQ_NEWS' });
-    return [];
+  const useGroq = !!process.env.GROQ_API_KEY;
+  if (!useGroq) {
+    logger.info('GROQ_API_KEY 미설정 → RSS + 키워드 기반 감성 분석 폴백', { component: 'GROQ_NEWS' });
   }
 
   try {
@@ -183,10 +201,10 @@ export async function analyzeNewsWithGroq(
       headlineResults[i].status === 'fulfilled' ? headlineResults[i].value.source : ('rss' as const),
     );
 
-    const groqResult = await analyzeWithGroq(items);
+    const groqResult = useGroq ? await analyzeWithGroq(items) : {};
 
     const fresh: GroqNewsSentiment[] = items.map((it, i) => {
-      const gr = groqResult[it.stockCode] ?? { score: 0, summary: '데이터 없음' };
+      const gr = groqResult[it.stockCode] ?? keywordSentiment(it.headlines);
       const sentiment: GroqNewsSentiment = {
         stockCode: it.stockCode,
         companyName: it.companyName,
