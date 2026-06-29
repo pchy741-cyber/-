@@ -20,6 +20,7 @@ import { cacheScores } from '../../cache/redis.js';
 import { getActiveWatchlist, getPool, upsertAIScore } from '../../db/client.js';
 import { getDailyChart } from '../../kis/market.js';
 import { logger } from '../../utils/logger.js';
+import { analyzeNewsWithGroq } from './groq-news.js';
 import { runRSSScoring } from './rss-scorer.js';
 
 const COMP = 'QUICK_RESCORE';
@@ -137,12 +138,45 @@ export async function runQuickRescore(): Promise<{ scored: number; errors: numbe
     const emptySet = new Set<string>();
     const emptyMap = new Map<string, number>();
 
-    const watchlistForRss = fullWatchlist.slice(0, MAX_STOCKS).map((w) => ({
+    const watchlistForRss = fullWatchlist.slice(0, maxStocks).map((w) => ({
       stock_code: w.stock_code,
       stock_name: w.stock_name ?? w.stock_code,
     }));
 
+    // 🗞️ 황금시간 실시간 뉴스 분석 (Claude Haiku) — 15분 캐시, 황금시간만 실행
+    const newsSentimentMap = new Map<string, number>();
+    if (decision.intervalMin <= 5) {
+      try {
+        const stockMeta = watchlistForRss.map((w) => ({ stockCode: w.stock_code, companyName: w.stock_name }));
+        const newsResults = await analyzeNewsWithGroq(stockMeta);
+        for (const n of newsResults) {
+          if (Math.abs(n.score) >= 20) {
+            newsSentimentMap.set(n.stockCode, n.score);
+          }
+        }
+        if (newsSentimentMap.size > 0) {
+          logger.info(`🗞️ 실시간 뉴스 ${newsSentimentMap.size}종목 반영 (황금시간)`, { component: COMP });
+        }
+      } catch (e) {
+        logger.warn(`실시간 뉴스 실패 (RSS 계속): ${e}`, { component: COMP });
+      }
+    }
+
     const results = await runRSSScoring('SWING', watchlistForRss, chartData, emptySet, emptySet, emptyMap);
+
+    // 뉴스 감성 → sentiment_score 및 composite_score 보정
+    for (const r of results) {
+      const newsScore = newsSentimentMap.get(r.stock_code);
+      if (newsScore != null) {
+        // 뉴스 감성 → sentiment_score에 직접 반영 (기존 50점 기준)
+        const sentimentAdj = Math.round(newsScore * 0.3); // -100~100 → -30~+30
+        r.sentiment_score = Math.max(0, Math.min(100, (r.sentiment_score ?? 50) + sentimentAdj));
+        // composite에도 소폭 반영 (뉴스 가중치 15%)
+        const compositeAdj = Math.round(newsScore * 0.15);
+        r.composite_score = Math.max(0, Math.min(100, r.composite_score + compositeAdj));
+        r.reasoning = `${r.reasoning ?? ''} [뉴스${newsScore > 0 ? '+' : ''}${newsScore}]`;
+      }
+    }
 
     // 🎯 Score Enhancer — 외부 무료 신호로 후처리 가산 (FRED + 거래량 + 시간대)
     const { enhanceScoreBatch } = await import('../score-enhancer.js');

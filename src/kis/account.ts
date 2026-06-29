@@ -44,7 +44,7 @@ const _balanceCache = new Map<string, { data: AccountBalance; ts: number }>();
 const _lastKnownBalance = new Map<string, { data: AccountBalance; ts: number }>();
 const BALANCE_CACHE_TTL = 120_000; // 2분 — KIS API 호출 최소화 (PWA 접속 시 토큰 재발급 알림 폭탄 방지)
 const BALANCE_CACHE_TTL_MORNING = 30_000; // 30초 — 장 개시 09:00~09:30 KST (정산 반영 지연 대응)
-const LAST_KNOWN_MAX_AGE = 30 * 60_000; // 30분 이내 마지막 성공 잔고까지 폴백 허용
+const LAST_KNOWN_MAX_AGE = 5 * 60_000; // v16: 30분→5분 (오래된 잔고로 매매하면 초과주문/미수 위험)
 
 /** 현재 KST 기준 캐시 TTL 반환 — 장중 전체 30초, 장외 2분 */
 function getBalanceCacheTTL(): number {

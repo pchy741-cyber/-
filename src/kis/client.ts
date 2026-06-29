@@ -208,7 +208,7 @@ export async function kisRequest<T = unknown>(options: KISRequestOptions): Promi
         method,
         headers,
         body: body ? JSON.stringify(body) : undefined,
-        signal: AbortSignal.timeout(10000),
+        signal: AbortSignal.timeout(15000), // v16: 10s→15s (피크 시 KIS 12s 지연 대응)
       });
 
       // KIS가 토큰 만료 시 JSON 대신 평문 "LOGOUT" 반환 → 토큰 캐시 초기화 후 재시도

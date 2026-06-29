@@ -1293,8 +1293,9 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         for (const r of obResults) {
           if (r.status === 'fulfilled') {
             orderbookAdjMap.set(r.value.code, r.value.adj);
-            // 매도벽 하드 게이트: bid/ask ≤ 0.5 → 매도 잔량이 매수의 2배+ → 진입 차단
-            if (r.value.ratio <= 0.5) {
+            // 매도벽 하드 게이트: bid/ask ≤ 0.35 → 매도 잔량이 매수의 3배+ → 진입 차단
+            // v16: 0.5→0.35 (상승종목은 매수잔량 얇은 게 정상 — 과도한 차단 방지)
+            if (r.value.ratio <= 0.35) {
               orderbookBlockedCodes.add(r.value.code);
               logger.warn(`🚫 호가 매도벽: ${r.value.code} bid/ask=${r.value.ratio.toFixed(2)} → 진입 차단`, {
                 component: 'TRACK_B',

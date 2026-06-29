@@ -21,7 +21,7 @@ import { logger } from '../utils/logger.js';
 const COMP = 'TOURNAMENT';
 
 // 토너먼트 대상 전략 (EOD_BETTING은 별도 크론, DIVIDEND는 파킹 모드)
-const TOURNAMENT_MODES: StrategyMode[] = ['SWING', 'DEFENSE', 'SCALPING', 'SNIPER', 'BOTTOM_FISHING', 'BREAKOUT'];
+const TOURNAMENT_MODES: StrategyMode[] = ['SWING', 'DEFENSE', 'SNIPER', 'BOTTOM_FISHING'];
 
 let _tournamentRunning = false;
 

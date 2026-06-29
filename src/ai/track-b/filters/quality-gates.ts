@@ -23,7 +23,7 @@ export function checkQualityGates(input: QualityGateInput): GateResult {
   // ─ qVolume ─
   const volThreshold = Math.max(
     feedbackMinVolRatio,
-    aiScore >= 80 ? 0.5 : aiScore >= buyThreshold ? 0.8 : noAiForStock ? 0.8 : 1.2,
+    aiScore >= 80 ? 0.5 : aiScore >= buyThreshold ? 0.6 : noAiForStock ? 0.6 : 0.8, // v16: 전체 완화 (상승종목 포착)
   );
   const qVolume = adjustedVolRatio >= volThreshold || tech.rsi14 < 35 || hasBullishCandle;
 

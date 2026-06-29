@@ -14,7 +14,7 @@ import { MEGA_CAP_PRIORITY_CODES } from '../trading-rules.js';
 import type { EntryInput, EntryVerdict } from './types.js';
 
 /** 레짐 신뢰도 No-Trade 임계값 — 이 미만이면 레짐 불확실 → 진입 금지 */
-const REGIME_CONFIDENCE_THRESHOLD = 0.65;
+const REGIME_CONFIDENCE_THRESHOLD = 0.50; // v16: 0.65→0.50 (브레이크아웃 초기 진입 허용)
 /** 메가캡 대형주: 변동성 구조적으로 낮아 RANGE_LOW_VOL 빈발 → 신뢰도 임계 완화 */
 const MEGA_CAP_REGIME_THRESHOLD = 0.45;
 
@@ -142,8 +142,8 @@ export function tryFinalEntry(input: EntryInput): EntryVerdict {
   const v4MinTechScore = getCtxIsPaper()
     ? Math.max(minTechScore, 35)  // v15: Paper 40→35 (더 많은 데이터 수집)
     : techOnlyMode
-      ? Math.max(minTechScore, 68) // v15: Live AI없이: 78→68점 (기회 +30%)
-      : Math.max(minTechScore, 45); // v15: Live AI 병행: 55→45점 (진입 대폭 확대)
+      ? Math.max(minTechScore, 55) // v16: Live AI없이: 68→55점 (상승종목 포착률 +50%)
+      : Math.max(minTechScore, 42); // v16: Live AI 병행: 45→42점 (추가 완화)
 
   if (effectiveTechScore >= v4MinTechScore) {
     const entryReason = buildEntryReason(input);

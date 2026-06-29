@@ -16,7 +16,7 @@ export interface AllocRisk {
 }
 
 const DEFAULTS: Record<'live' | 'paper', AllocRisk> = {
-  live: { positionCapPct: 25, maxInvestedPct: 88, cashReservePct: 20, maxPositions: 8, maxDailyTrades: 5, sectorSemiconductor: 30, sectorBio: 20, sectorDefense: 25, sectorFinance: 20, sectorEtc: 30 },
+  live: { positionCapPct: 25, maxInvestedPct: 88, cashReservePct: 20, maxPositions: 12, maxDailyTrades: 8, sectorSemiconductor: 30, sectorBio: 20, sectorDefense: 25, sectorFinance: 20, sectorEtc: 30 }, // v16: maxPos 8→12, dailyTrades 5→8
   paper: { positionCapPct: 40, maxInvestedPct: 97, cashReservePct: 3, maxPositions: 20, maxDailyTrades: 20, sectorSemiconductor: 50, sectorBio: 50, sectorDefense: 50, sectorFinance: 50, sectorEtc: 50 },
 };
 

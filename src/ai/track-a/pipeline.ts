@@ -29,7 +29,6 @@ import { getMacroSignal } from '../../market/macro-signal.js';
 import { safeParseScoresJson } from '../../utils/json-repair.js';
 import { logger } from '../../utils/logger.js';
 import { runGeminiAnalysis } from './gemini.js';
-import { runGeminiScoring } from './gemini-scorer.js';
 import { analyzeNewsWithGroq } from './groq-news.js';
 
 function normalizeStockCode(raw: unknown): string {
@@ -493,7 +492,7 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
         await Promise.allSettled([
           fetchStockDisclosures(stockMeta), // 4-d. KRX KIND 공시
           getKrTrendSignals(stockMeta), // 4-f. Google Trends KR
-          analyzeNewsWithGroq(stockMeta), // 4-e. Groq 뉴스 감성
+          analyzeNewsWithGroq(stockMeta), // 4-e. Claude/Groq 뉴스 감성
           getMacroSignal(), // 4-g. 거시경제 신호 (USD/KRW + Nasdaq + FRED)
           getCommunitysentiment(stockMeta), // 4-h. 네이버 토론방 커뮤니티 감성
           getKrxOptionsSignal(), // 4-i. KRX 옵션 P/C + VKOSPI
@@ -507,20 +506,20 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
         logger.info(`KIND 공시 ${disclosures.value.length}종목 스코어러에 주입`, { component: 'TRACK_A' });
       }
 
-      // 4-e. Groq 뉴스 감성 섹션
+      // 4-e. Claude/Groq 뉴스 감성 섹션
       if (groqSentiments.status === 'fulfilled' && groqSentiments.value.length > 0) {
         const lines = groqSentiments.value
           .filter((g) => Math.abs(g.score) >= 20) // 중립(±20 미만) 제외
           .map((g) => `${g.companyName}(${g.stockCode}): ${g.score > 0 ? '+' : ''}${g.score}점 — ${g.summary}`);
         if (lines.length > 0) {
-          const section = `## Groq AI 뉴스 감성 분석 (Google News 기반)\n${lines.join('\n')}`;
+          const section = `## AI 뉴스 감성 분석 (Claude/Groq, Google News 기반)\n${lines.join('\n')}`;
           combinedSources = combinedSources ? `${combinedSources}\n\n${section}` : section;
-          logger.info(`Groq 뉴스 감성 ${lines.length}건 스코어러에 주입`, { component: 'TRACK_A' });
+          logger.info(`뉴스 감성 ${lines.length}건 스코어러에 주입`, { component: 'TRACK_A' });
         }
       } else {
-        // Groq API 실패 또는 결과 없음 → GPT에 명시해 sentiment_score 과신 방지
+        // 뉴스 API 실패 또는 결과 없음 → 스코어러에 명시해 sentiment_score 과신 방지
         const reason = groqSentiments.status === 'rejected' ? 'API 오류' : 'API 키 미설정 또는 결과 없음';
-        const sentinel = `## Groq 뉴스 감성 분석 불가 (${reason})\n→ sentiment_score 산출 시 뉴스 데이터 제외, 수급·공시·차트 기반으로만 판단하세요.`;
+        const sentinel = `## 뉴스 감성 분석 불가 (${reason})\n→ sentiment_score 산출 시 뉴스 데이터 제외, 수급·공시·차트 기반으로만 판단하세요.`;
         combinedSources = combinedSources ? `${combinedSources}\n\n${sentinel}` : sentinel;
       }
 
@@ -607,7 +606,7 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
     // 5-0. 앙상블 모드 분기
     let scores: ScoringResult[] = [];
     let geminiResult: Awaited<ReturnType<typeof runGeminiAnalysis>> | null = null;
-    let scoringSource: 'ensemble' | 'gpt' | 'flash' | 'technical' = 'technical';
+    let scoringSource: 'ensemble' | 'flash' | 'technical' = 'technical';
 
     const { config: appConfig } = await import('../../config/index.js');
     const ensembleEnabled = strategy?.ai_scoring_mode === 'ensemble';
@@ -655,66 +654,18 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
       // 앙상블 실패 시 scores=[] → 아래 폴백 체인으로 자연스럽게 진입
     }
 
-    // Step 5-0: GPT 1차 스코어링 — gpt-4o-mini로 전체 감시목록 스코어링
-    // Gemini 강등 → GPT 실패 시 폴백으로만 사용 (CEO 지시 2026-06-17)
-    if (scores.length === 0 && !ensembleEnabled && process.env.OPENAI_API_KEY) {
-      try {
-        const { runGPTScoring } = await import('./gpt-scorer.js');
-        const gptPrimary = await runGPTScoring(mode, allStocks, chartData, regimeHint, strategy?.gpt_prompt ?? undefined, combinedSources || undefined);
-        if (gptPrimary.length > 0) {
-          scores = gptPrimary;
-          scoringSource = 'gpt'; // v10.11: 정확한 소스 표기 (기존 'gemini' 거짓 라벨)
-          logger.info(`✅ GPT 1차 스코어링 완료: ${scores.length}개 종목 (Gemini 강등됨)`, { component: 'TRACK_A' });
-
-          // GPT 85+ 종목 → Claude 2차 검증
-          const highScoreStocks = scores.filter((s) => s.composite_score >= 85);
-          if (highScoreStocks.length > 0 && process.env.ANTHROPIC_API_KEY) {
-            logger.info(`🎯 GPT 85+ ${highScoreStocks.length}개 → Claude 2차 검증`, { component: 'TRACK_A' });
-            const verifyStocks = highScoreStocks.map((s) => {
-              const wItem = allStocks.find((w) => w.stock_code === s.stock_code);
-              return { stock_code: s.stock_code, stock_name: wItem?.stock_name ?? s.stock_code };
-            });
-            try {
-              const { runClaudeScoring } = await import('./claude-scorer.js');
-              const claudeScores = await runClaudeScoring(mode, verifyStocks, chartData, combinedSources || undefined);
-              let verifiedCount = 0;
-              let downgradedCount = 0;
-              for (const gptScore of highScoreStocks) {
-                const claude = claudeScores.find((s) => s.stock_code === gptScore.stock_code);
-                if (!claude) continue;
-                const avgScore = Math.round((gptScore.composite_score + claude.composite_score) / 2);
-                const idx = scores.findIndex((s) => s.stock_code === gptScore.stock_code);
-                if (idx === -1) continue;
-                if (avgScore >= 80) {
-                  scores[idx].composite_score = avgScore;
-                  scores[idx].reasoning = `[GPT+Claude] GPT=${gptScore.composite_score} Claude=${claude.composite_score} → 평균${avgScore} | ${scores[idx].reasoning}`;
-                  verifiedCount++;
-                } else {
-                  scores[idx].composite_score = Math.min(78, avgScore);
-                  scores[idx].signal = 'BUY';
-                  scores[idx].confidence = Math.min(scores[idx].confidence, 0.65);
-                  scores[idx].reasoning = `[GPT+Claude 하향] GPT=${gptScore.composite_score} Claude=${claude.composite_score} → 평균${avgScore}<80 | ${scores[idx].reasoning}`;
-                  downgradedCount++;
-                }
-              }
-              logger.info(
-                `🎯 Claude 2차 검증 완료: ${verifiedCount}개 통과, ${downgradedCount}개 하향`,
-                { component: 'TRACK_A' },
-              );
-            } catch (claudeErr) {
-              logger.warn(`⚠️ Claude 2차 검증 실패 (GPT 점수 유지): ${claudeErr}`, { component: 'TRACK_A' });
-            }
-          }
-        }
-      } catch (gptErr) {
-        logger.warn(`⚠️ GPT 1차 스코어링 실패 → Gemini 폴백: ${gptErr}`, { component: 'TRACK_A' });
-      }
-    }
-
-    // 5-1. Gemini 스코어링 제거 (2026-06-17 CEO 지시: Gemini → 뉴스 전용 격리)
-    // GPT 실패/없을 때 → RSS 직행 (Gemini 무료 일일한도를 뉴스 분석에만 보존)
+    // Step 5-0: 앙상블 실패 시 Gemini Flash 단독 폴백 (2026-06-29: Gemini = 퀀트봇 메인)
+    // 무료 크레딧 우선 → 소진 시 유료 Vertex AI
     if (scores.length === 0 && !ensembleEnabled) {
-      logger.info('📰 GPT 없음/실패 → RSS 직행 (Gemini 뉴스 전용 격리, 스코어링 제외)', { component: 'TRACK_A' });
+      try {
+        scores = await runGeminiFallbackAnalysis(mode, allStocks, chartData, strategy);
+        if (scores.length > 0) {
+          scoringSource = 'flash';
+          logger.info(`✅ Gemini Flash 단독 스코어링: ${scores.length}개 종목`, { component: 'TRACK_A' });
+        }
+      } catch (geminiErr) {
+        logger.warn(`⚠️ Gemini Flash 스코어링 실패 → RSS 폴백: ${geminiErr}`, { component: 'TRACK_A' });
+      }
     }
 
     // Step 5-3b: RSS 뉴스+거래량 스코어링 (무료) — Gemini OFF 시 1순위 / 앙상블 실패 시 폴백
@@ -740,21 +691,8 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
       }
     }
 
-    // Step 5-3c: RSS도 실패 → Claude Haiku 폴백
-    if (scores.length === 0 && process.env.ANTHROPIC_API_KEY) {
-      try {
-        const { runClaudeScoring } = await import('./claude-scorer.js');
-        scores = await runClaudeScoring(mode, allStocks, chartData, combinedSources || undefined);
-        if (scores.length > 0) {
-          scoringSource = 'flash';
-          logger.info(`✅ Claude Haiku 폴백 성공: ${scores.length}개 스코어 (뉴스/매크로 포함)`, {
-            component: 'TRACK_A',
-          });
-        }
-      } catch (claudeErr) {
-        logger.warn(`⚠️ Claude 폴백 실패: ${claudeErr}`, { component: 'TRACK_A' });
-      }
-    }
+    // Claude Haiku 스코어링 폴백 제거 (2026-06-29): Claude → 뉴스 분석 전용
+    // RSS 실패 시 → 기술적 지표 폴백으로 직행
 
     // Step 5-4: 모두 실패 → 기술적 지표로 스코어 생성 (scoringSource 기본값 'technical')
     if (scores.length === 0) {
@@ -823,8 +761,8 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
     // 폴백(Flash / 기술적) 시 오늘 이미 스코어가 있는 종목은 덮어쓰지 않음
     // 07:30 정식 Gemini 점수 → 12:00/14:00 폴백이 덮어쓰는 버그 방지
     let existingTodayCodes = new Set<string>();
-    // v10.11: ensemble/gpt도 정식 AI 스코어 → 덮어쓰기 허용
-    const isAiPrimary = scoringSource === 'ensemble' || scoringSource === 'gpt';
+    // ensemble = 정식 AI 스코어 → 덮어쓰기 허용
+    const isAiPrimary = scoringSource === 'ensemble';
     if (!isAiPrimary && !isMemoryMode()) {
       try {
         const { rows } = await getPool().query(`SELECT stock_code FROM ai_scores WHERE score_date = $1`, [today]);

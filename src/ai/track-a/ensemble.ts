@@ -42,9 +42,9 @@ export interface EnsembleConfig {
 }
 
 export const DEFAULT_ENSEMBLE_CONFIG: EnsembleConfig = {
-  weights: { gemini: 0.25, gpt: 0.45, claude: 0.15, rss: 0.15 },
+  weights: { gemini: 0.85, gpt: 0, claude: 0, rss: 0.15 },
   strategy: 'weighted_avg',
-  minModels: 2,
+  minModels: 1,
 };
 
 interface EnsembleParams {
@@ -275,12 +275,12 @@ export async function runEnsembleScoring(params: EnsembleParams): Promise<Scorin
         else logger.info('앙상블: Gemini 분석 없음 → 스킵', { component: COMP });
         break;
       case 'gpt':
-        if (process.env.OPENAI_API_KEY) available.push(m);
-        else logger.info('앙상블: OPENAI_API_KEY 미설정 → GPT 스킵', { component: COMP });
+        if (process.env.OPENAI_API_KEY && (config.weights.gpt ?? 0) > 0) available.push(m);
+        else logger.info(`앙상블: GPT 스킵 (weight=${config.weights.gpt ?? 0})`, { component: COMP });
         break;
       case 'claude':
-        if (process.env.ANTHROPIC_API_KEY) available.push(m);
-        else logger.info('앙상블: ANTHROPIC_API_KEY 미설정 → Claude 스킵', { component: COMP });
+        if (process.env.ANTHROPIC_API_KEY && (config.weights.claude ?? 0) > 0) available.push(m);
+        else logger.info(`앙상블: Claude 스킵 (weight=${config.weights.claude ?? 0}, 뉴스 전용)`, { component: COMP });
         break;
       case 'rss':
         available.push(m); // 항상 가능 (무료)

@@ -11,7 +11,7 @@
  */
 
 import { logger } from '../../utils/logger.js';
-import { logTokenUsage, calcGroqCost } from '../../utils/ai-token-logger.js';
+import { logTokenUsage, calcGroqCost, calcClaudeApiCost } from '../../utils/ai-token-logger.js';
 
 export interface GroqNewsSentiment {
   stockCode: string;
@@ -22,7 +22,16 @@ export interface GroqNewsSentiment {
   newsSource: 'serpapi' | 'rss';
 }
 
-const CACHE_TTL_MS = 60 * 60 * 1000; // 1시간 캐시
+// 황금시간(장중): 15분 캐시, 장외: 1시간 캐시
+function getCacheTtlMs(): number {
+  const now = new Date();
+  const kstH = (now.getUTCHours() + 9) % 24;
+  const kstM = now.getUTCMinutes();
+  const t = kstH * 100 + kstM;
+  const inMarket = t >= 900 && t <= 1530;
+  return inMarket ? 15 * 60 * 1000 : 60 * 60 * 1000;
+}
+const CACHE_TTL_MS = 60 * 60 * 1000; // 기본값 (하위호환)
 const MAX_BATCH_STOCKS = 10; // 뉴스 배치 최대 종목 수 (rate limit 보호)
 const _cache = new Map<string, { data: GroqNewsSentiment; fetchedAt: number }>();
 
@@ -86,8 +95,65 @@ async function fetchHeadlines(companyName: string): Promise<{ headlines: string[
   return { headlines, source: 'rss' };
 }
 
-// ── Groq 배치 감성 분석 ───────────────────────────────────────────
-async function analyzeWithGroq(
+// ── Claude Haiku 배치 감성 분석 (2026-06-29: Groq → Claude 이동) ──
+async function analyzeWithClaude(
+  items: Array<{ stockCode: string; companyName: string; headlines: string[] }>,
+): Promise<Record<string, { score: number; summary: string }>> {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) return analyzeWithGroqFallback(items); // Claude 키 없으면 Groq 폴백
+
+  const { default: Anthropic } = await import('@anthropic-ai/sdk');
+  const client = new Anthropic({ apiKey });
+
+  const prompt = `다음 한국 주식 종목들의 최신 뉴스 헤드라인을 분석해 투자 감성 점수를 매겨주세요.
+
+${items
+  .map(
+    (it) => `종목: ${it.companyName} (${it.stockCode})
+헤드라인:
+${it.headlines.length > 0 ? it.headlines.map((h) => `- ${h}`).join('\n') : '- (헤드라인 없음)'}`,
+  )
+  .join('\n\n')}
+
+각 종목에 대해 JSON으로 응답하세요 (JSON만, 다른 텍스트 금지):
+{
+  "종목코드": { "score": -100~100, "summary": "한줄요약(20자이내)" }
+}
+score 기준: 100(극호재), 50(호재), 0(중립), -50(악재), -100(극악재)`;
+
+  const resp = await client.messages.create({
+    model: 'claude-haiku-4-5-20251001',
+    max_tokens: 1024,
+    messages: [{ role: 'user', content: prompt }],
+  });
+
+  // 토큰 사용량 기록
+  const inputTok = resp.usage?.input_tokens ?? 0;
+  const outputTok = resp.usage?.output_tokens ?? 0;
+  logTokenUsage({
+    provider: 'claude-api', model: 'claude-haiku-4.5',
+    inputTokens: inputTok, outputTokens: outputTok,
+    costUsd: calcClaudeApiCost(inputTok, outputTok),
+    label: 'news',
+  });
+
+  const text = resp.content[0]?.type === 'text' ? resp.content[0].text : '{}';
+  // JSON 블록 추출 (```json ... ``` 래핑 대응)
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) {
+    logger.warn('Claude 뉴스 감성 JSON 추출 실패', { component: 'CLAUDE_NEWS', rawPreview: text.slice(0, 200) });
+    return {};
+  }
+  try {
+    return JSON.parse(jsonMatch[0]) as Record<string, { score: number; summary: string }>;
+  } catch {
+    logger.warn('Claude 뉴스 감성 JSON 파싱 실패', { component: 'CLAUDE_NEWS', rawPreview: text.slice(0, 200) });
+    return {};
+  }
+}
+
+// ── Groq 폴백 (ANTHROPIC_API_KEY 없을 때) ────────────────────────
+async function analyzeWithGroqFallback(
   items: Array<{ stockCode: string; companyName: string; headlines: string[] }>,
 ): Promise<Record<string, { score: number; summary: string }>> {
   const apiKey = process.env.GROQ_API_KEY;
@@ -120,7 +186,6 @@ score 기준: 100(극호재), 50(호재), 0(중립), -50(악재), -100(극악재
     max_tokens: 1024,
   });
 
-  // 토큰 사용량 기록
   if (resp.usage) {
     const inputTok = resp.usage.prompt_tokens ?? 0;
     const outputTok = resp.usage.completion_tokens ?? 0;
@@ -166,24 +231,26 @@ function keywordSentiment(headlines: string[]): { score: number; summary: string
 export async function analyzeNewsWithGroq(
   stocks: Array<{ stockCode: string; companyName: string }>,
 ): Promise<GroqNewsSentiment[]> {
-  const useGroq = !!process.env.GROQ_API_KEY;
-  if (!useGroq) {
-    logger.info('GROQ_API_KEY 미설정 → RSS + 키워드 기반 감성 분석 폴백', { component: 'GROQ_NEWS' });
+  const useClaude = !!process.env.ANTHROPIC_API_KEY;
+  const useGroq = !useClaude && !!process.env.GROQ_API_KEY;
+  if (!useClaude && !useGroq) {
+    logger.info('ANTHROPIC/GROQ API_KEY 미설정 → RSS + 키워드 기반 감성 분석 폴백', { component: 'CLAUDE_NEWS' });
   }
 
   try {
     const now = Date.now();
+    const ttl = getCacheTtlMs();
 
     const cached = stocks
       .map((s) => {
         const hit = _cache.get(s.stockCode);
-        return hit && now - hit.fetchedAt < CACHE_TTL_MS ? hit.data : null;
+        return hit && now - hit.fetchedAt < ttl ? hit.data : null;
       })
       .filter(Boolean) as GroqNewsSentiment[];
 
     const stale = stocks.filter((s) => {
       const hit = _cache.get(s.stockCode);
-      return !hit || now - hit.fetchedAt >= CACHE_TTL_MS;
+      return !hit || now - hit.fetchedAt >= ttl;
     });
 
     if (stale.length === 0) return cached;
@@ -201,7 +268,7 @@ export async function analyzeNewsWithGroq(
       headlineResults[i].status === 'fulfilled' ? headlineResults[i].value.source : ('rss' as const),
     );
 
-    const groqResult = useGroq ? await analyzeWithGroq(items) : {};
+    const groqResult = useClaude ? await analyzeWithClaude(items) : useGroq ? await analyzeWithGroqFallback(items) : {};
 
     const fresh: GroqNewsSentiment[] = items.map((it, i) => {
       const gr = groqResult[it.stockCode] ?? keywordSentiment(it.headlines);
@@ -218,9 +285,10 @@ export async function analyzeNewsWithGroq(
     });
 
     const serpCount = fresh.filter((f) => f.newsSource === 'serpapi').length;
+    const engine = useClaude ? 'Claude' : useGroq ? 'Groq' : 'Keyword';
     logger.info(
-      `Groq 뉴스 분석 ${fresh.length}종목 완료 (SerpApi ${serpCount}건, RSS ${fresh.length - serpCount}건, 캐시 ${cached.length}건)`,
-      { component: 'GROQ_NEWS' },
+      `${engine} 뉴스 분석 ${fresh.length}종목 완료 (SerpApi ${serpCount}건, RSS ${fresh.length - serpCount}건, 캐시 ${cached.length}건)`,
+      { component: 'CLAUDE_NEWS' },
     );
 
     return [...cached, ...fresh];
