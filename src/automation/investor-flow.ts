@@ -219,28 +219,40 @@ export async function getInvestorFlow(stockCode: string, days: number = 5): Prom
 /**
  * 투자자 흐름 기반 AI 스코어 보정값 산출 (-20 ~ +20)
  *
- * - STRONG_BUY: +15
- * - BUY: +8
+ * v16.1: 연속일수 기반 그라데이션 + 외국인 단독 대량매수 보너스
+ * - STRONG_BUY: +18 (3일+ 동시 순매수)
+ * - BUY: +10 (2일+ 단독 순매수)
  * - NEUTRAL: 0
- * - SELL: -10
+ * - SELL: -12
  * - STRONG_SELL: -20
  */
 export async function getFlowScoreAdjustment(stockCode: string): Promise<number> {
   const flow = await getInvestorFlow(stockCode);
 
-  const adjustmentMap: Record<InvestorTrend, number> = {
-    STRONG_BUY: 15,
-    BUY: 8,
+  // v16.1: 기본 보정 + 연속일수 그라데이션
+  const baseMap: Record<InvestorTrend, number> = {
+    STRONG_BUY: 18,   // +3 (외국인+기관 동시 = 최고 신뢰)
+    BUY: 10,          // +2
     NEUTRAL: 0,
-    SELL: -10,
+    SELL: -12,        // -2 (매도 신호 강화)
     STRONG_SELL: -20,
   };
 
-  const adjustment = adjustmentMap[flow.trend];
+  let adjustment = baseMap[flow.trend];
 
-  logger.info(`📊 ${stockCode} 투자자흐름 스코어 보정: ${adjustment > 0 ? '+' : ''}${adjustment} (${flow.trend})`, {
-    component: COMPONENT,
-  });
+  // v16.1: 외국인 연속 순매수 5일+ → 추가 가산 (기관급 확신)
+  if (flow.foreignStreak >= 5) adjustment += 3;
+  else if (flow.foreignStreak >= 3 && flow.trend === 'BUY') adjustment += 2;
+
+  // v16.1: 외국인+기관 대량 순매수 (절대량 기준 보너스)
+  if (flow.foreignNet > 50000 && flow.institutionNet > 30000) adjustment += 2;
+
+  adjustment = Math.max(-20, Math.min(20, adjustment));
+
+  logger.info(
+    `📊 ${stockCode} 투자자흐름: ${adjustment > 0 ? '+' : ''}${adjustment} (${flow.trend}, 외인연속=${flow.foreignStreak}일, 외인순매수=${flow.foreignNet.toLocaleString()})`,
+    { component: COMPONENT },
+  );
 
   return adjustment;
 }

@@ -47,10 +47,10 @@ function isTrendLeader(candles: DailyCandle[], tradingValue: number): boolean {
   const isNew60High = recentHighs.some((h) => h >= high60 * 0.99);
   if (!isNew60High) return false;
 
-  // 거래량 폭발: 최근 1일 거래량 >= 20일 평균 × 3.0
+  // v16.1: 거래량 폭발 기준 완화 (2.5→2.0, 더 많은 주도주 포착)
   const avgVol20 = volumes.slice(-21, -1).reduce((s, v) => s + v, 0) / 20;
   const todayVol = volumes[volumes.length - 1];
-  const isVolExplosion = avgVol20 > 0 && todayVol / avgVol20 >= 2.5;
+  const isVolExplosion = avgVol20 > 0 && todayVol / avgVol20 >= 2.0;
 
   // 20MA 상승추세
   const sma20Arr = sma(closes, 20);

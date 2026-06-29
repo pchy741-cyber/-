@@ -25,14 +25,14 @@ import { getClusterFollowers } from './sector-themes.js';
 
 const COMPONENT = 'SURGE_DETECTOR';
 
-// 일반 급등: 등락률 +5%+ && 거래대금 500억원+
-const SURGE_CHANGE_PCT = 5;
-const SURGE_TRADING_VALUE = TRADING_VALUE.SURGE_MIN;
+// v16.1: 일반 급등: 등락률 +4%+ && 거래대금 300억원+ (포착 범위 확대)
+const SURGE_CHANGE_PCT = 4;
+const SURGE_TRADING_VALUE = 30_000_000_000; // 300억 (기존 500억→완화)
 
-// 초대형주 (시총 50조+): 등락률 +2%+ && 거래대금 3000억+
-const MEGA_CAP_CHANGE_PCT = 2;
-const MEGA_CAP_MARKET_CAP_EOK = 500_000; // 시총 50조 = 500,000억
-const MEGA_CAP_TRADING_VALUE = TRADING_VALUE.MEGA_CAP_SURGE_MIN;
+// v16.1: 초대형주 (시총 30조+): 등락률 +1.5%+ && 거래대금 2000억+
+const MEGA_CAP_CHANGE_PCT = 1.5;
+const MEGA_CAP_MARKET_CAP_EOK = 300_000; // 시총 30조 = 300,000억 (기존 50조→완화)
+const MEGA_CAP_TRADING_VALUE = 200_000_000_000; // 2000억 (기존 3000억→완화)
 
 // 1회 최대 편입
 const MAX_ADD_PER_RUN = 10;
@@ -43,11 +43,11 @@ const CLUSTER_MAX_CHANGE = 4.5; // 이미 급등한 종목은 제외
 const CLUSTER_MIN_TRADING_VALUE = 10_000_000_000; // 100억 이상 (유동성 보장)
 const MAX_CLUSTER_ADD_PER_SURGE = 3; // 급등 1종목당 클러스터 최대 3개
 
-// 뉴스 추천 편입: 긍정 뉴스 + 양의 등락률 → 낮은 거래대금 기준
-const NEWS_MIN_SENTIMENT = 5;       // 뉴스 감성 +5 이상 (긍정 키워드 ≥2개)
-const NEWS_MIN_CHANGE_PCT = 1.0;    // 최소 +1% 상승
-const NEWS_MIN_TRADING_VALUE = 10_000_000_000; // 거래대금 100억+ (유동성 보장)
-const NEWS_MAX_ADD_PER_RUN = 5;     // 뉴스 기반 1회 최대 5개
+// v16.1: 뉴스 추천 편입 (완화: 더 빠른 뉴스 반응)
+const NEWS_MIN_SENTIMENT = 3;       // v16.1: 5→3 (약한 긍정도 인정)
+const NEWS_MIN_CHANGE_PCT = 0.5;    // v16.1: 1.0→0.5 (초기 반응 포착)
+const NEWS_MIN_TRADING_VALUE = 5_000_000_000; // v16.1: 100→50억 (중소형주도 포착)
+const NEWS_MAX_ADD_PER_RUN = 7;     // v16.1: 5→7 (더 많은 뉴스 종목)
 
 // 가격 범위
 const MIN_PRICE = 1_000;

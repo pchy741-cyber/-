@@ -25,26 +25,27 @@ function extractSignals(signals: ScoringInput['signals']): SignalData {
   };
 }
 
-/** 시그널 보너스 계산 (기술점수에 가산) — v6: 수급 가중치 대폭 강화 */
+/** 시그널 보너스 계산 (기술점수에 가산) — v16.1: 체결강도+수급 가중치 강화 */
 function calcSignalBonus(s: SignalData): number {
   // v9-fix: 시그널 데이터 미수신(전부 0) → 페널티 없이 0 반환
-  // KIS API 장애/미지원 종목일 때 일괄 -5점 방지
   const hasAnyData =
     s.intensity > 0 || s.shortRatio > 0 || s.bidAskRatio !== 1 || s.foreignNetEst !== 0 || s.instNetEst !== 0;
   if (!hasAnyData) return 0;
   return (
-    // 체결강도: 매수>매도 비율 (120↑ = 강한 매수세)
-    (s.intensity >= 130 ? 10 : s.intensity >= 120 ? 7 : s.intensity >= 105 ? 3 : s.intensity < 85 ? -5 : 0) +
-    // 외국인+기관 동반 매수 = 기관 컨센서스 (가장 강력한 선행지표)
-    (s.foreignNetEst > 0 && s.instNetEst > 0 ? 10 : s.foreignNetEst < 0 && s.instNetEst < 0 ? -12 : 0) +
+    // 체결강도: 매수>매도 비율 (v16.1: 140+ 추가, 상방 확대)
+    (s.intensity >= 140 ? 15 : s.intensity >= 130 ? 12 : s.intensity >= 120 ? 8 : s.intensity >= 105 ? 3 : s.intensity < 80 ? -7 : s.intensity < 90 ? -3 : 0) +
+    // 외국인+기관 동반 매수 = 기관 컨센서스 (v16.1: +12, 가장 강력한 선행지표)
+    (s.foreignNetEst > 0 && s.instNetEst > 0 ? 12 : s.foreignNetEst < 0 && s.instNetEst < 0 ? -12 : 0) +
+    // 외국인 단독 대량 매수 추가 (v16.1: 10M+ = +4)
+    (s.foreignNetEst >= 10 ? 4 : 0) +
     // 외국계 증권사 순매수 = 외국인 대형 유입 신호
-    (s.foreignBrokerBuy ? 5 : 0) +
-    // 공매도 비율: 높으면 하방 압력 또는 숏스퀴즈 (8%↑ = 주의)
-    (s.shortRatio > 10 ? -8 : s.shortRatio > 5 ? -4 : 0) +
-    // 대차잔고: 공매도 대기 물량 (15%↑ = 위험, 10%↑ = 주의)
+    (s.foreignBrokerBuy ? 6 : 0) +
+    // 공매도 비율: 높으면 하방 압력 (v16.1: 10%→12% 완화, 숏스퀴즈 기회 보존)
+    (s.shortRatio > 12 ? -8 : s.shortRatio > 7 ? -4 : 0) +
+    // 대차잔고: 공매도 대기 물량
     (s.lendingRatio > 15 ? -6 : s.lendingRatio > 10 ? -3 : 0) +
-    // 호가 비대칭: 매수벽(1.8↑) = 강한 지지, 매도벽(0.5↓) = 급락 위험
-    (s.bidAskRatio >= 1.8 ? 6 : s.bidAskRatio >= 1.3 ? 2 : s.bidAskRatio <= 0.5 ? -8 : s.bidAskRatio <= 0.7 ? -3 : 0)
+    // 호가 비대칭: 매수벽 = 강한 지지 (v16.1: 2.0+ 추가 구간)
+    (s.bidAskRatio >= 2.0 ? 8 : s.bidAskRatio >= 1.5 ? 5 : s.bidAskRatio >= 1.2 ? 2 : s.bidAskRatio <= 0.5 ? -8 : s.bidAskRatio <= 0.7 ? -3 : 0)
   );
 }
 
@@ -145,10 +146,21 @@ export function computeScoring(input: ScoringInput): TechScoring {
     logger.info(`  💥 ${code}: 볼린저 스퀴즈 상방돌파 → +${bbSqueezeBonus}점`, { component: 'TRACK_B' });
   }
 
-  // ── Volume Climax Guard: 거래량 3x+ = 반전 가능성 높음 (학술 검증) ──
-  const volumeClimaxPenalty = adjustedVolRatio >= 4.0 ? -12 : adjustedVolRatio >= 3.0 ? -8 : 0;
-  if (volumeClimaxPenalty < 0) {
-    logger.info(`  ⚡ ${code}: 거래량 폭증 ${adjustedVolRatio.toFixed(1)}x (반전 위험) → ${volumeClimaxPenalty}점`, {
+  // ── v16.1: 거래량 동적 보너스 + Volume Climax Guard ──
+  // 적정 거래량(1.5~2.5x) = 건강한 매수세 → 보너스, 폭증(4x+) = 반전 위험
+  const volumeBonus =
+    adjustedVolRatio >= 5.0 ? -15 : // 극단 폭증: 반전 위험 최고
+    adjustedVolRatio >= 3.5 ? -8 :  // 과열 구간
+    adjustedVolRatio >= 2.5 ? 0 :   // 중립 (과열 vs 강세 경계)
+    adjustedVolRatio >= 2.0 ? 6 :   // 강한 매수세 동반
+    adjustedVolRatio >= 1.5 ? 4 :   // 건강한 거래량 증가
+    adjustedVolRatio >= 1.2 ? 2 :   // 약한 증가
+    adjustedVolRatio < 0.5 ? -5 :   // 거래량 고갈 (유동성 리스크)
+    0;
+  // 하위 호환: volumeClimaxPenalty 변수명 유지
+  const volumeClimaxPenalty = volumeBonus;
+  if (volumeBonus !== 0) {
+    logger.info(`  📊 ${code}: 거래량 ${adjustedVolRatio.toFixed(1)}x → ${volumeBonus > 0 ? '+' : ''}${volumeBonus}점`, {
       component: 'TRACK_B',
     });
   }

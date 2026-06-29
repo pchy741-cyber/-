@@ -205,21 +205,22 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
     // 이미 이 체인에 대해 결정이 내려졌으면 스킵
     if (processedSellChains.has(chain.id)) continue;
 
-    // ── 러너 모멘텀 감지 (모든 매도 트리거보다 선행) ──
-    // 거래량 2x+ / ADX 25+ / RSI 45~75 / 정배열 중 3개 이상 (수익 7%+ 시 2개)
+    // ── v16.1 러너 모멘텀 감지 (강화: 거래량+ADX+RSI+정배열+MACD 복합) ──
     const _rTech = getCachedTech(chain.stock_code);
     const isRunner = (() => {
       if (!_rTech) return false;
       let s = 0;
-      if (_rTech.volumeRatio >= 2.0) s++;
+      if (_rTech.volumeRatio >= 1.5) s++;     // v16.1: 2.0→1.5 (적정 거래량도 인정)
+      if (_rTech.volumeRatio >= 2.5) s++;     // v16.1: 폭발적 거래량 추가 가산
       if (_rTech.adx14 >= 25) s++;
-      if (_rTech.rsi14 >= 45 && _rTech.rsi14 <= 75) s++;
+      if (_rTech.rsi14 >= 45 && _rTech.rsi14 <= 78) s++;  // v16.1: 75→78 (과매수 진입 초기 허용)
       if (price.currentPrice > _rTech.sma5 && _rTech.sma5 > _rTech.sma20) s++;
-      return s >= 2; // v12.1: 3→2 (기존: 80% 모멘텀 미감지, 수익 기회 상실)
+      if (_rTech.macdCrossover === 'BULLISH') s++;  // v16.1: MACD 골든크로스 추가
+      return pnlPct >= 5.0 ? s >= 1 : s >= 2; // v16.1: 수익 5%+ 시 조건 1개만으로도 러너
     })();
-    if (isRunner && pnlPct >= 2.0) {
+    if (isRunner && pnlPct >= 1.5) {  // v16.1: 2.0→1.5 (더 빠른 러너 감지)
       logger.info(
-        `🚀 러너 감지: ${chain.stock_code} +${pnlPct.toFixed(1)}% vol=${_rTech!.volumeRatio.toFixed(1)}x ADX=${_rTech!.adx14.toFixed(0)} RSI=${_rTech!.rsi14.toFixed(0)} → 익절 지연`,
+        `🚀 러너 감지: ${chain.stock_code} +${pnlPct.toFixed(1)}% vol=${_rTech!.volumeRatio.toFixed(1)}x ADX=${_rTech!.adx14.toFixed(0)} RSI=${_rTech!.rsi14.toFixed(0)} MACD=${_rTech!.macdCrossover} → 익절 지연`,
         { component: 'TRACK_B' },
       );
     }

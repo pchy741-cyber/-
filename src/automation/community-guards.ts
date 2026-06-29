@@ -205,10 +205,12 @@ export interface CommunityScoreInput {
 }
 
 /**
- * 커뮤니티 점수 조정 계산 (비대칭: 최대 +5, 최소 -20)
+ * 커뮤니티 점수 조정 계산 (v16.1: 비대칭 확대 — 최대 +8, 최소 -20)
  *
- * 커뮤니티가 아무리 좋아도 최대 +5점만 가점.
- * 위험하면 최대 -20점까지 감점.
+ * v16.1 변경:
+ * - 가점 상한 +5→+8 (긍정+교차검증+눌림목+적정언급)
+ * - 긍정 심리 60%+에서 55%+로 완화 (약한 긍정도 인정)
+ * - 중간 가점 구간 추가 (+5: 긍정+교차검증)
  */
 export function computeCommunityAdj(input: CommunityScoreInput): number {
   const { mentionZ, posRatio, negRatio, pumpRisk, dryPullbackValid, crossValidated } = input;
@@ -230,14 +232,19 @@ export function computeCommunityAdj(input: CommunityScoreInput): number {
   // 언급 급증 (과열 경계)
   if (mentionZ > 2.5) return -5;
 
-  // 긍정 + 교차검증 + 마름 눌림목 = 최고 가점
-  if (posRatio > 0.6 && crossValidated && dryPullbackValid && mentionZ >= 1.0 && mentionZ < 2.5) {
+  // v16.1: 긍정 + 교차검증 + 마름 눌림목 = 최고 가점 (+8)
+  if (posRatio > 0.55 && crossValidated && dryPullbackValid && mentionZ >= 1.0 && mentionZ < 2.5) {
+    return 8;
+  }
+
+  // v16.1: 긍정 + 교차검증 = 중간 가점 (+5)
+  if (posRatio > 0.55 && crossValidated && mentionZ >= 0.5 && mentionZ < 2.5) {
     return 5;
   }
 
-  // 긍정 + 교차검증 (눌림목 없이) = 약한 가점
-  if (posRatio > 0.6 && crossValidated && mentionZ >= 1.0 && mentionZ < 2.5) {
-    return 3;
+  // v16.1: 긍정만 (교차검증 없이) = 약한 가점 (+2)
+  if (posRatio > 0.6 && mentionZ >= 0.5 && mentionZ < 2.0) {
+    return 2;
   }
 
   // 데이터 부족 / 중립
