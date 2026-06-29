@@ -335,6 +335,17 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
+  // 12:00 — v16: 장중 QA Watchdog (수익성+딜레이 실시간 감시)
+  cron.schedule(
+    '0 12 * * 1-5',
+    () => {
+      import('../automation/qa-watchdog.js')
+        .then((m) => m.runQAWatchdog())
+        .catch((e) => logger.error(`QA Watchdog(장중): ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
   // 16:00 — 국내장 종료 → 해외장 테마 자동 전환
   cron.schedule(
     '0 16 * * 1-5',

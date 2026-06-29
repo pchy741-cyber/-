@@ -680,11 +680,12 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         const driftB = ctx.earningsDrift?.find((d) => d.code === b.code && d.direction === 'BULL');
         const driftScoreA = driftA ? Math.min(20, driftA.strength * 25) : 0;
         const driftScoreB = driftB ? Math.min(20, driftB.strength * 25) : 0;
-        // 섹터 모멘텀 보너스: 섹터 평균 등락 +2%↑ → +12점, +1%↑ → +7점, -1%↓ → -5점, -2%↓ → -10점
+        // v16: 섹터 모멘텀 보너스 강화 — 상승섹터 집중 매수 (CEO: 상승장 운영)
+        // +3%↑→+25점, +2%↑→+18점, +1%↑→+10점, -1%↓→-8점, -2%↓→-15점
         const sectorMomA = sectorMomentumMap?.get(a.sector ?? '') ?? 0;
         const sectorMomB = sectorMomentumMap?.get(b.sector ?? '') ?? 0;
-        const sectorMomScoreA = sectorMomA >= 2 ? 12 : sectorMomA >= 1 ? 7 : sectorMomA <= -2 ? -10 : sectorMomA <= -1 ? -5 : 0;
-        const sectorMomScoreB = sectorMomB >= 2 ? 12 : sectorMomB >= 1 ? 7 : sectorMomB <= -2 ? -10 : sectorMomB <= -1 ? -5 : 0;
+        const sectorMomScoreA = sectorMomA >= 3 ? 25 : sectorMomA >= 2 ? 18 : sectorMomA >= 1 ? 10 : sectorMomA <= -2 ? -15 : sectorMomA <= -1 ? -8 : 0;
+        const sectorMomScoreB = sectorMomB >= 3 ? 25 : sectorMomB >= 2 ? 18 : sectorMomB >= 1 ? 10 : sectorMomB <= -2 ? -15 : sectorMomB <= -1 ? -8 : 0;
         // SEC fundamentalScore: 재무건전성 우량 → 매수 우선, 취약 → 차감
         const secScoreA = getCachedSecFundamentalScore(a.code);
         const secScoreB = getCachedSecFundamentalScore(b.code);

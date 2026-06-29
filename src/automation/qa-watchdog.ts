@@ -81,7 +81,7 @@ export async function runQAWatchdog(): Promise<void> {
   const issues: QAIssue[] = [];
 
   try {
-    // 병렬 전수조사
+    // 병렬 전수조사 (v16: 수익성 분석 + 매매 딜레이 추가)
     const results = await Promise.allSettled([
       checkBalanceIntegrity(issues),
       checkCrossContamination(issues),
@@ -89,12 +89,14 @@ export async function runQAWatchdog(): Promise<void> {
       checkAICostAnomaly(issues),
       checkSystemHealth(issues),
       checkOrderChainConsistency(issues),
+      checkProfitability(issues),
+      checkTradeLatency(issues),
     ]);
 
     // 실패한 검사 자체도 이슈로 기록
     results.forEach((r, i) => {
       if (r.status === 'rejected') {
-        const names = ['잔고정합', '크로스오염', '매매로직', 'AI비용', '시스템헬스', '주문체인'];
+        const names = ['잔고정합', '크로스오염', '매매로직', 'AI비용', '시스템헬스', '주문체인', '수익성', '매매딜레이'];
         issues.push({
           severity: 'WARNING',
           category: '시스템',
@@ -467,6 +469,120 @@ async function checkOrderChainConsistency(issues: QAIssue[]): Promise<void> {
       category: '정합성',
       title: `[${mode}] 투자금 불일치: ${r.stock_code}`,
       detail: `체인: ${Number(r.total_invested).toLocaleString()}원 vs 주문합산: ${Number(r.order_invested).toLocaleString()}원`,
+    });
+  }
+}
+
+/** 7. v16: 수익성 분석 — 손실 패턴 감지 */
+async function checkProfitability(issues: QAIssue[]): Promise<void> {
+  const pool = getPool();
+
+  // 최근 7일 승률 (paper + live 각각)
+  for (const isPaper of [false, true]) {
+    const mode = isPaper ? 'PAPER' : 'LIVE';
+    const { rows } = await pool.query(`
+      SELECT
+        COUNT(*) as total,
+        COUNT(*) FILTER (WHERE pnl_pct > 0) as wins,
+        COALESCE(AVG(pnl_pct), 0) as avg_pnl,
+        COALESCE(SUM(realized_pnl), 0) as total_pnl
+      FROM transaction_chains
+      WHERE is_paper = $1 AND status = 'CLOSED'
+        AND closed_at >= NOW() - INTERVAL '7 days'
+    `, [isPaper]);
+
+    const total = Number(rows[0]?.total ?? 0);
+    if (total < 3) continue;
+
+    const wins = Number(rows[0]?.wins ?? 0);
+    const wr = wins / total;
+    const avgPnl = Number(rows[0]?.avg_pnl ?? 0);
+    const totalPnl = Number(rows[0]?.total_pnl ?? 0);
+
+    if (wr < 0.25 && total >= 5) {
+      issues.push({
+        severity: 'CRITICAL',
+        category: '매매로직',
+        title: `[${mode}] 7일 승률 ${(wr * 100).toFixed(0)}% (${wins}/${total}건)`,
+        detail: `평균 PnL ${avgPnl.toFixed(2)}%, 누적 ${totalPnl.toLocaleString()}원 — 전략 재검토 필요`,
+      });
+    } else if (wr < 0.40 && total >= 5) {
+      issues.push({
+        severity: 'WARNING',
+        category: '매매로직',
+        title: `[${mode}] 7일 승률 ${(wr * 100).toFixed(0)}% (${wins}/${total}건)`,
+        detail: `평균 PnL ${avgPnl.toFixed(2)}%, 누적 ${totalPnl.toLocaleString()}원`,
+      });
+    }
+
+    // 연패 감지 (5연패 이상)
+    const { rows: recentTrades } = await pool.query(`
+      SELECT pnl_pct FROM transaction_chains
+      WHERE is_paper = $1 AND status = 'CLOSED'
+      ORDER BY closed_at DESC LIMIT 10
+    `, [isPaper]);
+
+    let streak = 0;
+    for (const t of recentTrades) {
+      if (Number(t.pnl_pct) < 0) streak++;
+      else break;
+    }
+    if (streak >= 5) {
+      issues.push({
+        severity: 'WARNING',
+        category: '매매로직',
+        title: `[${mode}] ${streak}연패 진행 중`,
+        detail: `최근 ${streak}건 연속 손실 — 쿨다운 또는 전략 변경 고려`,
+      });
+    }
+  }
+}
+
+/** 8. v16: 매매 딜레이 체크 — 주문 지연 감지 */
+async function checkTradeLatency(issues: QAIssue[]): Promise<void> {
+  const pool = getPool();
+
+  // 최근 4시간 주문의 생성→체결 시간 분석
+  const { rows } = await pool.query(`
+    SELECT stock_code, side, is_paper,
+           EXTRACT(EPOCH FROM (filled_at - created_at)) as latency_sec,
+           created_at, filled_at
+    FROM orders
+    WHERE status = 'FILLED' AND filled_at IS NOT NULL
+      AND created_at >= NOW() - INTERVAL '4 hours'
+    ORDER BY latency_sec DESC
+    LIMIT 5
+  `);
+
+  for (const r of rows) {
+    const latency = Number(r.latency_sec ?? 0);
+    const mode = r.is_paper ? 'PAPER' : 'LIVE';
+    if (latency > 300) { // 5분 초과
+      issues.push({
+        severity: 'WARNING',
+        category: '매매로직',
+        title: `[${mode}] 체결 지연 ${Math.round(latency)}초: ${r.stock_code} ${r.side}`,
+        detail: `주문: ${r.created_at}, 체결: ${r.filled_at}`,
+      });
+    }
+  }
+
+  // 미체결 방치 주문 (10분+)
+  const { rows: unfilled } = await pool.query(`
+    SELECT stock_code, side, is_paper, created_at,
+           EXTRACT(EPOCH FROM (NOW() - created_at)) as age_sec
+    FROM orders
+    WHERE status = 'PENDING' AND created_at < NOW() - INTERVAL '10 minutes'
+  `);
+
+  for (const r of unfilled) {
+    const mode = r.is_paper ? 'PAPER' : 'LIVE';
+    const ageMin = Math.round(Number(r.age_sec) / 60);
+    issues.push({
+      severity: ageMin > 30 ? 'CRITICAL' : 'WARNING',
+      category: '매매로직',
+      title: `[${mode}] 미체결 ${ageMin}분: ${r.stock_code} ${r.side}`,
+      detail: `주문시각: ${r.created_at} — 자동취소 또는 수동 확인 필요`,
     });
   }
 }

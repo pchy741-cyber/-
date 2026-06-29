@@ -599,7 +599,7 @@ export const ALLOCATION_GOLDEN = {
   SWING_PCT: 0.50, // 중타 유지
   CORE_PCT: 0.30, // 장타 우량주 유지
   TACTICAL_PCT: 0.10, // v15: 0.05→0.10 (단타 비중 소폭 확대)
-  CASH_PCT: 0.10, // v15: 0.15→0.10 (해외는 적당한 현금 유보)
+  CASH_PCT: 0.03, // v16: 0.10→0.03 (해외 100% 매수 — 최소 마진만 유보)
 } as const;
 
 export type StrategyBucket = 'SWING' | 'CORE' | 'TACTICAL';
@@ -663,7 +663,7 @@ export function getOverseasDynamic(portfolioUsd: number, isPaper = false, posCap
     maxPositions: maxPos,
     positionSizeUsd: Math.round(Math.min(p * posCapPct, positionCap)),
     positionPct: posPct,
-    parkingCashBuffer: Math.round(p * 0.05), // 포트폴리오 5%
+    parkingCashBuffer: Math.round(p * 0.02), // v16: 5%→2% (해외 100% 매수 허용)
     maxHoldDays: holdDays,
     concentrationCashBuffer: Math.round(p * 0.04), // 포트폴리오 4%
     concentrationMinInvest: Math.round(p * 0.01), // 포트폴리오 1%

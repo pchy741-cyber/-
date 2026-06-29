@@ -172,6 +172,33 @@ manualTriggersRoutes.post('/loop/stop', async (c) => {
   return c.json(result);
 });
 
+// ── v16: 실전/연습 모드 별도 자동매매 ON/OFF ──
+// 메모리 상태 (배포 시 리셋 → 기본 ON)
+const _autoTradeEnabled = { paper: true, live: true };
+
+/** 자동매매 활성화 여부 조회 (Track B, Loop, Overseas에서 참조) */
+export function isAutoTradeEnabled(isPaper: boolean): boolean {
+  return isPaper ? _autoTradeEnabled.paper : _autoTradeEnabled.live;
+}
+
+manualTriggersRoutes.get('/auto-trade/status', (c) => {
+  return c.json({ paper: _autoTradeEnabled.paper, live: _autoTradeEnabled.live });
+});
+
+manualTriggersRoutes.post('/auto-trade/toggle', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const mode = body.mode as 'paper' | 'live' | undefined;
+  const enabled = body.enabled as boolean | undefined;
+
+  if (!mode || !['paper', 'live'].includes(mode) || typeof enabled !== 'boolean') {
+    return c.json({ error: 'mode (paper|live) + enabled (boolean) 필수' }, 400);
+  }
+
+  _autoTradeEnabled[mode] = enabled;
+  logger.info(`🔧 자동매매 ${mode} → ${enabled ? 'ON' : 'OFF'}`, { component: 'SETTINGS' });
+  return c.json({ ok: true, mode, enabled, status: _autoTradeEnabled });
+});
+
 // ── 체인 TP/SL 점수 기반 복원 (1회성 보정) ──
 manualTriggersRoutes.post('/fix-chain-tpsl', async (c) => {
   try {

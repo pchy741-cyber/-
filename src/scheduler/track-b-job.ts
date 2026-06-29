@@ -48,6 +48,15 @@ export async function runTrackBJob(): Promise<void> {
     isRunningMap.set(modeKey, false);
   }
 
+  // v16: 모드별 자동매매 ON/OFF 체크
+  try {
+    const { isAutoTradeEnabled } = await import('../api/routes/settings/manual-triggers.js');
+    if (!isAutoTradeEnabled(modeKey === 'paper')) {
+      logger.debug(`🔇 자동매매 OFF [${modeKey}] — Track B 스킵`, { component: 'SCHEDULER' });
+      return;
+    }
+  } catch { /* 모듈 로딩 실패 시 기본 ON */ }
+
   // 장 열림 확인
   if (!isMarketOpen()) {
     logger.debug('📉 장 닫힘 — Track B 스킵', { component: 'SCHEDULER' });

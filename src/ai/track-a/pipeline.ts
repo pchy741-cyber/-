@@ -714,8 +714,8 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
           tech = analyzeTechnicals(candles);
           if (tech) {
             technicalScore = Math.max(0, Math.min(100, 50 + Math.round(tech.score * 0.5)));
-            // 폴백 composite는 75 캡 — AI 없는 점수가 buyThreshold 83을 통과하지 못하게
-            compositeScore = Math.min(75, technicalScore);
+            // v16: 폴백 캡 85 → 기술적 신호 강하면 AI 없이도 매수 가능 (buyThreshold 75)
+            compositeScore = Math.min(85, technicalScore);
           }
         }
 
@@ -724,12 +724,12 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
         let confidence = 0.5;
         if (tech) {
           if (tech.overallSignal === 'STRONG_BUY' || (tech.score >= 25 && tech.goldenCross)) {
-            // 폴백 신뢰도 0.72→0.58: AI 검증 없는 기술 신호는 과신하지 않는다
+            // v16: 폴백 신뢰도 상향 (기술적 신호 활용도 강화)
             signal = 'STRONG_BUY';
-            confidence = 0.58;
+            confidence = 0.72;
           } else if (tech.overallSignal === 'BUY' || tech.score >= 15) {
             signal = 'BUY';
-            confidence = 0.62;
+            confidence = 0.68;
           } else if (tech.overallSignal === 'STRONG_SELL' || (tech.score <= -20 && tech.deathCross)) {
             signal = 'STRONG_SELL';
             confidence = 0.68;
@@ -802,14 +802,14 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
     );
 
     // 6-1. 발굴 종목 중 고점수 자동 active 등록
-    // AI 정상: score≥70 + confidence≥0.60 / AI 실패(기술 폴백): score≥75만으로 활성화
+    // v16: AI 정상: score≥65 + confidence≥0.55 / AI 실패(기술 폴백): score≥70 (완화)
     if (discoveryList.length > 0 && !isMemoryMode()) {
       const discoverySet = new Set(discoveryList.map((d) => normalizeStockCode(d.stock_code)));
       const aiWorking = scores.some((s) => (s.confidence ?? 0) >= 0.3);
       const topDiscovery = scores.filter((s) => {
         if (!discoverySet.has(s.stock_code)) return false;
-        if (aiWorking) return s.composite_score >= 70 && (s.confidence ?? 0) >= 0.6;
-        return s.composite_score >= 75; // AI 실패 시 기술 점수만으로 판단
+        if (aiWorking) return s.composite_score >= 65 && (s.confidence ?? 0) >= 0.55;
+        return s.composite_score >= 70; // v16: AI 실패 시 기술 점수만으로 판단 (75→70)
       });
       if (topDiscovery.length > 0) {
         await Promise.allSettled(
