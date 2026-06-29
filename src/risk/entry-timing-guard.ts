@@ -49,6 +49,8 @@ export interface EntryTimingCheck {
   allowed: boolean;
   scoreBonus: number;
   reason: string;
+  /** v16: 소프트 사이즈 조절 (1.0=정상, 0.3=30% 축소 등) */
+  sizeMultiplier?: number;
   details: {
     phase: string;
     rsi: number | null;
@@ -99,14 +101,15 @@ export function checkEntryTiming(params: {
   const kstH = (now.getUTCHours() + 9) % 24;
   const kstM = now.getUTCMinutes();
 
-  // ─ 규칙 A: 저녁 18-24 KST 하드 블락 (모든 전략, 어떠한 우회도 불가) ─
+  // ─ v16: 규칙 A: 저녁 18-24 KST → 소프트 (30% 축소, 완전 차단 제거) ─
   if (isEveningHardBlock(kstH, kstM)) {
     return {
-      allowed: false,
-      scoreBonus: 999,
-      reason: `🚨 저녁 하드블락 (${String(kstH).padStart(2, '0')}:${String(kstM).padStart(2, '0')} KST): 18-24시 = 휩소+갭하락 -14% 손실 구간`,
+      allowed: true,
+      scoreBonus: 15, // 높은 점수 요구 (사실상 고확신만 통과)
+      sizeMultiplier: 0.3,
+      reason: `🟡 저녁 소프트 (${String(kstH).padStart(2, '0')}:${String(kstM).padStart(2, '0')} KST): 18-24시 → 30% 축소`,
       details: {
-        phase: 'EVENING_BLOCK',
+        phase: 'EVENING_SOFT',
         rsi: tech.rsi ?? null,
         volumeRatio: tech.volumeRatio ?? null,
         aboveMa20: tech.aboveMa20 ?? null,
@@ -116,14 +119,15 @@ export function checkEntryTiming(params: {
     };
   }
 
-  // ─ 규칙 B: 단기 전략 차단 (SWING/SNIPER만 허용) ─
+  // ─ v16: 규칙 B: 단기 전략 → 소프트 (50% 축소) ─
   if (!isStrategyAllowed(params.strategyMode)) {
     return {
-      allowed: false,
-      scoreBonus: 0,
-      reason: `🚫 단기 전략 차단 [${params.strategyMode}]: 23% 승률 입증 — SWING(75%)만 허용`,
+      allowed: true,
+      scoreBonus: 10,
+      sizeMultiplier: 0.5,
+      reason: `🟡 전략 [${params.strategyMode}] → 50% 축소 (SWING 75% vs 단기 23% 승률)`,
       details: {
-        phase: 'STRATEGY_BLOCK',
+        phase: 'STRATEGY_SOFT',
         rsi: tech.rsi ?? null,
         volumeRatio: tech.volumeRatio ?? null,
         aboveMa20: tech.aboveMa20 ?? null,
@@ -196,11 +200,13 @@ export function checkEntryTiming(params: {
   if (tech.aboveMa20 === false) failures.push(`MA20 아래 (하락추세)`);
   else if (tech.aboveMa20 === true) reasons.push(`MA20 위 ✓`);
 
+  // v16: 기술지표 다중 위험 → 소프트 (50% 축소)
   if (failures.length >= MAX_TECH_FAILURES) {
     return {
-      allowed: false,
-      scoreBonus,
-      reason: `🚫 기술지표 다중 위험: ${failures.join(', ')}`,
+      allowed: true,
+      scoreBonus: scoreBonus + 5,
+      sizeMultiplier: 0.5,
+      reason: `🟡 기술지표 위험(${failures.length}개) → 50% 축소: ${failures.join(', ')}`,
       details: {
         phase,
         rsi: tech.rsi ?? null,

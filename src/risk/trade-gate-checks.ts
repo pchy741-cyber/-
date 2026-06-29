@@ -61,21 +61,22 @@ export function chartVerificationGate(input: GateInput): GateResult {
     }
   }
 
-  // 거래량 이상치: VOLUME_HARD_BLOCK_RATIO 이상 하드블록, VOLUME_SOFT_WARN_RATIO~이상은 소프트 게이트 (기관매집 신호 가능)
+  // v16: 거래량 이상치 → 소프트 (사이즈 축소, 하드블록 제거)
   if (tech.volumeRatio > VOLUME_HARD_BLOCK_RATIO) {
-    return {
-      passed: false,
-      reason: `거래량 이상치: ${tech.volumeRatio.toFixed(1)}배 (${VOLUME_HARD_BLOCK_RATIO}x+ 하드블록)`,
-    };
+    const adjQty = Math.max(1, Math.floor(input.quantity * 0.3));
+    logger.warn(`🟡 거래량 이상치: ${tech.volumeRatio.toFixed(1)}배 → 30% 축소 (${input.quantity}→${adjQty}주)`, { component: 'TRADE_GATE' });
+    return { passed: true, reason: `거래량 이상치 ${tech.volumeRatio.toFixed(1)}배 → 30% 축소`, adjustedQuantity: adjQty };
   }
   if (tech.volumeRatio > VOLUME_SOFT_WARN_RATIO) {
     logger.info(
-      `🟡 [거래량 소프트] ${input.stockCode}: ${tech.volumeRatio.toFixed(1)}배 — ${VOLUME_SOFT_WARN_RATIO}~${VOLUME_HARD_BLOCK_RATIO}x 경고 (기관매집 가능)`,
+      `🟡 [거래량 소프트] ${input.stockCode}: ${tech.volumeRatio.toFixed(1)}배 — 경고 (기관매집 가능)`,
       { component: 'TRADE_GATE' },
     );
   }
   if (tech.volumeRatio < VOLUME_MIN_RATIO) {
-    return { passed: false, reason: `거래량 과소: ${tech.volumeRatio.toFixed(1)}배 (유동성 부족)` };
+    const adjQty = Math.max(1, Math.floor(input.quantity * 0.5));
+    logger.warn(`🟡 거래량 과소: ${tech.volumeRatio.toFixed(1)}배 → 50% 축소`, { component: 'TRADE_GATE' });
+    return { passed: true, reason: `거래량 과소 ${tech.volumeRatio.toFixed(1)}배 → 50% 축소`, adjustedQuantity: adjQty };
   }
 
   // R:R 검증 — R:R 부족 시 차단 대신 로깅 (소프트 게이트화)
@@ -89,15 +90,17 @@ export function chartVerificationGate(input: GateInput): GateResult {
     );
   }
 
-  // ATR 대비 손절폭 검증
+  // v16: ATR 대비 손절폭 → 소프트 (사이즈 축소)
   if (!getCtxIsPaper()) {
     const currentPrice = candles[0]?.close ?? input.estimatedPrice;
     const atrPct = currentPrice > 0 ? (tech.atr14 / currentPrice) * 100 : 0;
     if (atrPct > 0 && absStopLoss < atrPct * ATR_SL_MIN_MULTIPLIER) {
+      const adjQty = Math.max(1, Math.floor(input.quantity * 0.5));
       return {
-        passed: false,
-        reason: `손절 너무 타이트: ${absStopLoss}% < ATR의 ${ATR_SL_MIN_MULTIPLIER}배(${(atrPct * ATR_SL_MIN_MULTIPLIER).toFixed(1)}%)`,
+        passed: true,
+        reason: `손절 타이트 → 50% 축소: ${absStopLoss.toFixed(1)}% < ATR ${(atrPct * ATR_SL_MIN_MULTIPLIER).toFixed(1)}%`,
         riskRewardRatio,
+        adjustedQuantity: adjQty,
       };
     }
   }
@@ -115,16 +118,19 @@ export function entryTimingGate(input: GateInput): GateResult {
 
   const tech = analyzeTechnicals(candles);
   const rsi = tech?.rsi14 ?? 50;
-  if (rsi >= RSI_OVERBOUGHT)
-    return { passed: false, reason: `🔴 RSI 과매수 차단: ${rsi.toFixed(1)} ≥ ${RSI_OVERBOUGHT}` };
+  // v16: RSI 과매수 → 소프트 (50% 축소)
+  if (rsi >= RSI_OVERBOUGHT) {
+    const adjQty = Math.max(1, Math.floor(input.quantity * 0.5));
+    return { passed: true, reason: `🟡 RSI 과매수 ${rsi.toFixed(0)} → 50% 축소`, adjustedQuantity: adjQty };
+  }
 
   const recent3High = Math.max(c1.high, c2.high, c3.high);
   const pctFromHigh = recent3High > 0 ? ((current - recent3High) / recent3High) * 100 : -5;
-  if (!Number.isFinite(pctFromHigh) || pctFromHigh > HIGH_CHASE_PCT)
-    return {
-      passed: false,
-      reason: `🔴 고점 추격 차단: +${Number.isFinite(pctFromHigh) ? pctFromHigh.toFixed(1) : '?'}%`,
-    };
+  // v16: 고점 추격 → 소프트 (50% 축소)
+  if (!Number.isFinite(pctFromHigh) || pctFromHigh > HIGH_CHASE_PCT) {
+    const adjQty = Math.max(1, Math.floor(input.quantity * 0.5));
+    return { passed: true, reason: `🟡 고점추격 +${Number.isFinite(pctFromHigh) ? pctFromHigh.toFixed(1) : '?'}% → 50% 축소`, adjustedQuantity: adjQty };
+  }
 
   const body0 = Math.abs(c0.close - c0.open);
   const range0 = c0.high - c0.low;
@@ -137,11 +143,10 @@ export function entryTimingGate(input: GateInput): GateResult {
   const isVBounce = c1.close < c2.close && c0.close > c1.close;
 
   const closePositionInRange = range0 > 0 ? (c0.close - c0.low) / range0 : 0.5;
+  // v16: 낙하 중 매수 → 소프트 (50% 축소)
   if (closePositionInRange < 0.1 && !isHammer) {
-    return {
-      passed: false,
-      reason: `🔴 낙하 중 매수 차단: 종가 일중 하위 ${(closePositionInRange * 100).toFixed(0)}%`,
-    };
+    const adjQty = Math.max(1, Math.floor(input.quantity * 0.5));
+    return { passed: true, reason: `🟡 낙하중 하위${(closePositionInRange * 100).toFixed(0)}% → 50% 축소`, adjustedQuantity: adjQty };
   }
 
   const recent5Low = Math.min(c0.low, c1.low, c2.low, c3.low, c4.low);
@@ -149,9 +154,11 @@ export function entryTimingGate(input: GateInput): GateResult {
   const hasGoodPattern = isVBounce || isBullishEngulfing || isHammer || isBullishCandle;
   const isTooFarFromLow = pctFromLow > LOW_BOUNCE_PCT && rsi > RSI_ELEVATED;
 
+  // v16: 진입 타이밍 부적합 → 소프트 (50% 축소)
   if (isTooFarFromLow && !hasGoodPattern) {
     if (getCtxIsPaper()) return { passed: true, reason: `⚠️ [모의투자] 최적 타이밍 아님` };
-    return { passed: false, reason: `🔴 진입 타이밍 부적합: 5일저점+${pctFromLow.toFixed(1)}%` };
+    const adjQty = Math.max(1, Math.floor(input.quantity * 0.5));
+    return { passed: true, reason: `🟡 5일저점+${pctFromLow.toFixed(1)}% → 50% 축소`, adjustedQuantity: adjQty };
   }
 
   const signals: string[] = [];

@@ -417,6 +417,12 @@ export class TradeExecutor {
           this._logFire('WARN', 'EXECUTOR', `매수 거부: ${stockCode} - ${riskCheck.reason}`);
           return;
         }
+        // v16: 리스크 소프트 사이즈 조절 (하드블록 → 비중 축소)
+        if (riskCheck.sizeMultiplier && riskCheck.sizeMultiplier < 1.0) {
+          const adjusted = Math.max(1, Math.floor(gatedQuantity * riskCheck.sizeMultiplier));
+          logger.info(`📊 리스크 사이즈: ${gatedQuantity}→${adjusted}주 (${(riskCheck.sizeMultiplier * 100).toFixed(0)}%) — ${riskCheck.reason}`, { component: 'EXECUTOR' });
+          gatedQuantity = adjusted;
+        }
       }
 
       // 🎯 대형 주문 진입타이밍 AI 검토 (100만원 이상, ETF 파킹/바닥낚시 제외)
@@ -854,6 +860,11 @@ export class TradeExecutor {
     if (!riskCheck.approved) {
       logger.warn(`❌ 물타기 거부 [${stockCode}]: ${riskCheck.reason}`, { component: 'EXECUTOR' });
       return;
+    }
+    // v16: 리스크 소프트 사이즈 조절
+    if (riskCheck.sizeMultiplier && riskCheck.sizeMultiplier < 1.0) {
+      quantity = Math.max(1, Math.floor(quantity * riskCheck.sizeMultiplier));
+      logger.info(`📊 물타기 사이즈 조정: ${(riskCheck.sizeMultiplier * 100).toFixed(0)}%`, { component: 'EXECUTOR' });
     }
 
     // 스마트 물타기: ask1 지정가 주문 (시장가 슬리피지 방지)

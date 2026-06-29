@@ -36,6 +36,8 @@ function getDomesticTotalAssets(balance: AccountBalance): number {
 export interface PreTradeCheckResult {
   approved: boolean;
   reason: string;
+  /** v16: 소프트 리스크 조절 — 1.0=정상, 0.5=50% 축소 등 (approved=true일 때만 유효) */
+  sizeMultiplier?: number;
 }
 
 // per-mode mutex: 동시 주문의 TOCTOU 방지
@@ -74,52 +76,73 @@ export class RiskEngine {
     stockCode: string, orderValue: number, isPaper: boolean, ceoManual?: boolean,
   ): Promise<PreTradeCheckResult> {
 
-    // Kill Switch 확인 (국내 매수만 차단)
-    // CEO 수동매수는 킬스위치 해제 후 진입 허용 — MDD 체크에서 재발동하지 않음
+    // Kill Switch — HARD BLOCK (유일한 절대 차단)
     if (isKillSwitchActive('KR')) {
       return { approved: false, reason: '🛑 Kill Switch 활성화 상태 — 국내 매수 차단 (매도는 허용)' };
     }
 
-    // 연습모드: 킬스위치(80% 일일 손실)와 현금 체크만 → 나머지 전부 스킵
-    // 백테스팅 데이터를 최대한 쌓아 실전 튜닝에 활용
+    // 연습모드: 킬스위치 + 현금만 체크
     if (isPaper) {
       const drawdownCheck = await this.checkDailyDrawdown(isPaper);
       if (!drawdownCheck.approved) return drawdownCheck;
       const cashCheck = await this.checkCash(orderValue, isPaper);
       if (!cashCheck.approved) return cashCheck;
-      return { approved: true, reason: '✅ 연습모드 — 손실한도+현금만 체크' };
+      return { approved: true, reason: '✅ 연습모드 — 손실한도+현금만 체크', sizeMultiplier: 1.0 };
     }
 
-    // ── 실전모드 전체 체크 ──
+    // ── v16: 실전모드 소프트 사이즈 조절 ──
+    // 하드블록 → 비중 축소로 전환 (킬스위치·현금부족만 하드 유지)
+    let sizeMult = 1.0;
+    const adj: string[] = [];
 
-    // 2. 동시 보유 종목 수 체크 (신규 매수만)
+    // 2. 동시 보유 종목 수 → 소프트: 초과 시 50% 축소
     const concurrentCheck = await this.checkConcurrentPositions(stockCode, isPaper);
-    if (!concurrentCheck.approved) return concurrentCheck;
+    if (!concurrentCheck.approved) {
+      sizeMult *= 0.5;
+      adj.push(`포지션초과(${concurrentCheck.reason.match(/\d+\/\d+/)?.[0] ?? ''})`);
+    }
 
-    // 3. 일일 매매 횟수 체크
+    // 3. 일일 매매 횟수 → 소프트: 초과 시 50% 축소
     const dailyTradeCheck = await this.checkDailyTradeCount(isPaper);
-    if (!dailyTradeCheck.approved) return dailyTradeCheck;
+    if (!dailyTradeCheck.approved) {
+      sizeMult *= 0.5;
+      adj.push(`매매횟수초과(${dailyTradeCheck.reason.match(/\d+\/\d+/)?.[0] ?? ''})`);
+    }
 
-    // 4. 종목당 최대 투자 한도 체크
+    // 4. 종목당 투자 한도 → 소프트: 초과 시 50% 축소
     const positionCheck = await this.checkPositionLimit(stockCode, orderValue, isPaper);
-    if (!positionCheck.approved) return positionCheck;
+    if (!positionCheck.approved) {
+      sizeMult *= 0.5;
+      adj.push('종목한도초과');
+    }
 
-    // 5. 일일 최대 손실 (Drawdown) 체크
+    // 5. 일일 Drawdown → 킬스위치 발동은 HARD, 소프트리밋은 30% 축소
     const drawdownCheck = await this.checkDailyDrawdown(isPaper);
-    if (!drawdownCheck.approved) return drawdownCheck;
+    if (!drawdownCheck.approved) {
+      if (drawdownCheck.reason.includes('Kill Switch')) return drawdownCheck; // HARD
+      sizeMult *= 0.3;
+      adj.push('일일손실경고');
+    }
 
-    // 5-A. 주간 손실 한도 체크
+    // 5-A. 주간 손실 → 소프트: 30% 축소
     const weeklyCheck = await this.checkWeeklyDrawdown(isPaper);
-    if (!weeklyCheck.approved) return weeklyCheck;
+    if (!weeklyCheck.approved) {
+      sizeMult *= 0.3;
+      adj.push('주간손실');
+    }
 
-    // 5-B. 월간 MDD -8% 체크
-    // ceoManual: 수동매수 시 -8% 재발동 방지. 단, -15% 하드캡은 절대 우회 불가
+    // 5-B. 월간 MDD → 킬스위치/하드캡만 HARD, 나머지 30% 축소
     if (!ceoManual) {
       const monthlyMddCheck = await this.checkMonthlyMDD(isPaper);
-      if (!monthlyMddCheck.approved) return monthlyMddCheck;
+      if (!monthlyMddCheck.approved) {
+        if (monthlyMddCheck.reason.includes('Kill Switch') || monthlyMddCheck.reason.includes('하드캡')) {
+          return monthlyMddCheck; // HARD
+        }
+        sizeMult *= 0.3;
+        adj.push('월간MDD');
+      }
     } else {
-      // 하드캡: ceoManual이라도 MDD 한도의 150% 초과 시 절대 차단
-      const ceoHardCap = MDD_LIMIT.LIVE * 1.5; // e.g. 8% × 1.5 = 12%
+      const ceoHardCap = MDD_LIMIT.LIVE * 1.5;
       const snap = await getMonthlyMddSnapshot(isPaper);
       if (snap.samples >= 2 && !snap.externalActivity && snap.mddPct >= ceoHardCap) {
         return {
@@ -129,19 +152,38 @@ export class RiskEngine {
       }
     }
 
-    // 5-C. 섹터 비중 한도 체크 (DB 설정 기반)
+    // 5-C. 섹터 비중 → 소프트: 50% 축소
     const sectorCheck = await this.checkSectorExposure(stockCode, orderValue, isPaper);
-    if (!sectorCheck.approved) return sectorCheck;
+    if (!sectorCheck.approved) {
+      sizeMult *= 0.5;
+      adj.push('섹터비중초과');
+    }
 
-    // 6. 총 투자 비율 체크
+    // 6. 총 투자 비율 → 소프트: 50% 축소
     const exposureCheck = await this.checkTotalExposure(orderValue, isPaper);
-    if (!exposureCheck.approved) return exposureCheck;
+    if (!exposureCheck.approved) {
+      sizeMult *= 0.5;
+      adj.push('투자비율초과');
+    }
 
-    // 7. 주문 가능 현금 체크
-    const cashCheck = await this.checkCash(orderValue, isPaper);
+    // 바닥: 최소 20% (너무 작은 주문 방지)
+    sizeMult = Math.max(0.2, sizeMult);
+
+    // 7. 현금 체크 — HARD (물리적 한계, 조정된 금액 기준)
+    const adjustedOrderValue = Math.round(orderValue * sizeMult);
+    const cashCheck = await this.checkCash(adjustedOrderValue, isPaper);
     if (!cashCheck.approved) return cashCheck;
 
-    return { approved: true, reason: '✅ 모든 리스크 체크 통과' };
+    if (sizeMult < 1.0) {
+      logger.info(`📊 리스크 소프트 조정: ${(sizeMult * 100).toFixed(0)}% — ${adj.join(' | ')}`, { component: 'RISK' });
+      return {
+        approved: true,
+        reason: `⚠️ 소프트 조정 (${(sizeMult * 100).toFixed(0)}%): ${adj.join(' | ')}`,
+        sizeMultiplier: sizeMult,
+      };
+    }
+
+    return { approved: true, reason: '✅ 모든 리스크 체크 통과', sizeMultiplier: 1.0 };
   }
 
   private async checkConcurrentPositions(stockCode: string, isPaper: boolean): Promise<PreTradeCheckResult> {

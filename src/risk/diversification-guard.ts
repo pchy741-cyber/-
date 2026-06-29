@@ -26,6 +26,8 @@ export interface DiversificationCheck {
   reason: string;
   count24h: number;
   count1h: number;
+  /** v16: 소프트 사이즈 조절 */
+  sizeMultiplier?: number;
 }
 
 /**
@@ -49,20 +51,23 @@ export async function checkDiversification(stockCode: string, isPaper = false): 
     const count24h = Number(rows[0]?.c24h ?? 0);
     const count1h = Number(rows[0]?.c1h ?? 0);
 
+    // v16: 중복 매수 → 소프트 (사이즈 축소, 하드블록 제거)
     if (count1h >= MAX_BUY_PER_1H) {
       return {
-        allowed: false,
-        reason: `1시간 내 ${count1h}건 매수 — 중복 매수 차단`,
+        allowed: true,
+        reason: `1시간 내 ${count1h}건 매수 → 50% 축소`,
         count24h,
         count1h,
+        sizeMultiplier: 0.5,
       };
     }
     if (count24h >= MAX_BUY_PER_24H) {
       return {
-        allowed: false,
-        reason: `24시간 내 ${count24h}건 매수 — 다양화 (최대 ${MAX_BUY_PER_24H}건)`,
+        allowed: true,
+        reason: `24시간 내 ${count24h}건 → 50% 축소 (다양화)`,
         count24h,
         count1h,
+        sizeMultiplier: 0.5,
       };
     }
     return {

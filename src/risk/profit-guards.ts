@@ -318,23 +318,16 @@ export async function checkBuyGate(params: {
     isUs: params.isUs,
   });
 
-  // 일일 손실 정지가 최우선
+  // v16: 일일 손실 → 소프트 (30% 축소, 완전 차단 제거)
+  let dailyLossMult = 1.0;
   if (dailyLoss.shouldStop) {
-    return {
-      allowed: false,
-      amountMultiplier: 0,
-      reason: dailyLoss.reason,
-      details: { ev, sizing, dailyLoss, diversification },
-    };
+    dailyLossMult = 0.3;
+    logger.warn(`📊 일일 손실 소프트: ${dailyLoss.reason} → 30% 축소`, { component: 'PROFIT_GUARD' });
   }
-  // 다양화 강제 (SONY 반복매수 패턴 차단)
-  if (!diversification.allowed) {
-    return {
-      allowed: false,
-      amountMultiplier: 0,
-      reason: `🔀 다양화: ${diversification.reason}`,
-      details: { ev, sizing, dailyLoss, diversification },
-    };
+  // v16: 다양화 → 소프트 (sizeMultiplier 반영, 하드블록 제거)
+  let divMultiplier = 1.0;
+  if (diversification.sizeMultiplier && diversification.sizeMultiplier < 1.0) {
+    divMultiplier = diversification.sizeMultiplier;
   }
   // EV 미달
   if (!ev.passed) {
@@ -357,8 +350,8 @@ export async function checkBuyGate(params: {
 
   return {
     allowed: true,
-    amountMultiplier: sizing.multiplier,
-    reason: `허용 (${ev.reason}, ${sizing.reason})`,
+    amountMultiplier: sizing.multiplier * divMultiplier * dailyLossMult, // v16: 다양화+일일손실 소프트 반영
+    reason: `허용 (${ev.reason}, ${sizing.reason}${divMultiplier < 1 ? `, 다양화${(divMultiplier * 100).toFixed(0)}%` : ''})`,
     details: { ev, sizing, dailyLoss, diversification },
   };
 }
