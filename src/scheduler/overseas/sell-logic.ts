@@ -214,6 +214,27 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
 
     let sellReason = '';
 
+    // v16.2.1: 실전모드 인내 홀딩 — 충분한 수익 전까지 단타/손절 매도 금지
+    // 허용: TP 도달(+hardTpPct), AI 강제매도, 비상매도, 절대하드플로어(-10%)
+    // 금지: 일반 손절, 하락장정리, 약세탈출, 시간손절, 마이크로트레일 등
+    const _isLivePatientMode = !paperMode;
+    const _liveHardFloor = -10.0; // 절대 한계: -10% 이상은 무조건 손절
+    const _liveMinProfitToSell = 3.0; // 실전: 최소 +3% 수익 시에만 매도 허용
+
+    if (_isLivePatientMode && pnlPct > _liveHardFloor && pnlPct < _liveMinProfitToSell) {
+      // 실전모드: -10%~+3% 구간에서는 매도 안 함 (인내 홀딩)
+      // 트레일링/부분익절/시간손절 전부 스킵 → TP 도달 또는 하드플로어만 허용
+      logger.debug(
+        `🔒 실전 인내홀딩: ${code} PnL=${pnlPct.toFixed(1)}% — 충분한 수익(+${_liveMinProfitToSell}%) 또는 하드플로어(${_liveHardFloor}%) 도달 전까지 보유`,
+        { component: 'OVERSEAS' },
+      );
+      continue;
+    }
+    // 실전모드 하드플로어 도달 시 → 손절 허용 (아래 로직으로 넘김)
+    if (_isLivePatientMode && pnlPct <= _liveHardFloor) {
+      sellReason = `실전 하드플로어 손절(${_liveHardFloor}%): ${pnlPct.toFixed(1)}% — 절대 한계 초과`;
+    }
+
     const watchItem = WATCHLIST_BY_CODE.get(code);
     const sector = watchItem?.sector ?? '';
     const isHighBeta = SECTOR_CLASS.HIGH_BETA.includes(sector);

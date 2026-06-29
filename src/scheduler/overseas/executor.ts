@@ -17,8 +17,9 @@ import { updateTradeState } from './state.js';
 import { resolveOverseasStockName } from './watchlist.js';
 
 // ── Named constants (magic number extraction) ──
-/** Paper order slippage simulation (0.1% per side) */
-const PAPER_SLIPPAGE_PCT = 0.001;
+/** Paper order slippage simulation
+ * v16.2.1: 0.1%→0.35% (실제 체결 슬리피지에 근접, 연습모드 과대수익 방지) */
+const PAPER_SLIPPAGE_PCT = 0.0035;
 /** Milliseconds per day — used for holding day calculation */
 const MS_PER_DAY = 86_400_000;
 /** PnL threshold for WIN/LOSS/BREAK_EVEN classification
