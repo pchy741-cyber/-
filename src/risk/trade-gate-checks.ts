@@ -18,8 +18,8 @@ const VOLUME_HARD_BLOCK_RATIO = 10.0;
 const VOLUME_SOFT_WARN_RATIO = 5.0;
 /** 거래량 과소 차단 (유동성 부족) */
 const VOLUME_MIN_RATIO = 0.15;
-/** ATR 대비 최소 손절폭 배율 */
-const ATR_SL_MIN_MULTIPLIER = 0.35;
+/** ATR 대비 최소 손절폭 배율 — v16: OFF (노이즈 손절 유발) */
+const ATR_SL_MIN_MULTIPLIER = 0.0;
 
 // ── 진입 타이밍 상수 ──
 /** RSI 과매수 차단 기준 */

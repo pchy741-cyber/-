@@ -283,10 +283,9 @@ export function getScoreBasedParams(score: number): { takeProfitPct: number; sto
   else if (score >= 80) { tp = 6.0; sl = -3.8; }
   else { tp = 5.0; sl = -4.0; }
 
-  // R:R guard (1.5:1 ~ 4:1)
+  // v16: R:R 최소 강제 OFF (손절만 유발) — 상한만 유지
   const rr = tp / Math.abs(sl);
-  if (rr > 4.0) tp = Math.round(Math.abs(sl) * 4.0 * 10) / 10;
-  else if (rr < 1.5) tp = Math.round(Math.abs(sl) * 1.5 * 10) / 10;
+  if (rr > 5.0) tp = Math.round(Math.abs(sl) * 5.0 * 10) / 10;
 
   return { takeProfitPct: tp, stopLossPct: sl };
 }
@@ -531,17 +530,12 @@ export function getDynamicDomesticTpSl(h: DomesticTpSlHints): {
   tp = Math.round(Math.min(Math.max(tp, 3.0), 15.0) * 10) / 10;
   sl = Math.round(Math.max(Math.min(sl, -1.5), -8.0) * 10) / 10;
 
-  // ── R:R 비율 검증 — 확률싸움에서 비현실적 비율 방지 ──
-  // R:R = TP / |SL|, 1.5:1 ~ 4:1 범위 강제
+  // v16: R:R 강제 OFF — 손절만 유발하는 비현실적 TP 강제 제거
+  // 상한만 유지 (R:R > 5.0 → 비현실적 TP 방지)
   const rr = tp / Math.abs(sl);
-  if (rr > 4.0) {
-    // R:R 너무 높음 → TP를 |SL|×4로 줄임 (SL 유지, TP 축소 — 손실 확대 방지)
-    tp = Math.round(Math.abs(sl) * 4.0 * 10) / 10;
-    parts.push('RR>4→TP축소');
-  } else if (rr < 1.5) {
-    // R:R 너무 낮음 → TP를 |SL|×1.5로 올림
-    tp = Math.round(Math.abs(sl) * 1.5 * 10) / 10;
-    parts.push('RR<1.5→조정');
+  if (rr > 5.0) {
+    tp = Math.round(Math.abs(sl) * 5.0 * 10) / 10;
+    parts.push('RR>5→TP축소');
   }
 
   return { takeProfitPct: tp, stopLossPct: sl, label: parts.join('/') };
@@ -560,9 +554,9 @@ export const GATE = {
   SLIPPAGE_PCT: 0.26, // 국내 왕복 마찰비용: 수수료 0.21% + 슬리피지 0.05%
   US_SLIPPAGE_PCT: 0.7, // 미국 왕복 마찰비용: KIS수수료 0.50% + 슬리피지 0.20%
   FX_SAFETY_MARGIN: 0.02, // 통합증거금 FX 안전마진 2% (환율 급변 미수 방지, 5%→2% 적극 운용)
-  REENTRY_COOLDOWN_MS: 30 * 60_000, // 동일 종목 재진입 쿨다운 (SCALPING, 30분)
-  CONSECUTIVE_LOSS_HALT_MS: 30 * 60_000, // 5연패 → 30분 쿨다운 (60→30분, 반등 타이밍 확보)
-  CONSECUTIVE_LOSS_WARN_MS: 20 * 60_000, // 3연패 → 20분 쿨다운 (45→20분)
+  REENTRY_COOLDOWN_MS: 10 * 60_000, // v16: 30→10분 (빠른 재진입 허용)
+  CONSECUTIVE_LOSS_HALT_MS: 10 * 60_000, // v16: 30→10분 (반등 기회 확보)
+  CONSECUTIVE_LOSS_WARN_MS: 5 * 60_000, // v16: 20→5분 (과도한 쿨다운 OFF)
   COOLDOWN_NOTIFY_MS: 30 * 60_000, // 쿨다운 알림 최소 간격
 } as const;
 

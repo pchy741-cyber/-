@@ -32,8 +32,8 @@ export interface EvCheck {
 // 거래 비용 (왕복) — KR 0.21%, US 0.7%
 const KR_FEE_ROUNDTRIP_PCT = 0.21; // %
 const US_FEE_ROUNDTRIP_PCT = 0.7; // %
-/** 최소 SL % — 이 미만은 위험 무방어로 간주하여 하드블록 */
-const MIN_SL_PCT = 0.3;
+/** 최소 SL % — v16: 0.1%로 완화 (마이크로 스캘핑 허용) */
+const MIN_SL_PCT = 0.1;
 // EV 최소 안전 마진 — 승률 기반 차등 적용
 // 고승률(≥70%): 1.3 엄격 유지 / 중간(40-70%): 1.0 표준 / 저승률(<40%): 1.5 보수적
 function getEvSafetyMultiplier(winRate?: number): number {
@@ -219,20 +219,20 @@ export async function getStockSizing(stockCode: string, isPaper = false): Promis
 }
 
 // ── 가드 #2 constants ──
-/** 종목 승률 25% 미만 → 매수 차단 */
-const WIN_RATE_BLOCK_THRESHOLD = 0.25;
+/** 종목 승률 차단 OFF (v16: 소수 샘플로 차단하면 기회 상실) */
+const WIN_RATE_BLOCK_THRESHOLD = 0.0;
 /** 종목 승률 40% 미만 → 사이즈 50% 축소 */
 const WIN_RATE_REDUCE_THRESHOLD = 0.40;
 /** 종목 승률 70% 이상 → 사이즈 120% 확대 */
 const WIN_RATE_BOOST_THRESHOLD = 0.70;
 /** 승률 사이징 배율 */
-const SIZING_BLOCKED = 0;
+const SIZING_BLOCKED = 0.3; // v16: 차단→30% 축소 (완전차단 OFF)
 const SIZING_REDUCED = 0.5;
 const SIZING_NORMAL = 1.0;
 const SIZING_BOOSTED = 1.2;
 
 // ── 가드 #3: 일일 손실 정지 ─────────────────────────
-const DAILY_LOSS_LIMIT_PCT = 3.0; // 당일 시드 대비 -3% 도달 시 정지
+const DAILY_LOSS_LIMIT_PCT = 99.0; // v16: OFF (손절만 유발, 회복 차단 — 킬스위치가 최후방어선)
 
 export interface DailyLossStatus {
   shouldStop: boolean;
@@ -329,29 +329,19 @@ export async function checkBuyGate(params: {
   if (diversification.sizeMultiplier && diversification.sizeMultiplier < 1.0) {
     divMultiplier = diversification.sizeMultiplier;
   }
-  // EV 미달
+  // v16: EV 미달 → 소프트 (50% 축소, 차단 OFF)
+  let evMult = 1.0;
   if (!ev.passed) {
-    return {
-      allowed: false,
-      amountMultiplier: 0,
-      reason: ev.reason,
-      details: { ev, sizing, dailyLoss, diversification },
-    };
+    evMult = 0.5;
+    logger.info(`📊 EV 소프트: ${ev.reason} → 50% 축소`, { component: COMP });
   }
-  // 승률 사이징 — multiplier=0이면 차단
-  if (sizing.multiplier === 0) {
-    return {
-      allowed: false,
-      amountMultiplier: 0,
-      reason: sizing.reason,
-      details: { ev, sizing, dailyLoss, diversification },
-    };
-  }
+  // v16: 승률 사이징 — multiplier=0이면 30% (차단 OFF)
+  const sizingMult = sizing.multiplier <= 0 ? 0.3 : sizing.multiplier;
 
   return {
     allowed: true,
-    amountMultiplier: sizing.multiplier * divMultiplier * dailyLossMult, // v16: 다양화+일일손실 소프트 반영
-    reason: `허용 (${ev.reason}, ${sizing.reason}${divMultiplier < 1 ? `, 다양화${(divMultiplier * 100).toFixed(0)}%` : ''})`,
+    amountMultiplier: sizingMult * evMult * divMultiplier * dailyLossMult, // v16: 모두 소프트 (차단 없음)
+    reason: `허용 (${ev.reason}, ${sizing.reason}${evMult < 1 ? ', EV50%' : ''}${divMultiplier < 1 ? `, 다양화${(divMultiplier * 100).toFixed(0)}%` : ''})`,
     details: { ev, sizing, dailyLoss, diversification },
   };
 }

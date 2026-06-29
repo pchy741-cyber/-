@@ -65,7 +65,7 @@ export class TradeExecutor {
    * @returns true = 서킷브레이커 발동 (매수 차단)
    */
   private async _checkDailyCircuitBreaker(): Promise<boolean> {
-    const DAILY_LOSS_LIMIT = -2.0; // -2%
+    const DAILY_LOSS_LIMIT = -99.0; // v16: 서킷브레이커 OFF (손절만 유발, 회복 차단)
     try {
       const isPaper = getCtxIsPaper();
       const latest = await getLatestSnapshot(isPaper);
