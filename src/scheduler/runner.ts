@@ -65,9 +65,9 @@ async function runDomesticDual(label: string, fn: () => Promise<unknown>): Promi
     });
     return;
   }
-  // paper→live 전환 시 잔고 캐시 무효화 + 3초 쿨다운 (KIS rate limit EGW00201 방지)
+  // paper→live 전환 시 잔고 캐시 무효화 + 1초 쿨다운 (v16.1: 3→1초, KIS 초당20건 제한 충분)
   invalidateBalanceCache();
-  await new Promise((r) => setTimeout(r, 3000));
+  await new Promise((r) => setTimeout(r, 1000));
   await runWithMode(false, async () => {
     try {
       await fn();
@@ -161,33 +161,11 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 09:30 — Track A 황금 오전 중간 갱신
-  cron.schedule(
-    SCHEDULE.TRACK_A_CRON[2],
-    async () => {
-      const { isTradingDay } = await import('../utils/holidays.js');
-      if (!isTradingDay()) return;
-      logger.info('⏰ Track A (09:30 황금오전)', { component: 'SCHEDULER' });
-      withTimeout('Track A 09:30', () => runTrackAJob(), 300_000);
-    },
-    { timezone: MARKET.TIMEZONE },
-  );
-
-  // 10:00 — Track A 장중 재분석 (마의구간 진입 직전 점수 갱신)
-  cron.schedule(
-    SCHEDULE.TRACK_A_CRON[3],
-    async () => {
-      const { isTradingDay } = await import('../utils/holidays.js');
-      if (!isTradingDay()) return;
-      logger.info('⏰ Track A (10:00 장중)', { component: 'SCHEDULER' });
-      withTimeout('Track A 10:00', () => runTrackAJob(), 300_000);
-    },
-    { timezone: MARKET.TIMEZONE },
-  );
+  // v16.1: 09:30/10:00 Track A 제거 — 09:00에 시초가 반영 충분, 토큰 33% 절약
 
   // 12:30 — Track A 오후장 재분석 (황금 오후 13:00 진입 전 점수 갱신)
   cron.schedule(
-    SCHEDULE.TRACK_A_CRON[4],
+    SCHEDULE.TRACK_A_CRON[2],
     async () => {
       const { isTradingDay } = await import('../utils/holidays.js');
       if (!isTradingDay()) return;
@@ -208,10 +186,9 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 💱 FX 재배분 자문 — 매시간 (KRW↔USD 비중 자동 조정 권고, KR/US 활성장 기준)
-  // 통합증거금 모드라도 KRW/USD 풀이 분리되어 idle 발생 → 시간별 권고
+  // 💱 FX 재배분 자문 — 장중+해외장 3회 (v16.1: 매시간→3회, GCP 절약)
   cron.schedule(
-    '5 * * * 1-5',
+    '5 9,15,22 * * 1-5',
     () => {
       runWithMode(false, async () => {
         const { runFxRebalance } = await import('../automation/fx-rebalance.js');
@@ -221,9 +198,9 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 📸 정기 캡쳐 진단 — 시간별 (paper+live 동시, MDD/킬스위치/연속손실 자동 체크)
+  // 📸 정기 캡쳐 진단 — 장중+해외장 핵심시간만 (v16.1: 14시간→8시간, DB/CPU 절약)
   cron.schedule(
-    '0 9,10,11,13,14,15,22,23,0,1,2,3,4,5 * * 1-5',
+    '0 9,11,14,15,22,0,3,5 * * 1-5',
     () => {
       import('../api/routes/review/capture-trigger.js')
         .then(async (m) => {
@@ -235,9 +212,9 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 💀 MDD 자동 가드 — 매시간 7분 (월간 MDD 임계 초과 시 신규매수 자동 차단/해제)
+  // 💀 MDD 자동 가드 — 장중+해외장 (v16.1: 매시간→활성장만, GCP 절약)
   cron.schedule(
-    '7 * * * *',
+    '7 9-15,22-23 * * 1-5',
     () => {
       import('../automation/mdd-guard.js')
         .then((m) => m.runMddGuard())
@@ -268,12 +245,10 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // ⚡ Quick Re-Score — 매 1분 (장중 평일, 내부에서 황금구간 1분 / 그 외 적응형)
-  // 황금구간: 1분 cron 그대로 (CEO 강화) / 마의시간: 15분 내부 throttle
-  // BULLISH: 5분 / NEUTRAL: 10분 / BEARISH: 20분 / PANIC: 60분
-  // paid AI 0 호출 — 황금구간엔 15종목, 그 외 30종목
+  // ⚡ Quick Re-Score — 매 2분 (v16.1: 1분→2분, CPU 50% 절약, paid AI 0)
+  // 황금구간: 내부 throttle이 적응형 조절 / 마의시간: 15분 내부 throttle
   cron.schedule(
-    '*/1 9-15 * * 1-5',
+    '*/2 9-15 * * 1-5',
     () => {
       runWithMode(false, async () => {
         const { runQuickRescore } = await import('../ai/track-a/quick-rescore.js');
@@ -298,7 +273,7 @@ export function startScheduler(): void {
       const { runEventRescore } = await import('../ai/track-a/event-rescore.js');
       await runEventRescore().catch((e) => logger.error(`이벤트 재스코어 실패: ${e}`, { component: 'SCHEDULER' }));
     });
-  }, 30_000).unref();
+  }, 45_000).unref(); // v16.1: 30→45초 (CPU/KIS rate limit 절약)
 
   // 🏦 FRED 매크로 워밍업 — 매일 23:00 KST (Fed 데이터 일일 갱신)
   cron.schedule(
@@ -847,7 +822,7 @@ export function startScheduler(): void {
 
   // 18:00 — Track A 장후 분석 (비거래일 스킵 — AI 토큰 절약)
   cron.schedule(
-    SCHEDULE.TRACK_A_CRON[5],
+    SCHEDULE.TRACK_A_CRON[3],
     async () => {
       const { isTradingDay } = await import('../utils/holidays.js');
       if (!isTradingDay()) {
@@ -890,9 +865,9 @@ export function startScheduler(): void {
   //  상시 + 주간
   // ═══════════════════════════════════════════
 
-  // Self-Healing — 20분 간격, 평일 장전~장후 (06~19시)
+  // Self-Healing — 30분 간격 (v16.1: 20→30분, CPU/DB 절약)
   cron.schedule(
-    '*/20 6-19 * * 1-5',
+    '*/30 6-19 * * 1-5',
     () => {
       runSelfHealing().catch((e) => logger.error(`Self-heal 실패: ${e}`, { component: 'SCHEDULER' }));
     },
@@ -1029,9 +1004,9 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 📊 Paper 전략 토너먼트 — 장중 15분 간격 (모든 전략 동시 실행, 성과 비교)
+  // 📊 Paper 전략 토너먼트 — 장중 30분 간격 (v16.1: 15→30분, 토큰 50% 절약)
   cron.schedule(
-    '7,22,37,52 9-15 * * 1-5',
+    '7,37 9-15 * * 1-5',
     () => {
       import('./paper-tournament.js')
         .then((m) => m.runPaperTournament())
@@ -1074,10 +1049,9 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 🗣️ Community Sentinel — 장중 커뮤니티 언급 추적 + FOMO/펌프 감지
-  // 매 시 20/50분 실행 (surge-detector :00/:30, capitalFlow :15/:45와 겹침 방지)
+  // 🗣️ Community Sentinel — 장중 커뮤니티 언급 (v16.1: 2회→1회/시간, 토큰 절약)
   cron.schedule(
-    '20,50 9-15 * * 1-5',
+    '20 9-15 * * 1-5',
     () => {
       Promise.all([import('../automation/community-sentinel.js'), import('../db/client.js')])
         .then(async ([sentinel, db]) => {
@@ -1467,9 +1441,9 @@ export function startScheduler(): void {
     fixWatchlistNames().catch((e) => logger.error(`종목명 보정(시작시) 실패: ${e}`, { component: 'SCHEDULER' }));
   }, 10_000); // 10초 후 (DB 연결 안정화 대기)
 
-  logger.info('✅ 스케줄러 등록 완료 (자동화 모듈 17개 + 미국주식)', { component: 'SCHEDULER' });
+  logger.info('✅ 스케줄러 등록 완료 (v16.1 최적화 — GCP비용↓ 토큰↓ 딜레이↓)', { component: 'SCHEDULER' });
   logger.info(
-    `  Track A: 07:30/12:30/18:00 (3회, 비용최적화) | Track B: ${SCHEDULE.TRACK_B_INTERVAL_MINUTES}분 (황금시간 1분) | 뉴스: 15분`,
+    `  Track A: 07:30/09:00/12:30/18:00 (4회) | Track B: ${SCHEDULE.TRACK_B_INTERVAL_MINUTES}분 (황금시간 1분) | 뉴스: 30분`,
     { component: 'SCHEDULER' },
   );
   logger.info(

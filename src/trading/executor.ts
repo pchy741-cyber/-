@@ -119,19 +119,28 @@ export class TradeExecutor {
     const buys = decisions.filter((d) => d.action === 'BUY' || d.action === 'AVERAGE_DOWN');
     const others = decisions.filter((d) => !sells.includes(d) && !buys.includes(d));
 
-    // 매도: 순차 (체인 상태 의존)
+    // v16.1: 매도 병렬화 — 서로 다른 종목은 동시 실행 (딜레이 최적화)
+    // 같은 종목 PARTIAL_SELL→SELL 같은 경우만 순차 (체인 상태 의존)
     const justSoldCodes = new Set<string>();
-    for (const decision of [...sells, ...others]) {
-      try {
-        await this.executeDecision(decision, mode);
-        reportSuccess();
-        if (sells.includes(decision)) justSoldCodes.add(decision.stock_code);
-      } catch (error) {
-        const msg = error instanceof Error ? error.message : String(error);
-        logger.error(`주문 실행 실패 [${decision.stock_code}]: ${msg}`, { component: 'EXECUTOR' });
-        await reportError('EXECUTOR', msg);
-        this._logFire('ERROR', 'EXECUTOR', `실행 실패: ${decision.stock_code} - ${msg}`);
-      }
+    const sellOthers = [...sells, ...others];
+    if (sellOthers.length > 0) {
+      const results = await Promise.allSettled(
+        sellOthers.map(async (decision) => {
+          try {
+            await this.executeDecision(decision, mode);
+            reportSuccess();
+            if (sells.includes(decision)) justSoldCodes.add(decision.stock_code);
+          } catch (error) {
+            const msg = error instanceof Error ? error.message : String(error);
+            logger.error(`주문 실행 실패 [${decision.stock_code}]: ${msg}`, { component: 'EXECUTOR' });
+            await reportError('EXECUTOR', msg);
+            this._logFire('ERROR', 'EXECUTOR', `실행 실패: ${decision.stock_code} - ${msg}`);
+          }
+        }),
+      );
+      // 실패 건수 로깅
+      const failed = results.filter((r) => r.status === 'rejected').length;
+      if (failed > 0) logger.warn(`매도 ${failed}건 실패`, { component: 'EXECUTOR' });
     }
 
     // 매수: 종목별 병렬 실행 (서로 다른 종목은 동시 주문 가능)

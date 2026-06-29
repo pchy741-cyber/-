@@ -24,8 +24,8 @@ export const FALLBACK_FX_RATE = Number(process.env.FALLBACK_FX_RATE) || 1_520; /
 
 // ── 스케줄러 ──
 export const SCHEDULE = {
-  // Track A: 무거운 분석 (하루 4회 — 파워풀 모드)
-  TRACK_A_CRON: ['30 7 * * 1-5', '0 9 * * 1-5', '30 9 * * 1-5', '0 10 * * 1-5', '30 12 * * 1-5', '0 18 * * 1-5'], // 07:30, 09:00, 09:30, 10:00, 12:30, 18:00 KST 평일
+  // Track A: 핵심 4회 (v16.1: 6→4회, 토큰 33% 절약 — 09:30/10:00 제거, 09:00에 시초가 반영 충분)
+  TRACK_A_CRON: ['30 7 * * 1-5', '0 9 * * 1-5', '30 12 * * 1-5', '0 18 * * 1-5'], // 07:30, 09:00, 12:30, 18:00 KST 평일
   // v15 Hyper: 실시간 감시 2분 간격 (기존 3분 → 빠른 반응)
   TRACK_B_INTERVAL_MINUTES: 2,
 } as const;
