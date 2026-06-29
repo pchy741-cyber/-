@@ -1319,7 +1319,8 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 📊 DART 퀀트 분석 자동실행 — 08:35 장전 + 16:05 장후 (스마트 종목 선택)
+  // 📊 DART 퀀트 분석 자동실행 — 장전 + 매시간 장중 + 장후 (스마트 종목 선택)
+  // v16.2.3: 매시간 자동분석 추가 — 캐시 미스 종목만 분석 (Gemini 크레딧 최적화)
   // v15: 워치리스트 + 최근매매 + 급등종목 통합 + 분기DB캐시로 중복분석 방지
   cron.schedule(
     '35 8 * * 1-5',
@@ -1387,6 +1388,45 @@ export function startScheduler(): void {
         }
       } catch (e) {
         logger.warn(`DART 장후 분석 실패: ${e}`, { component: 'SCHEDULER' });
+      }
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 📊 DART 매시간 장중 자동분석 — 10:00~15:00 매시 (캐시 미스만 분석)
+  // 급등/거래량 순위 종목 중 아직 분석 안 된 종목 자동 수집
+  cron.schedule(
+    '0 10-15 * * 1-5',
+    async () => {
+      try {
+        const { isTradingDay } = await import('../utils/holidays.js');
+        if (!(await isTradingDay())) return;
+        const { getActiveWatchlist } = await import('../db/client.js');
+        const { getSmartDartTargets } = await import('../automation/dart-research.js');
+
+        const watchlist = await getActiveWatchlist();
+        const watchCodes = watchlist.map((w: { stock_code: string }) => w.stock_code).filter((c: string) => /^\d{6}$/.test(c));
+
+        // 거래량/급등 종목 추가
+        let volumeCodes: string[] = [];
+        try {
+          const { getVolumeRankingStocks } = await import('../kis/market.js');
+          const vol = await getVolumeRankingStocks('J', 10);
+          volumeCodes = vol.map((s: { stock_code: string }) => s.stock_code);
+        } catch { /* 비거래 시간 ranking API 미제공 가능 */ }
+
+        const allCodes = [...new Set([...watchCodes, ...volumeCodes])];
+        const targets = await getSmartDartTargets(allCodes, 10); // 최대 10종목
+
+        if (targets.length > 0) {
+          const { runDartResearchBatch } = await import('../automation/dart-research.js');
+          logger.info(`📊 DART 장중 매시간 분석: ${targets.length}종목 (캐시미스만)`, { component: 'SCHEDULER' });
+          runDartResearchBatch(targets).catch((e) =>
+            logger.warn(`DART 장중 분석 실패 (스킵): ${e}`, { component: 'SCHEDULER' }),
+          );
+        }
+      } catch (e) {
+        logger.warn(`DART 장중 분석 실패: ${e}`, { component: 'SCHEDULER' });
       }
     },
     { timezone: MARKET.TIMEZONE },
