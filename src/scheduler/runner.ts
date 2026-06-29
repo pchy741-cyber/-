@@ -1304,9 +1304,22 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 🔄 KIS 관심종목 + 보유종목 동기화 — 매일 08:30, 18:30 (장 전/후)
+  // 🔄 KIS 관심종목 + 보유종목 동기화 — 매일 08:00, 18:30 (장 전/후)
   cron.schedule(
-    '30 8,18 * * 1-5',
+    '0 8 * * 1-5',
+    async () => {
+      logger.info('🔄 KIS 관심종목/보유종목 동기화 (08:00)', { component: 'SCHEDULER' });
+      await syncInterestGroups().catch((e) => logger.error(`관심종목 동기화 실패: ${e}`, { component: 'SCHEDULER' }));
+      await syncHoldingsToWatchlist().catch((e) =>
+        logger.error(`보유종목 동기화 실패: ${e}`, { component: 'SCHEDULER' }),
+      );
+      await fixWatchlistNames().catch((e) => logger.error(`종목명 보정 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+  // 🔄 KIS 장후 동기화 — 18:30
+  cron.schedule(
+    '30 18 * * 1-5',
     async () => {
       logger.info('🔄 KIS 관심종목/보유종목 동기화', { component: 'SCHEDULER' });
       await syncInterestGroups().catch((e) => logger.error(`관심종목 동기화 실패: ${e}`, { component: 'SCHEDULER' }));
