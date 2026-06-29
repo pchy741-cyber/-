@@ -16,8 +16,8 @@ import type { DailyCandle } from '../../kis/market.js';
 
 // ── 박스권(SCALP_TARGET) 판별 임계값 ──
 const RANGE_RATIO_MAX = 0.14;  // 20일 고-저 범위 / 중심가 (14% 초과 = 방향성 종목)
-const RSI_RANGE_LOW = 25;      // RSI 하한 (이 아래 = 극단 과매도, 박스권 아님)
-const RSI_RANGE_HIGH = 75;     // RSI 상한 (이 위 = 극단 과매수, 박스권 아님)
+const RSI_RANGE_LOW = 30;      // v16.2: 25→30 (코멘트 30~70과 일치, 진짜 박스권만)
+const RSI_RANGE_HIGH = 70;     // v16.2: 75→70 (극단 과매수 박스권 오분류 방지)
 
 export type StockClass = 'TREND_LEADER' | 'SCALP_TARGET' | 'STANDARD';
 

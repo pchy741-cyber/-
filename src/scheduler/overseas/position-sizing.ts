@@ -166,9 +166,9 @@ export function calcPositionSize(params: SizingParams): SizingResult {
   const kellyCap = isPaper ? 0.50 : 0.45;
   const baseSize = portfolioValue * Math.min(kellyPct, kellyCap);
 
-  // v15: 해외 현금 유보 소폭 축소 (시간으로 올리는 개념)
-  // BULL: 3% 유보, NORMAL: 5% 유보, BEAR: 10% 유보
-  const dynamicCashReserve = breadth >= 0.65 ? 0.03 : breadth >= 0.45 ? 0.05 : 0.10;
+  // v16.2: 현금 유보 최소화 — 통합증거금 KRW→USD 자동전환 활용, idle 현금 줄이기
+  // BULL: 1% 유보, NORMAL: 3% 유보, BEAR: 7% 유보
+  const dynamicCashReserve = breadth >= 0.65 ? 0.01 : breadth >= 0.45 ? 0.03 : 0.07;
   const cashUsageCap = 1.0 - dynamicCashReserve;
 
   // 복합 감소기 바닥: 소액 0.60 / 일반 0.40 (여러 팩터 곱셈 붕괴 방지)

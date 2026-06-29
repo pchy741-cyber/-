@@ -84,11 +84,14 @@ async function fetchInvestorRawData(stockCode: string, days: number): Promise<Da
 function calcForeignStreak(dailyData: DailyInvestorData[]): number {
   if (dailyData.length === 0) return 0;
 
-  const firstDirection = dailyData[0].foreignNet >= 0 ? 1 : -1;
+  // v16.2: foreignNet===0은 중립 → 연속 매수/매도 끊김 (기존: 0을 매수로 카운트하는 편향)
+  if (dailyData[0].foreignNet === 0) return 0;
+  const firstDirection = dailyData[0].foreignNet > 0 ? 1 : -1;
   let streak = 0;
 
   for (const day of dailyData) {
-    const direction = day.foreignNet >= 0 ? 1 : -1;
+    if (day.foreignNet === 0) break; // 중립일은 연속 끊김
+    const direction = day.foreignNet > 0 ? 1 : -1;
     if (direction === firstDirection) {
       streak++;
     } else {

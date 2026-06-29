@@ -229,18 +229,18 @@ export function computeCommunityAdj(input: CommunityScoreInput): number {
   if (negRatio > 0.7) return -10;
   if (negRatio > 0.5) return -5;
 
-  // 언급 급증 (과열 경계)
+  // v16.2: 긍정 + 교차검증은 mentionZ 높아도 가점 (교차검증이 과열 필터 역할)
+  // 기존 버그: mentionZ>2.5 → -5가 교차검증 가점보다 먼저 반환되어 강한 종목 차단
+  if (posRatio > 0.55 && crossValidated && dryPullbackValid && mentionZ >= 1.0) {
+    return mentionZ > 3.5 ? 3 : 8; // 극단 과열만 감점 (3.5+), 나머지 최고 가점
+  }
+
+  if (posRatio > 0.55 && crossValidated && mentionZ >= 0.5) {
+    return mentionZ > 3.5 ? 2 : 5; // 교차검증 통과 = 중간 가점
+  }
+
+  // 언급 급증 (과열 경계) — 교차검증 없는 종목만 감점
   if (mentionZ > 2.5) return -5;
-
-  // v16.1: 긍정 + 교차검증 + 마름 눌림목 = 최고 가점 (+8)
-  if (posRatio > 0.55 && crossValidated && dryPullbackValid && mentionZ >= 1.0 && mentionZ < 2.5) {
-    return 8;
-  }
-
-  // v16.1: 긍정 + 교차검증 = 중간 가점 (+5)
-  if (posRatio > 0.55 && crossValidated && mentionZ >= 0.5 && mentionZ < 2.5) {
-    return 5;
-  }
 
   // v16.1: 긍정만 (교차검증 없이) = 약한 가점 (+2)
   if (posRatio > 0.6 && mentionZ >= 0.5 && mentionZ < 2.0) {

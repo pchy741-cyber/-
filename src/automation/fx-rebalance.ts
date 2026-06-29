@@ -83,8 +83,8 @@ export async function runFxRebalance(): Promise<void> {
       { component: COMP },
     );
 
-    // 5%p 이상 불균형 시만 알림 (강화: + 4h 쿨다운 + 방향 변경 시만)
-    if (imbalancePct < 5) {
+    // v16.2: 3%p 이상 불균형 시 알림 (기존 5% → idle KRW 빠르게 감지)
+    if (imbalancePct < 3) {
       _lastImbalanceDirection = 'balanced';
       return;
     }

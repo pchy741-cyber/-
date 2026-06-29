@@ -18,6 +18,16 @@ const DART_BASE = 'https://opendart.fss.or.kr/api';
 // 24시간 인메모리 캐시 — Track A 반복 호출 + DART API rate limit 보호 (성능)
 const _resultCache = new Map<string, { result: DartResearchResult; fetchedAt: number }>();
 const RESULT_CACHE_TTL_MS = 24 * 60 * 60_000;
+const RESULT_CACHE_MAX = 300; // v16.2: 메모리 누수 방지
+
+// v16.2: 만료 엔트리 정리 (6시간마다)
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of _resultCache) {
+    if (now - entry.fetchedAt >= RESULT_CACHE_TTL_MS) _resultCache.delete(key);
+  }
+  if (_resultCache.size > RESULT_CACHE_MAX) _resultCache.clear();
+}, 6 * 60 * 60_000).unref();
 
 // ── DB 캐시: 분기별 결과 영구 저장 (재시작/재배포 생존) ──
 
@@ -608,12 +618,16 @@ export async function warmDartCacheFromDb(): Promise<number> {
     );
     let loaded = 0;
     for (const row of rows) {
-      const result = (typeof row.result === 'string' ? JSON.parse(row.result) : row.result) as DartResearchResult;
-      const cacheKey = `${row.stock_code}-${year}-${quarter}`;
-      if (!_resultCache.has(cacheKey)) {
-        _resultCache.set(cacheKey, { result, fetchedAt: Date.now() });
-        loaded++;
-      }
+      try {
+        const parsed = typeof row.result === 'string' ? JSON.parse(row.result) : row.result;
+        if (!parsed || !parsed.stockCode) continue; // null/빈 결과 스킵
+        const result = parsed as DartResearchResult;
+        const cacheKey = `${row.stock_code}-${year}-${quarter}`;
+        if (!_resultCache.has(cacheKey)) {
+          _resultCache.set(cacheKey, { result, fetchedAt: Date.now() });
+          loaded++;
+        }
+      } catch { continue; } // JSON 파싱 실패 → 스킵
     }
     if (loaded > 0) {
       logger.info(`📊 DART DB→메모리 캐시 워밍 완료: ${loaded}종목 (${year}/${quarter})`, { component: COMP });

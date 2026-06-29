@@ -210,13 +210,13 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
     const isRunner = (() => {
       if (!_rTech) return false;
       let s = 0;
-      if (_rTech.volumeRatio >= 1.5) s++;     // v16.1: 2.0→1.5 (적정 거래량도 인정)
-      if (_rTech.volumeRatio >= 2.5) s++;     // v16.1: 폭발적 거래량 추가 가산
+      if (_rTech.volumeRatio >= 2.0) s++;     // v16.2: 1.5→2.0 복원 (1.5x는 평범한 거래량)
+      if (_rTech.volumeRatio >= 3.0) s++;     // v16.2: 2.5→3.0 (진짜 폭발만 추가 가산)
       if (_rTech.adx14 >= 25) s++;
-      if (_rTech.rsi14 >= 45 && _rTech.rsi14 <= 78) s++;  // v16.1: 75→78 (과매수 진입 초기 허용)
+      if (_rTech.rsi14 >= 45 && _rTech.rsi14 <= 75) s++;  // v16.2: 78→75 복원 (과매수 진입 차단)
       if (price.currentPrice > _rTech.sma5 && _rTech.sma5 > _rTech.sma20) s++;
-      if (_rTech.macdCrossover === 'BULLISH') s++;  // v16.1: MACD 골든크로스 추가
-      return pnlPct >= 5.0 ? s >= 1 : s >= 2; // v16.1: 수익 5%+ 시 조건 1개만으로도 러너
+      if (_rTech.macdCrossover === 'BULLISH') s++;
+      return s >= 2; // v16.2: 항상 2개+ 조건 필요 (5%+ 1개 조건=거짓양성 과다)
     })();
     if (isRunner && pnlPct >= 1.5) {  // v16.1: 2.0→1.5 (더 빠른 러너 감지)
       logger.info(
@@ -549,18 +549,45 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
     // v11-fix: 기존 1%는 수수료 0.21% 차감 후 순수익 0.79%밖에 안 됨
     // SWING TP 7%인데 1%에서 전량 청산하면 수익 기회 대부분 상실
     // 2.5%로 상향: 수수료 후 순수익 ~2.3% 확보 + SWING TP까지 여유
-    // SCALP_TARGET 성격 체인만 적용 (추세 리더 체인은 제외)
+    // v16.2: SCALP_TARGET 전용 조기익절 (1.5% — 수수료 0.21% 차감 후 1.3% 순수익)
+    {
+      const _isScalpTargetChain = (chain.trigger_source ?? '').includes('SCALP_TARGET');
+      if (
+        _isScalpTargetChain &&
+        !isRunner &&
+        pnlPct >= 1.5 &&
+        chain.total_quantity > 0 &&
+        !processedSellChains.has(chain.id)
+      ) {
+        logger.info(
+          `⚡ SCALP_TARGET 익절: ${chain.stock_code} +${pnlPct.toFixed(2)}% (박스권 1.5% 목표)`,
+          { component: 'TRACK_B' },
+        );
+        decisions.push({
+          action: 'SELL',
+          stock_code: chain.stock_code,
+          quantity: chain.total_quantity,
+          price_type: 'MARKET',
+          reasoning: `SCALP_TARGET 익절: +${pnlPct.toFixed(2)}% → 박스권 수익확정 (v16.2)`,
+          confidence: 0.9,
+        });
+        processedSellChains.add(chain.id);
+        continue;
+      }
+    }
+    // 일반 장중스캘핑 익절 (SCALP_TARGET 외 비추세 체인)
     {
       const _isIntradayScalpWindow =
         (_scalpH === 10 && _scalpM >= 30) || (_scalpH >= 11 && _scalpH <= 13) || (_scalpH === 14 && _scalpM < 30);
       const _isTrendLeaderChain =
         (chain.trigger_source ?? '').includes('CHART_DOCTOR') ||
         (chain.trigger_source ?? '').includes('MINERVINI') ||
-        (chain.trigger_source ?? '').includes('SNIPER');
+        (chain.trigger_source ?? '').includes('SNIPER') ||
+        (chain.trigger_source ?? '').includes('TREND_LEADER');
       if (
         _isIntradayScalpWindow &&
         !_isTrendLeaderChain &&
-        !isRunner && // 러너: 장중 조기 익절 면제
+        !isRunner &&
         chain.strategy_mode !== 'SCALPING' &&
         pnlPct >= 2.5 &&
         chain.total_quantity > 0 &&
@@ -575,7 +602,7 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
           stock_code: chain.stock_code,
           quantity: chain.total_quantity,
           price_type: 'MARKET',
-          reasoning: `장중스캘핑익절: +${pnlPct.toFixed(2)}% → 수익확정 (v11: 1%→2.5% 상향)`,
+          reasoning: `장중스캘핑익절: +${pnlPct.toFixed(2)}% → 수익확정`,
           confidence: 0.9,
         });
         processedSellChains.add(chain.id);

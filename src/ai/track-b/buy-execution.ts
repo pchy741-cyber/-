@@ -884,7 +884,12 @@ export async function executeBuyDecisions(
     const srTag =
       srClass === 'TREND_LEADER' ? ' [📈TREND_LEADER]' : srClass === 'SCALP_TARGET' ? ' [⚡SCALP_TARGET]' : '';
     // TREND_LEADER: 트레일링 스탑 홀딩 — 1% 조기청산 금지
-    const srStrategyOverride = srClass === 'TREND_LEADER' ? { trigger_source: 'TREND_LEADER' } : {};
+    // v16.2: SCALP_TARGET도 trigger_source 표기 → 매도 시 1.5% 조기익절 적용
+    const srStrategyOverride = srClass === 'TREND_LEADER'
+      ? { trigger_source: 'TREND_LEADER' }
+      : srClass === 'SCALP_TARGET'
+        ? { trigger_source: 'SCALP_TARGET' }
+        : {};
     decisions.push({
       action: 'BUY',
       stock_code: cand.stock_code,
