@@ -188,7 +188,7 @@ export async function reconcilePendingOrders(): Promise<void> {
                    (stock_code, status, strategy_mode, avg_buy_price, total_quantity, total_invested, is_paper, opened_at)
                  VALUES ($1, 'OPEN', 'SWING', $2, $3, $4, $5, NOW())
                  RETURNING id`,
-                [order.stock_code, avgBuyWithFee, latestFill.filledQty, totalInvested, getCtxIsPaper()],
+                [order.stock_code, avgBuyWithFee, latestFill.filledQty, totalInvested, order.trading_mode === 'paper'],
               );
               await getPool().query(
                 `UPDATE orders SET status = 'FILLED', filled_quantity = $2, filled_price = $3, chain_id = $4, kis_status = 'FILLED_RECOVERED'

@@ -286,7 +286,8 @@ export class TradeExecutor {
     const isPaperSnapshot = getCtxIsPaper();
 
     // 이미 열린 체인이 있으면 물타기로 전환
-    const existingChain = await chainManager.findOpenChain(stockCode);
+    // v16.2.3: 명시적 isPaper 전달 (컨텍스트 의존 제거 → Paper/Live 체인 혼선 방지)
+    const existingChain = await chainManager.findOpenChain(stockCode, isPaperSnapshot);
     if (existingChain) {
       releaseBuyIntent(stockCode); // 물타기는 별도 intent 관리 — 여기서 해제
       logger.info(`이미 열린 체인 존재 → 물타기로 전환`, { component: 'EXECUTOR' });
@@ -773,7 +774,7 @@ export class TradeExecutor {
     isScaleIn = false,
   ): Promise<void> {
     const isPaperSnapshot = getCtxIsPaper();
-    const chain = await chainManager.findOpenChain(stockCode);
+    const chain = await chainManager.findOpenChain(stockCode, isPaperSnapshot);
     if (!chain) {
       logger.warn(`물타기 실패: ${stockCode} 열린 체인 없음`, { component: 'EXECUTOR' });
       return;
@@ -932,7 +933,7 @@ export class TradeExecutor {
    */
   private async executePartialSell(stockCode: string, quantity: number, reasoning: string): Promise<void> {
     const isPaperSnapshot = getCtxIsPaper();
-    const chain = await chainManager.findOpenChain(stockCode);
+    const chain = await chainManager.findOpenChain(stockCode, isPaperSnapshot);
     if (!chain) return;
 
     // 보유 수량 초과 방어 — 보유량 이내로 클램핑
@@ -1018,7 +1019,7 @@ export class TradeExecutor {
    */
   private async executeClose(stockCode: string, reasoning: string, action: string): Promise<void> {
     const isPaperSnapshot = getCtxIsPaper();
-    const chain = await chainManager.findOpenChain(stockCode);
+    const chain = await chainManager.findOpenChain(stockCode, isPaperSnapshot);
     if (!chain || chain.total_quantity === 0) return;
 
     // 🔒 연속 실패 시 무한 루프 방지
@@ -1253,7 +1254,7 @@ export class TradeExecutor {
             if (retryResult.success) {
               const retryFill = await this.confirmFill(retryResult.orderNo, stockCode, remainQty, fill.filledPrice);
               if (retryFill && retryFill.filledQty > 0) {
-                const updatedChain = await chainManager.findOpenChain(stockCode);
+                const updatedChain = await chainManager.findOpenChain(stockCode, isPaperSnapshot);
                 if (updatedChain) {
                   await chainManager.closeChain(updatedChain.id, retryFill.filledPrice, updatedChain, `${closeReason} (잔여 재매도)`);
                   recordSellForCooldown(stockCode);
