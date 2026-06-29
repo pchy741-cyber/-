@@ -412,14 +412,14 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       for (const sr of stRows) stateMap.set(sr.key, sr.value);
     }
 
-    // last_price=0이거나 15분 이상 stale인 종목: 인메모리 캐시 → KIS API 조회 (최대 3종목)
-    const staleThresh = Date.now() - 15 * 60 * 1000;
+    // v16.2.3: stale 가격 갱신 — 전종목 대상 (기존 3종목 제한 제거 → 평가액 왜곡 방지)
+    const staleThresh = Date.now() - 10 * 60 * 1000; // v16.2.3: 15분→10분
     const needPrice = osRows.filter((r: any) => {
       if (Number(r.last_price ?? 0) <= 0) return true;
       if (r.last_price_at && new Date(r.last_price_at).getTime() < staleThresh) return true;
       return false;
-    }).slice(0, 3);
-    // v10.10.5c: 순차 → 병렬 (최대 3종목 × 3s timeout = 기존 9s → 3s)
+    });
+    // 전종목 병렬 조회 (각 3s timeout)
     await Promise.allSettled(needPrice.map(async (r) => {
       const memP = cacheGet<{ price: number }>(`overseas:lastprice:${r.stock_code}`)?.price ?? 0;
       if (memP > 0) { r.last_price = memP; return; }

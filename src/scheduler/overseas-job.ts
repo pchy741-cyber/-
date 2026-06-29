@@ -246,10 +246,10 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
     // (v10.10.4에서 Live만 적용 → Paper는 sizingPortfolioValue 누락)
     let targetOverseasUsd = 0;
     let sizingAllocPct = 0; // v10.10.5c: 손실한도 역산에도 사용 → 스코프 호이스트
+    let totalAccountKrw = 0; // v16.2.3: 스코프 호이스트 — portfolioValue 총자산 기준 계산에 필요
     if (cycleFxRate > 0) {
       try {
         // 1) 전체 계좌 가치: Paper는 국내+해외 시드 합산, Live는 KIS 잔고
-        let totalAccountKrw = 0;
         if (isPaper()) {
           const { PAPER_INITIAL_CAPITAL } = await import('../risk/paper-balance.js');
           totalAccountKrw = PAPER_INITIAL_CAPITAL + getPaperSeedKrw();
@@ -975,7 +975,15 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
       const tech = techByCode.get(code);
       return sum + (tech ? tech.price.currentPrice * h.qty : h.avgPrice * h.qty);
     }, 0);
-    let portfolioValue = cash + holdingEvalUsd;
+    // v16.2.3: 총자산 기준 portfolioValue (기존: USD만 → 비중 왜곡)
+    // totalAccountKrw가 있으면 총자산/환율, 없으면 USD만(폴백)
+    const overseasOnlyUsd = cash + holdingEvalUsd;
+    const totalAccountUsd = totalAccountKrw > 0 && cycleFxRate > 0
+      ? totalAccountKrw / cycleFxRate
+      : 0;
+    let portfolioValue = totalAccountUsd > 0
+      ? Math.max(overseasOnlyUsd, totalAccountUsd)
+      : overseasOnlyUsd;
     // v10.10.5: maxPositions도 목표배분 기준 (실제 자산이 적어도 적절한 포지션 수 허용)
     const dynSizingBase = targetOverseasUsd > 0 ? Math.max(portfolioValue, targetOverseasUsd) : portfolioValue;
     const dynParams = getOverseasDynamic(dynSizingBase, isPaper(), allocRisk.positionCapPct / 100);
@@ -1071,7 +1079,11 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
       const tech = techByCode.get(code);
       return sum + (tech ? tech.price.currentPrice * h.qty : h.avgPrice * h.qty);
     }, 0);
-    portfolioValue = cash + holdingEvalUsdPost;
+    // v16.2.3: 총자산 기준 유지 (매도 후 재계산)
+    const overseasOnlyUsdPost = cash + holdingEvalUsdPost;
+    portfolioValue = totalAccountUsd > 0
+      ? Math.max(overseasOnlyUsdPost, totalAccountUsd)
+      : overseasOnlyUsdPost;
 
     // v10.10.4: 사이징 레퍼런스 — 목표 해외 배분 규모와 현재 해외 규모 중 큰 값
     // 해외 자산이 목표 대비 적어도 목표 기준으로 사이징 → 점진적으로 목표 비중까지 증가

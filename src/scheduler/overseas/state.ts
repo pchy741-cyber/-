@@ -447,7 +447,14 @@ export async function updateTradeState(p: {
         [p.code, p.exchange, p.qty, p.avgPrice, paper, p.tpPct ?? null, p.slPct ?? null],
       );
     }
-    if (!paper) {
+    if (paper) {
+      // v16.2.3: Paper도 현금 즉시 저장 (기존: 미저장 → 매도 후 반영 지연, 대시보드 금액 왜곡)
+      const cashUsd = Math.max(0, p.newCash);
+      await client.query(
+        `INSERT INTO overseas_state (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2`,
+        [cashKey(true), cashUsd.toFixed(2)],
+      );
+    } else {
       // Live: USD → KRW 변환 후 저장 (통합증거금)
       // Round to whole KRW to prevent FX round-trip drift (KRW→USD→KRW repeated conversion with rounding)
       const fxRate = p.fxRate ?? (await fetchExchangeRate());
