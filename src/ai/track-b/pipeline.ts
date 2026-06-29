@@ -47,7 +47,7 @@ import { isKospiOverrideActive } from '../../risk/kospi-override.js';
 import { reconcilePendingOrders } from '../../trading/fill-reconciler.js';
 import { logger } from '../../utils/logger.js';
 import { getOverride } from '../ai-overrides.js';
-import { getCachedNewsAdj } from '../track-a/rss-scorer.js';
+import { getCachedNewsAdj, refreshStaleNewsScores } from '../track-a/rss-scorer.js';
 import { getCachedNewsTheme } from '../../api/routes/dashboard-news.js';
 import { IDLE_PARK_STOCK_CODE } from './cash-manager.js';
 import { loadPipelineData } from './data-loader.js';
@@ -129,6 +129,18 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       logger.warn('감시 목록이 비어있습니다', { component: 'TRACK_B' });
       return [];
     }
+
+    // ── v16.2.3: 리서치봇 — stale 뉴스 스코어 갱신 (fire-and-forget) ──
+    // Track A 간격(수시간) 사이 NEWS_SCORE_CACHE 공백 해소
+    // 매 사이클 최대 3종목, 500ms 간격 (Google RSS rate limit 준수)
+    refreshStaleNewsScores(
+      watchlist.map((w) => ({ stockCode: w.stock_code, stockName: w.stock_name })),
+      3,
+    )
+      .then((n) => {
+        if (n > 0) logger.info(`📰 리서치봇: 뉴스 ${n}종목 갱신`, { component: 'TRACK_B' });
+      })
+      .catch(() => {});
 
     // ── 개장 초단타 모드: 09:00~09:30 자동 강제 적용 ─────────────────
     // Intl API로 서버 타임존 무관하게 정확한 KST 시각 계산
@@ -1708,6 +1720,30 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       overseasValueKrw,
     });
 
+    // ── v16.2.3: 배당 운영 — 고배당 종목 매도 보호 ──────────────────────
+    // dividendYield >= 3% 종목은 소폭 손실(-3%~0%) 시 매도 차단 (배당수익으로 상쇄 가능)
+    // 심손실(-3% 이하)은 정상 매도 유지 (배당 기대보다 원금 보전 우선)
+    {
+      const divProtected: string[] = [];
+      for (let i = actionable.length - 1; i >= 0; i--) {
+        const d = actionable[i];
+        if (d.action !== 'SELL' && d.action !== 'PARTIAL_SELL') continue;
+        const priceInfo = livePrices.get(d.stock_code);
+        if (!priceInfo || !priceInfo.dividendYield || priceInfo.dividendYield < 3) continue;
+        // 손실률 확인 — 소폭 손실(-3%~0%)이면 배당 보호
+        const chain = openChains.find((c) => c.stock_code === d.stock_code);
+        if (!chain || !chain.avg_buy_price) continue;
+        const pnlPct = ((priceInfo.currentPrice - Number(chain.avg_buy_price)) / Number(chain.avg_buy_price)) * 100;
+        if (pnlPct >= -3 && pnlPct < 0) {
+          divProtected.push(`${d.stock_code}(배당${priceInfo.dividendYield.toFixed(1)}%,손실${pnlPct.toFixed(1)}%)`);
+          actionable.splice(i, 1); // 매도 차단
+        }
+      }
+      if (divProtected.length > 0) {
+        logger.info(`💰 배당 보호: ${divProtected.join(', ')} — 소폭 손실 매도 차단 (배당수익 상쇄 기대)`, { component: 'TRACK_B' });
+      }
+    }
+
     // ── 장초반 09:00-09:30 신규 매수 필터링 (매도는 유지, blockNewBuys에도 포함되지만 2차 안전망) ──
     if (isOpeningVolatility) {
       const beforeCount = actionable.length;
@@ -1757,6 +1793,20 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       logger.info(`⏸️ [${tbModeTag}] Track B: 실행 액션 없음 — 판단 ${decisions.length}건 전부 HOLD/SKIP`, {
         component: 'TRACK_B',
       });
+    }
+
+    // v16.2.3: 배당 모니터링 — 보유종목 배당수익률 로그 (매 사이클 1회)
+    {
+      const divStocks: string[] = [];
+      for (const chain of openChains) {
+        if (chain.total_quantity <= 0) continue;
+        const p = livePrices.get(chain.stock_code);
+        if (!p || !p.dividendYield || p.dividendYield <= 0) continue;
+        divStocks.push(`${chain.stock_code}(${p.dividendYield.toFixed(1)}%)`);
+      }
+      if (divStocks.length > 0) {
+        logger.debug(`💰 [${tbModeTag}] 배당수익률: ${divStocks.join(', ')}`, { component: 'TRACK_B' });
+      }
     }
 
     // 데이터 마스터 로그 (비동기, 파이프라인 블로킹 없음)

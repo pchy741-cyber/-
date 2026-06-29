@@ -91,8 +91,19 @@ export async function runTrackBJob(): Promise<void> {
 
   try {
     // 1. Track B 파이프라인 실행 → 매매 판단
-    const decisions = await runTrackBPipeline();
-    reportNoBuyCandidates(!decisions.some((d) => d.action === 'BUY' || d.action === 'AVERAGE_DOWN'));
+    const rawDecisions = await runTrackBPipeline();
+    reportNoBuyCandidates(!rawDecisions.some((d) => d.action === 'BUY' || d.action === 'AVERAGE_DOWN'));
+
+    // v16.2.3: Track B 역할 전환 — 매수 제거, 손익관리 전담
+    // Pipeline은 분석 데이터 수집용으로 유지하되 BUY/AVERAGE_DOWN은 실행하지 않음
+    const buyBlocked = rawDecisions.filter((d) => d.action === 'BUY' || d.action === 'AVERAGE_DOWN');
+    const decisions = rawDecisions.filter((d) => d.action !== 'BUY' && d.action !== 'AVERAGE_DOWN');
+    if (buyBlocked.length > 0) {
+      logger.info(
+        `🔇 Track B 매수 차단 (손익관리 전담): ${buyBlocked.length}건 BUY/AVG_DOWN 스킵 [${buyBlocked.map((d) => d.stock_code).join(',')}]`,
+        { component: 'SCHEDULER' },
+      );
+    }
 
     // Kill Switch 활성 시 매수 차단, 매도(탈출)만 실행
     // 예외: 인버스 ETF 매수는 허용 — 하락장 킬스위치 발동 시에도 수익화 가능해야 함

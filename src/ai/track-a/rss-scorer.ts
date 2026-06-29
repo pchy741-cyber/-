@@ -201,6 +201,38 @@ export async function getNewsScore(_stockCode: string, stockName: string): Promi
   }
 }
 
+/**
+ * v16.2.3: Track B 리서치봇용 — stale 캐시 엔트리 배치 갱신
+ * Track B 3분 주기에 호출하여 NEWS_SCORE_CACHE 공백 해소
+ * @param stocks - { stockCode, stockName }[] 감시 목록
+ * @param maxRefresh - 한 사이클 최대 갱신 건수 (Google RSS rate limit 방지)
+ * @returns 갱신된 종목 수
+ */
+export async function refreshStaleNewsScores(
+  stocks: Array<{ stockCode: string; stockName: string }>,
+  maxRefresh = 3,
+): Promise<number> {
+  const now = Date.now();
+  const stale = stocks.filter((s) => {
+    const c = NEWS_SCORE_CACHE.get(s.stockCode);
+    return !c || now - c.fetchedAt > NEWS_CACHE_TTL_MS;
+  });
+  if (stale.length === 0) return 0;
+  // 우선순위: 캐시 없는 종목 → 가장 오래된 순
+  stale.sort((a, b) => {
+    const ca = NEWS_SCORE_CACHE.get(a.stockCode);
+    const cb = NEWS_SCORE_CACHE.get(b.stockCode);
+    return (ca?.fetchedAt ?? 0) - (cb?.fetchedAt ?? 0);
+  });
+  let refreshed = 0;
+  for (const s of stale.slice(0, maxRefresh)) {
+    await getNewsScore(s.stockCode, s.stockName);
+    refreshed++;
+    if (refreshed < maxRefresh) await new Promise((r) => setTimeout(r, 500)); // 500ms 간격
+  }
+  return refreshed;
+}
+
 /** 시장 전체 뉴스 감성 (-10 ~ +10) — KOSPI/코스닥/경제 전반 */
 let _marketSentimentCache: { score: number; fetchedAt: number } | null = null;
 async function getMarketSentiment(): Promise<number> {
