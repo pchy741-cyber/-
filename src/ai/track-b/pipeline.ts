@@ -1,4 +1,6 @@
 import { analyzeTechnicals } from '../../analysis/indicators.js';
+import { cachePrice } from '../../cache/redis.js';
+import { cachePriceMemory } from '../../cache/memory.js';
 import { getCommunityScoreAdjustment } from '../../automation/community-sentinel.js';
 import {
   assessCrashLevel,
@@ -344,8 +346,6 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
 
     // 가격 캐싱 (대시보드 fallback용)
     try {
-      const { cachePrice } = await import('../../cache/redis.js');
-      const { cachePriceMemory } = await import('../../cache/memory.js');
       for (const [code, p] of livePrices) {
         if (p.currentPrice > 0) {
           cachePriceMemory(code, p.currentPrice);

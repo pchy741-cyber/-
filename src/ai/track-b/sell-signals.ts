@@ -1,5 +1,6 @@
 import { analyzeTechnicals } from '../../analysis/indicators.js';
-import { STRATEGY_PARAMS, type StrategyMode } from '../../config/constants.js';
+import { getDynamicDomesticTpSl, STRATEGY_PARAMS, type StrategyMode } from '../../config/constants.js';
+import { getLearnedParameters } from '../../automation/self-learning/index.js';
 import { getCtxIsPaper } from '../../config/context.js';
 import { getPool } from '../../db/client.js';
 import type { TradeDecision } from '../../db/models.js';
@@ -97,7 +98,6 @@ async function _getLearnedTpSl(): Promise<{ tp?: number; sl?: number } | null> {
   const cached = _learnedCacheMap.get(cacheKey);
   if (cached && Date.now() < cached.expiresAt) return cached;
   try {
-    const { getPool } = await import('../../db/client.js');
     const { rows } = await getPool().query(
       `SELECT take_profit_pct::float, stop_loss_pct::float FROM strategy_config WHERE is_active = true AND is_paper = $1 LIMIT 1`,
       [isPaper],
@@ -134,7 +134,6 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
   const decisions: TradeDecision[] = [];
 
   // 학습된 TrailingStop 배수 로드 (sniperType별 최적 drop 비율)
-  const { getLearnedParameters } = await import('../../automation/self-learning/index.js');
   const learnedParams = await getLearnedParameters().catch((): { trailingStopMultipliers: Record<string, number> } => ({
     trailingStopMultipliers: {},
   }));
@@ -656,7 +655,6 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
 
     const holdTech = getCachedTech(chain.stock_code);
 
-    const { getDynamicDomesticTpSl } = await import('../../config/constants.js');
     // 자기학습 TP/SL 로드 (캐시 3분 — 매 사이클 DB 조회 방지)
     const learned = await _getLearnedTpSl();
     // 종목별 수급 데이터 (외국인/기관 순매수 여부)

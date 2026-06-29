@@ -1,8 +1,12 @@
+import { checkLargeOrderEntryTiming } from '../ai/entry-timing.js';
 import { PARK_STOCK_CODE } from '../ai/track-b/defense-park.js';
+import { setKrPartialTpStageNum } from '../ai/track-b/partial-tp.js';
 import { recordSellForCooldown } from '../ai/track-b/sell-cooldown.js';
+import { calculateATR } from '../automation/position-sizer.js';
 import { hardInvalidateDashboardCache } from '../cache/dashboard-cache.js';
-import { invalidateStockCache } from '../cache/redis.js';
-import { OrderType, STRATEGY_PARAMS, type StrategyMode } from '../config/constants.js';
+import { getCachedPriceMemory } from '../cache/memory.js';
+import { getLastKnownPrice, invalidateStockCache } from '../cache/redis.js';
+import { getDynamicDomesticTpSl, OrderType, STRATEGY_PARAMS, type StrategyMode } from '../config/constants.js';
 import { getCtxIsPaper, runWithMode } from '../config/context.js';
 import { config } from '../config/index.js';
 import {
@@ -16,19 +20,20 @@ import {
   upsertWatchlistItem,
 } from '../db/client.js';
 import type { TradeDecision } from '../db/models.js';
-import { invalidateBalanceCache } from '../kis/account.js';
-import { getCurrentPrice, getDailyChart } from '../kis/market.js';
+import { getLatestSnapshot } from '../db/repo/snapshots.js';
+import { getPositionForStock, invalidateBalanceCache } from '../kis/account.js';
+import { getCurrentPrice, getDailyChart, getOrderbook } from '../kis/market.js';
 import { cancelOrder, getOrderFills, type OrderResult, placeOrder } from '../kis/order.js';
+import { sendTelegramMessage } from '../notifications/telegram.js';
 import { notifyBuy, notifySell } from '../notifications/web-push.js';
 import { riskEngine } from '../risk/engine.js';
-import { reportError, reportSuccess } from '../risk/kill-switch.js';
+import { isKillSwitchActiveForMode, reportError, reportSuccess } from '../risk/kill-switch.js';
 import { paperTradeOrder } from '../risk/paper.js';
 import { type GateInput, runTradeGates } from '../risk/trade-gate.js';
 import { acquireLock } from '../utils/lock.js';
 import { logger } from '../utils/logger.js';
 import { roundKrw } from '../utils/money.js';
 import { getKSTNow } from '../utils/time.js';
-import { getLatestSnapshot } from '../db/repo/snapshots.js';
 import { registerBuyIntent, releaseBuyIntent } from './buy-intent.js';
 import { chainManager } from './chain.js';
 
@@ -320,8 +325,6 @@ export class TradeExecutor {
       // 가격 우선순위: limit_price(파이프라인) → 메모리캐시 → Redis캐시 → KIS API
       let estimatedPrice = limitPrice ?? 0;
       if (!estimatedPrice) {
-        const { getCachedPriceMemory } = await import('../cache/memory.js');
-        const { getLastKnownPrice } = await import('../cache/redis.js');
         // 캐시 우선: 메모리 → Redis (대부분 50ms 이내 응답)
         estimatedPrice = getCachedPriceMemory(stockCode) ?? (await getLastKnownPrice(stockCode)) ?? 0;
         if (estimatedPrice > 0) {
@@ -406,7 +409,6 @@ export class TradeExecutor {
 
       // 리스크 체크 (ETF 파킹/바닥낚시는 Kill Switch만 확인 — 포지션/한도 체크 제외)
       if (skipGates) {
-        const { isKillSwitchActiveForMode } = await import('../risk/kill-switch.js');
         if (isKillSwitchActiveForMode('KR', isPaperSnapshot)) {
           releaseBuyIntent(stockCode);
           logger.warn(`🛑 Kill Switch 활성 → ETF 파킹 스킵: ${stockCode}`, { component: 'EXECUTOR' });
@@ -439,7 +441,6 @@ export class TradeExecutor {
       const orderAmountKrw = estimatedPrice * gatedQuantity;
       if (!skipGates && orderAmountKrw >= 1_000_000) {
         try {
-          const { checkLargeOrderEntryTiming } = await import('../ai/entry-timing.js');
           const entryCandles = await getDailyChart(stockCode, 20).catch(() => []);
           const entryCheck = await checkLargeOrderEntryTiming(
             stockCode,
@@ -482,7 +483,6 @@ export class TradeExecutor {
       let smartBuyPrice: number | undefined;
       if (!skipGates) {
         try {
-          const { getOrderbook } = await import('../kis/market.js');
           const book = await getOrderbook(stockCode);
           const ask1 = book[0]?.askPrice ?? 0;
           const ask2 = book[1]?.askPrice ?? 0;
@@ -560,7 +560,6 @@ export class TradeExecutor {
         const dbStrategy = await getActiveStrategy().catch(() => null);
         let scoreParams: { takeProfitPct: number; stopLossPct: number } | null = null;
         if (aiScore && aiScore >= 60) {
-          const { getDynamicDomesticTpSl } = await import('../config/constants.js');
           // 자기학습 피드백: strategy_config에 학습된 TP/SL → 30% 블렌딩
           const learnedTp = dbStrategy?.take_profit_pct;
           const learnedSl = dbStrategy?.stop_loss_pct;
@@ -576,7 +575,6 @@ export class TradeExecutor {
 
         // ATR 기반 동적 손절 — 전략 손절폭보다 넓어지지 않도록 캡 적용
         try {
-          const { calculateATR } = await import('../automation/position-sizer.js');
           const atr = await calculateATR(stockCode);
           if (atr > 0 && fill.filledPrice > 0) {
             const atrStopPct = -((atr * 2.0) / fill.filledPrice) * 100;
@@ -728,7 +726,6 @@ export class TradeExecutor {
                 'EXECUTOR',
                 `🚨 고아 포지션 발생: ${stockCode} ${filledQty}주 @${fill.filledPrice} — 수동 복구 필요`,
               );
-              const { sendTelegramMessage } = await import('../notifications/telegram.js');
               sendTelegramMessage(
                 `🚨 고아 포지션: ${stockCode} ${filledQty}주 @${fill.filledPrice.toLocaleString()}원 — 체인 생성 실패, 수동 확인 필요`,
               ).catch(() => {});
@@ -800,7 +797,6 @@ export class TradeExecutor {
           component: 'EXECUTOR',
         });
         try {
-          const { checkLargeOrderEntryTiming } = await import('../ai/entry-timing.js');
           const entryCandles = await getDailyChart(stockCode, 20).catch(() => []);
           const entryCheck = await checkLargeOrderEntryTiming(
             stockCode,
@@ -881,7 +877,6 @@ export class TradeExecutor {
     let smartBuyPrice: number | undefined;
     if (priceType !== 'LIMIT') {
       try {
-        const { getOrderbook } = await import('../kis/market.js');
         const book = await getOrderbook(stockCode);
         const ask1 = book[0]?.askPrice ?? 0;
         if (ask1 > 0) {
@@ -946,7 +941,6 @@ export class TradeExecutor {
     // 스마트 익절: bid1(매수1호가) 지정가 → 시장가 슬리피지 방지
     let smartSellPrice: number | undefined;
     try {
-      const { getOrderbook } = await import('../kis/market.js');
       const book = await getOrderbook(stockCode);
       const bid1 = book[0]?.bidPrice ?? 0;
       if (bid1 > 0) {
@@ -999,7 +993,6 @@ export class TradeExecutor {
         try {
           const stageMatch = reasoning.match(/(\d+)단계/);
           if (stageMatch) {
-            const { setKrPartialTpStageNum } = await import('../ai/track-b/partial-tp.js');
             await setKrPartialTpStageNum(chain.id, Number(stageMatch[1]));
           }
         } catch { /* non-critical */ }
@@ -1065,7 +1058,6 @@ export class TradeExecutor {
     let smartSellPrice: number | undefined;
     if (action !== 'FORCE_CLOSE') {
       try {
-        const { getOrderbook } = await import('../kis/market.js');
         const book = await getOrderbook(stockCode);
         const bid1 = book[0]?.bidPrice ?? 0;
         if (bid1 > 0) {
@@ -1108,7 +1100,6 @@ export class TradeExecutor {
       const isQtyError = errText.includes('수량을 초과') || errText.includes('quantity') || errText.includes('apbk0');
       if (!isPaperSnapshot && (isQtyError || failCount >= 2)) {
         try {
-          const { getPositionForStock } = await import('../kis/account.js');
           invalidateBalanceCache(); // 캐시 무효화 후 실잔고 조회
           const kisPosition = await getPositionForStock(stockCode);
           const actualQty = kisPosition?.quantity ?? 0;
@@ -1533,7 +1524,6 @@ export class TradeExecutor {
 
     this._logFire('ERROR', 'EXECUTOR', `체결 미확인: ${orderNo}. 주문 취소 시도 완료. 수동 확인 필요.`);
 
-    const { sendTelegramMessage } = await import('../notifications/telegram.js');
     await sendTelegramMessage(
       `🛑 체결 미확인 경고!\n주문번호: ${orderNo}\n종목: ${stockCode}\n주문 취소 시도 완료. 수동 확인 필요`,
     ).catch((e) => logger.warn(`미체결 경고 텔레그램 실패: ${e}`, { component: 'EXECUTOR' }));
