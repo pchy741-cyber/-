@@ -335,6 +335,17 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
+  // 16:00 — 국내장 종료 → 해외장 테마 자동 전환
+  cron.schedule(
+    '0 16 * * 1-5',
+    () => {
+      import('../api/routes/dashboard-news.js')
+        .then((m) => m.prefetchOverseasTheme())
+        .catch((e) => logger.error(`해외 테마 전환 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
   // 08:25 — 종목명 자동 보정 (장 시작 전, 깨진 이름 / 코드만 저장된 종목 정리)
   cron.schedule(
     '25 8 * * 1-5',

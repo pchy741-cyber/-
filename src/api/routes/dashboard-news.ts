@@ -12,7 +12,7 @@ interface NewsTheme {
   reason: string;
   stocks: Array<{ code: string; name: string; market: string }>;
 }
-let _newsThemeCache: { data: NewsTheme | null; fetchedAt: number } = { data: null, fetchedAt: 0 };
+let _newsThemeCache: { data: NewsTheme | null; fetchedAt: number; market: 'KR' | 'US' } = { data: null, fetchedAt: 0, market: 'KR' };
 const NEWS_THEME_TTL = 120 * 60 * 1000;
 
 // ── 유튜브 캐시 ──
@@ -287,9 +287,20 @@ dashboardNewsRoutes.get('/news/summary', async (c) => {
   }
 });
 
+// ── 시간대별 시장 판별 (KST 기준) ──
+function getCurrentMarket(): 'KR' | 'US' {
+  const now = new Date();
+  const kstH = new Date(now.getTime() + 9 * 3600_000).getUTCHours();
+  // 국내장: 08:00~15:30 → KR, 그 외 → US (해외장 프리마켓 포함)
+  return kstH >= 8 && kstH < 16 ? 'KR' : 'US';
+}
+
 // ── 오늘의 테마 생성 (공용 함수 — API + 프리페치 공유) ──
-async function generateNewsTheme(macroRaw?: string): Promise<NewsTheme | null> {
-  if (_newsThemeCache.data && Date.now() - _newsThemeCache.fetchedAt < NEWS_THEME_TTL) {
+async function generateNewsTheme(macroRaw?: string, forceMarket?: 'KR' | 'US'): Promise<NewsTheme | null> {
+  const targetMarket = forceMarket ?? getCurrentMarket();
+
+  // 캐시 유효 + 동일 시장이면 재사용
+  if (_newsThemeCache.data && Date.now() - _newsThemeCache.fetchedAt < NEWS_THEME_TTL && _newsThemeCache.market === targetMarket) {
     return _newsThemeCache.data;
   }
 
@@ -316,7 +327,26 @@ async function generateNewsTheme(macroRaw?: string): Promise<NewsTheme | null> {
 
   const { callVertexGemini: callVertexTheme } = await import('../../utils/vertex-gemini.js');
 
-  const themeUserMsg = `아래 글로벌 금융 뉴스 헤드라인을 분석해서 오늘 한국 주식시장에서 가장 주목받을 테마/섹터를 1개 선정하고, 관련 한국 상장주 3~5개를 추천하세요.
+  // 시장별 프롬프트 분기
+  const isUS = targetMarket === 'US';
+  const themeUserMsg = isUS
+    ? `아래 글로벌 금융 뉴스 헤드라인을 분석해서 오늘 미국 주식시장에서 가장 주목받을 테마/섹터를 1개 선정하고, 관련 미국 상장주 3~5개를 추천하세요.
+
+헤드라인:
+${headlines}
+
+반드시 아래 JSON 형식으로만 응답하세요:
+{
+  "theme": "테마명 (예: AI Chips, EV, Cybersecurity, Cloud 등)",
+  "reason": "한 문장으로 이 테마를 선택한 이유 (투자자 관점, 한국어)",
+  "stocks": [
+    {"code": "NVDA", "name": "NVIDIA", "market": "NASDAQ"},
+    {"code": "MSFT", "name": "Microsoft", "market": "NASDAQ"}
+  ]
+}
+
+주의: code는 반드시 실제 미국 상장 티커(symbol), market은 NASDAQ 또는 NYSE`
+    : `아래 글로벌 금융 뉴스 헤드라인을 분석해서 오늘 한국 주식시장에서 가장 주목받을 테마/섹터를 1개 선정하고, 관련 한국 상장주 3~5개를 추천하세요.
 
 헤드라인:
 ${headlines}
@@ -333,12 +363,12 @@ ${headlines}
 
 주의: code는 반드시 실제 한국거래소 6자리 종목코드, market은 KOSPI 또는 KOSDAQ`;
 
+  const systemMsg = isUS
+    ? '당신은 미국 주식시장 전문가입니다. 뉴스 헤드라인을 분석하여 테마와 종목을 추천합니다.'
+    : '당신은 한국 주식시장 전문가입니다. 뉴스 헤드라인을 분석하여 테마와 종목을 추천합니다.';
+
   const text = await Promise.race([
-    callVertexTheme(
-      '당신은 한국 주식시장 전문가입니다. 뉴스 헤드라인을 분석하여 테마와 종목을 추천합니다.',
-      themeUserMsg,
-      { temperature: 0.2, useVertex: true, label: '뉴스-테마' },
-    ),
+    callVertexTheme(systemMsg, themeUserMsg, { temperature: 0.2, useVertex: true, label: `뉴스-테마-${targetMarket}` }),
     new Promise<never>((_, reject) => setTimeout(() => reject(new Error('theme_timeout_20s')), 20000)),
   ]);
 
@@ -348,7 +378,8 @@ ${headlines}
   const data = JSON.parse(jsonText.trim()) as NewsTheme;
   if (!data.theme || !Array.isArray(data.stocks)) throw new Error('invalid');
 
-  _newsThemeCache = { data, fetchedAt: Date.now() };
+  _newsThemeCache = { data, fetchedAt: Date.now(), market: targetMarket };
+  logger.info(`🎯 오늘의 테마 [${targetMarket}]: ${data.theme} (${data.stocks.length}종목)`, { component: 'NEWS_THEME' });
   return data;
 }
 
@@ -374,6 +405,16 @@ export function getCachedNewsTheme(): NewsTheme | null {
 export function getCachedNewsSummary(): string | null {
   if (Date.now() - _newsSummaryCache.fetchedAt > NEWS_SUMMARY_TTL) return null;
   return _newsSummaryCache.summary || null;
+}
+
+// ── 해외장 테마 프리페치 (16:00 KST — 국내장 종료 후 해외장 전환) ──
+export async function prefetchOverseasTheme(): Promise<void> {
+  try {
+    await generateNewsTheme(undefined, 'US');
+    logger.info(`🌍 해외장 테마 전환 완료: ${_newsThemeCache.data?.theme || 'SKIP'}`, { component: 'NEWS_PREFETCH' });
+  } catch (e) {
+    logger.warn(`해외 테마 전환 실패: ${e}`, { component: 'NEWS_PREFETCH' });
+  }
 }
 
 // ── 스케줄러용 프리페치 (08:00 캐시 워밍) ──
