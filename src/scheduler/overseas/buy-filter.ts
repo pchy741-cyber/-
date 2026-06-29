@@ -10,6 +10,7 @@ import type { RegimeAdjustment } from './risk-intelligence.js';
 import { applyUncertaintyPenalty, checkSectorGroupLimit } from './risk-intelligence.js';
 import { isUSDST } from './session.js';
 import { GLOBAL_WATCHLIST, WATCHLIST_BY_CODE } from './watchlist.js';
+import { getOverseasCommunityAdj, isOverseasPumpBlocked } from '../../automation/overseas-community.js';
 import { getCachedSecFundamentalScore } from '../../automation/sec-research.js';
 import { getPaperValidatedCodes, getPaperSignalScore } from './paper-signal-bridge.js';
 
@@ -259,6 +260,14 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
             return true;
           }
           logger.info(`⏸️ 쿨다운Lv${gradualCooldown.level} 전체 차단: ${t.code}`, { component: 'OVERSEAS' });
+          return false;
+        }
+        return true;
+      })
+      // 5.5 커뮤니티 펌프 차단 (StockTwits 기반)
+      .filter((t) => {
+        if (isOverseasPumpBlocked(t.code)) {
+          logger.info(`🌐🚫 커뮤니티 펌프 차단: ${t.code}`, { component: 'OVERSEAS' });
           return false;
         }
         return true;
@@ -700,15 +709,18 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         // v12.3: 뉴스 감성 가산점 — 긍정(+5) / 부정(-5) 전체 시장 분위기 반영
         const _nss = ctx.newsSentimentScore ?? 0;
         const newsSent = _nss > 0.3 ? 5 : _nss < -0.3 ? -5 : 0;
+        // v16.2.3: StockTwits 커뮤니티 감성 (-15 ~ +5)
+        const communityA = getOverseasCommunityAdj(a.code);
+        const communityB = getOverseasCommunityAdj(b.code);
         // v14: AI 신뢰도 정렬 반영 — 기존 기술점수만으로 정렬 → AI 고확신 종목 우선
         const aiConfA = a.ai?.confidence ?? 0;
         const aiConfB = b.ai?.confidence ?? 0;
         const aiConfScoreA = aiConfA >= 0.85 ? 15 : aiConfA >= 0.75 ? 10 : aiConfA >= 0.65 ? 5 : 0;
         const aiConfScoreB = aiConfB >= 0.85 ? 15 : aiConfB >= 0.75 ? 10 : aiConfB >= 0.65 ? 5 : 0;
         const sa =
-          techA + wrScoreA + losspenA + priorityA + favA + sectorBoostA + vwapA + atrEntryA + timeBonus + driftScoreA + sectorMomScoreA + fundAdjA + paperBridgeA + newsThemeA + newsSent + aiConfScoreA;
+          techA + wrScoreA + losspenA + priorityA + favA + sectorBoostA + vwapA + atrEntryA + timeBonus + driftScoreA + sectorMomScoreA + fundAdjA + paperBridgeA + newsThemeA + newsSent + aiConfScoreA + communityA;
         const sb =
-          techB + wrScoreB + losspenB + priorityB + favB + sectorBoostB + vwapB + atrEntryB + timeBonus + driftScoreB + sectorMomScoreB + fundAdjB + paperBridgeB + newsThemeB + newsSent + aiConfScoreB;
+          techB + wrScoreB + losspenB + priorityB + favB + sectorBoostB + vwapB + atrEntryB + timeBonus + driftScoreB + sectorMomScoreB + fundAdjB + paperBridgeB + newsThemeB + newsSent + aiConfScoreB + communityB;
         return sb - sa;
       })
   );

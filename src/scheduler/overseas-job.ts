@@ -28,6 +28,7 @@ import { analyzeOverseasWithAI, type OverseasStockInput } from '../ai/overseas/a
 import { getAIGeneratedInsights } from '../ai/overseas/insights-generator.js';
 import { checkUsEarnings } from '../automation/earnings-sentinel.js';
 import { fetchExchangeRate } from '../automation/macro-data.js';
+import { fetchOverseasCommunity, getOverseasCommunityAdj, isOverseasPumpBlocked } from '../automation/overseas-community.js';
 import { setOverseasScores } from '../cache/overseas-scores.js';
 import { getFearGreedIndex, getUpcomingEarnings, interpretMarketSentiment } from '../market/external-signals.js';
 import { getMacroSignal } from '../market/macro-signal.js';
@@ -685,6 +686,19 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
       })),
       isPaper(),
     );
+
+    // ── 1.5 커뮤니티 감성 수집 (StockTwits, fire-and-forget) ──
+    // buy-filter 정렬에 -15~+5점 반영, 펌프 감지 시 매수 차단
+    fetchOverseasCommunity(techResults.map((t) => t.code))
+      .then((results) => {
+        if (results.size > 0) {
+          const blocked = [...results.values()].filter((r) => r.blockEntry);
+          if (blocked.length > 0) {
+            logger.warn(`🌐🚫 커뮤니티 펌프 감지: ${blocked.map((b) => b.symbol).join(',')}`, { component: SCOPE });
+          }
+        }
+      })
+      .catch(() => {});
 
     // ── 2. AI(Claude) 판단 ──
     // 최근 손절 종목 조기 조회 — AI에 recentlySold 마커 전달 (RECOVERY_BUY 판단용)
