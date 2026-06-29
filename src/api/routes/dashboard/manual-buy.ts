@@ -402,6 +402,13 @@ export function registerManualBuyRoutes(app: Hono) {
             advisoryWarnings.push(`리스크: ${reason}`);
             logger.warn(`⚠️ 리스크 경고(진행): ${stock_code} — ${reason}`, { component: 'CLAUDE_BUY' });
           }
+          // v16: 소프트 사이즈 조절 적용
+          if (riskResult.sizeMultiplier && riskResult.sizeMultiplier < 1.0) {
+            const adjusted = Math.max(1, Math.floor(quantity * riskResult.sizeMultiplier));
+            advisoryWarnings.push(`리스크 사이즈: ${quantity}→${adjusted}주 (${(riskResult.sizeMultiplier * 100).toFixed(0)}%)`);
+            logger.info(`📊 수동매수 리스크 사이즈: ${quantity}→${adjusted}주 (${(riskResult.sizeMultiplier * 100).toFixed(0)}%)`, { component: 'CLAUDE_BUY' });
+            quantity = adjusted;
+          }
         } catch (e) {
           advisoryWarnings.push('리스크 엔진 조회 실패 (진행)');
           logger.warn(`리스크 엔진 조회 실패 (진행): ${e}`, { component: 'CLAUDE_BUY' });
