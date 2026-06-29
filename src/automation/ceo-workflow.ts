@@ -112,6 +112,17 @@ export async function onStockAdded(stockCode: string, stockName: string): Promis
     logger.warn(`Track A 트리거 실패 (다음 스케줄에서 분석): ${err}`, { component: 'CEO_FLOW' });
   }
 
+  // v16.2.3: DART 퀀트봇 즉시 분석 (fire-and-forget — 캐시 없는 신규 종목만 분석)
+  try {
+    const { runDartResearchBatch } = await import('./dart-research.js');
+    runDartResearchBatch([stockCode]).catch((err) => {
+      logger.warn(`CEO 종목 추가 후 DART 분석 실패: ${err}`, { component: 'CEO_FLOW' });
+    });
+    logger.info(`CEO 종목 추가 → DART 퀀트봇 즉시 분석: ${stockCode}`, { component: 'CEO_FLOW' });
+  } catch (err) {
+    logger.warn(`DART 분석 트리거 실패 (다음 스케줄에서 분석): ${err}`, { component: 'CEO_FLOW' });
+  }
+
   await logSystem('INFO', 'CEO_FLOW', `종목 추가: ${stockName} (${stockCode}) → Track A 즉시 실행`);
 }
 
