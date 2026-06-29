@@ -132,9 +132,55 @@ async function fetchRSSFeed(url: string, source: string, maxItems = 5): Promise<
 }
 
 /**
- * 종목 뉴스: Google News RSS → 공신력 있는 도메인만 필터
+ * NAVER Finance 뉴스 API 직접 조회 (안정적, Google RSS 폴백 대체)
  */
-async function fetchStockNews(stockName: string): Promise<NewsItem[]> {
+async function fetchNaverStockNews(stockCode: string, stockName: string): Promise<NewsItem[]> {
+  try {
+    const url = `https://m.stock.naver.com/api/news/list?code=${stockCode}&pageSize=10&page=1`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    if (!res.ok) return [];
+
+    const data = (await res.json()) as Record<string, unknown>;
+    let articles: Array<Record<string, unknown>> = [];
+    const listField = data.newsList ?? data.list ?? data.items;
+    if (Array.isArray(listField)) articles = listField as Array<Record<string, unknown>>;
+
+    if (articles.length === 0) {
+      // fallback: raw JSON에서 title 추출
+      const raw = JSON.stringify(data);
+      const matches = raw.match(/"title":"([^"]{8,80})"/g) ?? [];
+      return matches.slice(0, 5).map((m) => ({
+        title: m.slice(9, -1).replace(/\\u[\dA-Fa-f]{4}/g, ''),
+        link: `https://m.stock.naver.com/domestic/stock/${stockCode}/news`,
+        source: 'NAVER',
+        publishedAt: new Date().toISOString(),
+        relevance: 'HIGH' as const,
+      }));
+    }
+
+    return articles.slice(0, 5).map((a) => ({
+      title: String(a.title ?? a.headline ?? a.subject ?? '').replace(/<[^>]+>/g, ''),
+      link: String(a.url ?? a.link ?? `https://m.stock.naver.com/domestic/stock/${stockCode}/news`),
+      source: 'NAVER',
+      publishedAt: String(a.datetime ?? a.date ?? a.pubDate ?? new Date().toISOString()),
+      relevance: 'HIGH' as const,
+    })).filter((item) => item.title.length > 8);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 종목 뉴스: NAVER Finance API (1차) + Google News RSS (폴백)
+ */
+async function fetchStockNews(stockName: string, stockCode?: string): Promise<NewsItem[]> {
+  // 1차: NAVER Finance API (안정적)
+  if (stockCode) {
+    const naverResults = await fetchNaverStockNews(stockCode, stockName);
+    if (naverResults.length > 0) return naverResults;
+  }
+
+  // 2차: Google News RSS (폴백)
   try {
     const url = `https://news.google.com/rss/search?q=${encodeURIComponent(`${stockName} 주가 실적`)}&hl=ko&gl=KR&ceid=KR:ko`;
 
@@ -158,7 +204,6 @@ async function fetchStockNews(stockName: string): Promise<NewsItem[]> {
       const link = String(item.link ?? '');
       const pubDate = String(item.pubDate ?? '');
 
-      // 도메인 필터: 공신력 있는 출처만
       const isAllowed = STOCK_NEWS_ALLOWED_DOMAINS.some((domain) => link.includes(domain));
       if (!isAllowed) continue;
 
@@ -168,7 +213,6 @@ async function fetchStockNews(stockName: string): Promise<NewsItem[]> {
       if (results.length >= 5) break;
     }
 
-    // 도메인 필터 통과 항목이 없으면 연합뉴스 직접 검색 시도
     if (results.length === 0) {
       const ynaUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(stockName)}&hl=ko&gl=KR&ceid=KR:ko&as_sites=yna.co.kr`;
       const ynaItems = await fetchRSSFeed(ynaUrl, '연합뉴스', 3);
@@ -215,7 +259,7 @@ export async function collectWatchlistNews(): Promise<string> {
   for (let i = 0; i < watchlist.length; i += batchSize) {
     const batch = watchlist.slice(i, i + batchSize);
 
-    const results = await Promise.allSettled(batch.map((stock) => fetchStockNews(stock.stock_name)));
+    const results = await Promise.allSettled(batch.map((stock) => fetchStockNews(stock.stock_name, stock.stock_code)));
 
     for (let j = 0; j < batch.length; j++) {
       const stockCode = batch[j].stock_code;
