@@ -339,6 +339,24 @@ export async function monitorDisclosures(): Promise<DartDisclosure[]> {
     ].join('\n');
 
     await sendTelegramMessage(message).catch(() => {});
+
+    // v16.2: 실적 공시 감지 → DART 리서치 자동 트리거 (재무 점수 즉시 갱신)
+    const earningsKeywords = ['실적', '결산', '매출액', '영업이익', '분기보고서', '반기보고서', '사업보고서'];
+    const earningsDisclosures = highImportance.filter((d) =>
+      earningsKeywords.some((kw) => d.report_nm.includes(kw)),
+    );
+    if (earningsDisclosures.length > 0) {
+      const earningsStockCodes = earningsDisclosures
+        .map((d) => watchlist.find((w) => w.stock_name === d.corp_name)?.stock_code)
+        .filter((c): c is string => !!c);
+      const uniqueCodes = [...new Set(earningsStockCodes)];
+      if (uniqueCodes.length > 0) {
+        logger.info(`📊 실적 공시 감지 → DART 리서치 자동 트리거: ${uniqueCodes.join(',')}`, { component: 'DART' });
+        import('./dart-research.js')
+          .then((m) => m.runDartResearchBatch(uniqueCodes))
+          .catch((e) => logger.warn(`실적 공시 DART 리서치 실패: ${e}`, { component: 'DART' }));
+      }
+    }
   } else {
     logger.info(`DART 공시 ${disclosures.length}건 수집 (주요 공시 없음)`, { component: 'DART' });
   }

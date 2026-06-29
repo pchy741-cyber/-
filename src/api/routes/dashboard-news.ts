@@ -6,6 +6,7 @@ export const dashboardNewsRoutes = new Hono();
 
 let _newsSummaryCache = { summary: '', fetchedAt: 0 };
 const NEWS_SUMMARY_TTL = 120 * 60 * 1000;
+let _summaryRefreshing = false; // stale-while-revalidate 중복 방지
 
 interface NewsTheme {
   theme: string;
@@ -14,6 +15,7 @@ interface NewsTheme {
 }
 let _newsThemeCache: { data: NewsTheme | null; fetchedAt: number; market: 'KR' | 'US' } = { data: null, fetchedAt: 0, market: 'KR' };
 const NEWS_THEME_TTL = 120 * 60 * 1000;
+let _themeRefreshing = false; // stale-while-revalidate 중복 방지
 
 // ── 유튜브 캐시 ──
 interface YouTubeVideo {
@@ -204,19 +206,83 @@ dashboardNewsRoutes.get('/news/youtube', async (c) => {
 });
 
 // ── 매크로 뉴스 AI 한 줄 요약 (Gemini 2.0 Flash) ──
+
+/** 백그라운드 요약 리프레시 (stale-while-revalidate) */
+function refreshSummaryInBackground(): void {
+  if (_summaryRefreshing) return;
+  _summaryRefreshing = true;
+  (async () => {
+    try {
+      const { collectMacroNews } = await import('../../automation/news-collector.js');
+      const raw = await Promise.race([
+        collectMacroNews(),
+        new Promise<string>((resolve) => setTimeout(() => resolve(''), 20000)),
+      ]);
+      if (!raw) return;
+      const headlineLines = raw.split('\n').filter((l) => l.startsWith('- ['));
+      if (headlineLines.length === 0) return;
+
+      const headlines = headlineLines
+        .map((l) => {
+          const m = l.match(/^- \[(.+?)\]\(.+?\)\s*—\s*(.+)$/);
+          return m ? `${m[1]} (${m[2]})` : l.replace(/^- /, '');
+        })
+        .join('\n');
+
+      const { config } = await import('../../config/index.js');
+      if (!config.geminiEnabled) {
+        const summary = generateFreeKoreanSummary(headlineLines);
+        if (summary) _newsSummaryCache = { summary, fetchedAt: Date.now() };
+        return;
+      }
+
+      const { callVertexGemini } = await import('../../utils/vertex-gemini.js');
+      const summary = await Promise.race([
+        callVertexGemini(
+          '당신은 주식 투자 전문가입니다. 뉴스를 투자자 관점에서 간결하게 요약합니다.',
+          `아래는 오늘 글로벌 금융 뉴스 헤드라인입니다. 주식 투자에 영향을 미치는 핵심 내용만 뽑아서 한국어로 자연스럽게 2~3문장으로 요약해 주세요. 투자자 관점에서 오늘 시장 분위기와 주요 이슈를 간결하게 서술하세요.\n\n${headlines}`,
+          { temperature: 0.2, useVertex: true, label: '뉴스-요약-SWR' },
+        ),
+        new Promise<string>((resolve) => setTimeout(() => resolve(''), 15000)),
+      ]);
+      if (summary) _newsSummaryCache = { summary, fetchedAt: Date.now() };
+    } catch (e) {
+      logger.debug(`뉴스 요약 백그라운드 리프레시 실패: ${e}`, { component: 'NEWS_SUMMARY' });
+    } finally {
+      _summaryRefreshing = false;
+    }
+  })();
+}
+
 dashboardNewsRoutes.get('/news/summary', async (c) => {
   const forceRefresh = c.req.query('refresh') === '1';
   try {
-    if (!forceRefresh && _newsSummaryCache.summary && Date.now() - _newsSummaryCache.fetchedAt < NEWS_SUMMARY_TTL) {
-      return c.json({
-        summary: _newsSummaryCache.summary,
-        geminiOk: true,
-        error: null,
-        headlineCount: 0,
-        cached: true,
-      });
+    // v16.2: stale-while-revalidate — 캐시 있으면 즉시 반환, 백그라운드 리프레시
+    if (_newsSummaryCache.summary) {
+      const isStale = Date.now() - _newsSummaryCache.fetchedAt >= NEWS_SUMMARY_TTL;
+      if (isStale && !forceRefresh) {
+        // stale 캐시 즉시 반환 + 백그라운드 갱신 (10-15초 대기 제거)
+        refreshSummaryInBackground();
+        return c.json({
+          summary: _newsSummaryCache.summary,
+          geminiOk: true,
+          error: null,
+          headlineCount: 0,
+          cached: true,
+        });
+      }
+      if (!isStale && !forceRefresh) {
+        return c.json({
+          summary: _newsSummaryCache.summary,
+          geminiOk: true,
+          error: null,
+          headlineCount: 0,
+          cached: true,
+        });
+      }
     }
 
+    // 캐시 완전 비어있거나 강제 리프레시 → 동기 생성
     const { collectMacroNews } = await import('../../automation/news-collector.js');
     const raw = await Promise.race([
       collectMacroNews(),
@@ -241,7 +307,6 @@ dashboardNewsRoutes.get('/news/summary', async (c) => {
       })
       .join('\n');
 
-    // Gemini OFF → 한글 키워드 기반 자연스러운 요약
     const { config } = await import('../../config/index.js');
     if (!config.geminiEnabled) {
       const summary = generateFreeKoreanSummary(headlineLines);
@@ -383,9 +448,24 @@ ${headlines}
   return data;
 }
 
-// ── 오늘의 테마 API ──
+// ── 오늘의 테마 API (v16.2: stale-while-revalidate) ──
 dashboardNewsRoutes.get('/news/theme', async (c) => {
   try {
+    const targetMarket = getCurrentMarket();
+
+    // stale-while-revalidate: 캐시 있으면 즉시 반환, 만료 시 백그라운드 갱신
+    if (_newsThemeCache.data && _newsThemeCache.market === targetMarket) {
+      const isStale = Date.now() - _newsThemeCache.fetchedAt >= NEWS_THEME_TTL;
+      if (isStale && !_themeRefreshing) {
+        _themeRefreshing = true;
+        generateNewsTheme()
+          .catch((e) => logger.debug(`테마 백그라운드 리프레시 실패: ${e}`, { component: 'NEWS_THEME' }))
+          .finally(() => { _themeRefreshing = false; });
+      }
+      return c.json(_newsThemeCache.data);
+    }
+
+    // 캐시 없음 → 동기 생성
     const data = await generateNewsTheme();
     return c.json(data ?? { theme: '', reason: '', stocks: [] });
   } catch (err) {

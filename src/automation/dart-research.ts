@@ -594,3 +594,33 @@ export function getCachedFundamentalScore(stockCode: string): number | undefined
   }
   return undefined;
 }
+
+/**
+ * v16.2: 서버 시작 시 DB 분기캐시 → 인메모리 캐시 워밍
+ * 배포/재시작 후에도 DART 결과가 즉시 사용 가능 (수동 클릭 불필요)
+ */
+export async function warmDartCacheFromDb(): Promise<number> {
+  const { year, quarter } = getCurrentQuarter();
+  try {
+    const { rows } = await getPool().query(
+      `SELECT stock_code, result FROM dart_research_cache WHERE year = $1 AND quarter = $2 AND result IS NOT NULL`,
+      [year, quarter],
+    );
+    let loaded = 0;
+    for (const row of rows) {
+      const result = (typeof row.result === 'string' ? JSON.parse(row.result) : row.result) as DartResearchResult;
+      const cacheKey = `${row.stock_code}-${year}-${quarter}`;
+      if (!_resultCache.has(cacheKey)) {
+        _resultCache.set(cacheKey, { result, fetchedAt: Date.now() });
+        loaded++;
+      }
+    }
+    if (loaded > 0) {
+      logger.info(`📊 DART DB→메모리 캐시 워밍 완료: ${loaded}종목 (${year}/${quarter})`, { component: COMP });
+    }
+    return loaded;
+  } catch (e) {
+    logger.debug(`DART 캐시 워밍 실패 (무시): ${e}`, { component: COMP });
+    return 0;
+  }
+}

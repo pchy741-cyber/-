@@ -274,16 +274,17 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
           } catch { /* DB 미설정 시 시간대별 기본값 사용 */ }
 
           // 3) 시간대별 기본 비중 (통합증거금 현금 캡용)
+          // v16.2: 해외 비중 상향 — 원화 잔여분을 해외매수에 적극 활용
           const isKROpen = openRegions.has('KR');
           const timeBasedPct = isUSSession
-            ? 0.80
+            ? 0.85  // v16.2: 80→85% (US장 적극 매수)
             : isUSExtended
-            ? 0.70
+            ? 0.80  // v16.2: 70→80% (프리/애프터마켓 기회 확대)
             : isKROpen
-            ? 0.35
+            ? 0.40  // v16.2: 35→40% (국내장 중에도 해외 비중 소폭 확대)
             : openRegions.has('JP') || openRegions.has('TW')
-            ? 0.55
-            : 0.60;
+            ? 0.65  // v16.2: 55→65%
+            : 0.70; // v16.2: 60→70%
 
           // 4) 사이징용 배분비율: 사용자 목표와 시간대별 중 큰 값
           //    → 사용자가 70%로 설정해도 US장(80%) 시간에는 80% 기준 사이징

@@ -1110,13 +1110,17 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
           });
         // 종목별 실거래 승률 보정: 65%+→+5, 35%-→-8 (자기학습 연동)
         const stockAccAdj = stockAccAdjMap.get(s.stock_code) ?? 0;
-        // Piotroski F-Score 보정: 8-9 우량 +5, 0-2 취약 -8
+        // v16.2: Piotroski F-Score 보정 강화: 8-9→+7, 6-7→+3, 0-2→-10
         const piotroskiFs = getCachedPiotroskiScore(s.stock_code);
-        const piotroskiAdj = piotroskiFs != null ? (piotroskiFs >= 8 ? 5 : piotroskiFs <= 2 ? -8 : 0) : 0;
-        // Gemini fundamentalScore 보정: 75+→+4, 60+→+2, 30-→-5 (DART 리서치 연동)
+        const piotroskiAdj = piotroskiFs != null
+          ? (piotroskiFs >= 8 ? 7 : piotroskiFs >= 6 ? 3 : piotroskiFs <= 2 ? -10 : 0)
+          : 0;
+        // v16.2: Gemini fundamentalScore 보정 강화: 80+→+8, 70+→+5, 60+→+2, 30-→-8
         const fundScore = getCachedFundamentalScore(s.stock_code);
         const fundScoreAdj =
-          fundScore != null ? (fundScore >= 75 ? 4 : fundScore >= 60 ? 2 : fundScore <= 30 ? -5 : 0) : 0;
+          fundScore != null
+            ? (fundScore >= 80 ? 8 : fundScore >= 70 ? 5 : fundScore >= 60 ? 2 : fundScore <= 30 ? -8 : 0)
+            : 0;
         // Community Sentinel: 언급 Z-score + 센티먼트 + FOMO/펌프 감지 (-20 ~ +5)
         const communityAdj = getCommunityScoreAdjustment(s.stock_code);
         // 상대강도(RS): 종목 5일 수익률 vs KOSPI 5일 수익률 (학술 검증된 모멘텀 팩터)
