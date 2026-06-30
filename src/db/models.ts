@@ -62,8 +62,10 @@ const TransactionChainSchema = z.object({
   pnl_pct: z.number().nullable().optional(),
   sell_reason: z.string().nullable().optional(),
   trigger_source: z.string().nullable().optional(),
-  // Computed via LEFT JOIN watchlist — SELECT에서만 존재, DDL 컬럼 아님
+  // DDL 104: stock_name 컬럼 추가 (watchlist JOIN 대체)
   stock_name: z.string().nullable().optional(),
+  // DDL 109: partial_tp_stage 추적용 JSONB
+  metadata: z.record(z.unknown()).nullable().optional(),
   // DDL 020: NOT NULL DEFAULT true — paper/live 분리 핵심 컬럼
   is_paper: z.boolean().default(true),
   opened_at: z.string(),

@@ -19,7 +19,7 @@ export interface StrategyGraduation {
   id: number;
   strategy_mode: string;
   risk_level: 'LOW' | 'MEDIUM' | 'HIGH';
-  status: 'PENDING' | 'AUTO_APPLIED' | 'APPROVED' | 'REJECTED' | 'EXPIRED';
+  status: 'PENDING' | 'AUTO_APPLIED' | 'APPROVED' | 'REJECTED' | 'EXPIRED' | 'REVOKED';
   trades: number;
   win_rate: number;
   profit_factor: number;

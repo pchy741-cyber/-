@@ -204,6 +204,7 @@ const store = {
     daily_pnl: number;
     daily_pnl_pct: number;
     positions: unknown;
+    is_paper: boolean;
   }>,
   strategy: {
     id: uuid(),
@@ -334,20 +335,24 @@ export function memInsertSnapshot(snapshot: {
   daily_pnl: number;
   daily_pnl_pct: number;
   positions: unknown;
+  is_paper?: boolean;
 }) {
-  store.snapshots.push({ ...snapshot, id: uuid(), snapshot_at: new Date().toISOString() });
+  store.snapshots.push({ ...snapshot, is_paper: snapshot.is_paper ?? false, id: uuid(), snapshot_at: new Date().toISOString() });
   // 스냅샷 100건 초과 시 오래된 항목 제거 (약 3일분 유지)
   if (store.snapshots.length > 100) store.snapshots.splice(0, store.snapshots.length - 100);
 }
 
-export function memGetTodayStartSnapshot() {
+export function memGetTodayStartSnapshot(isPaperOverride?: boolean) {
+  const isPaper = isPaperOverride ?? getCtxIsPaper();
   const today = getKSTNow().toISOString().split('T')[0];
-  return store.snapshots.find((s) => s.snapshot_at >= `${today}T00:00:00`) ?? null;
+  return store.snapshots.find((s) => s.snapshot_at >= `${today}T00:00:00` && s.is_paper === isPaper) ?? null;
 }
 
-export function memGetLatestSnapshot() {
-  if (store.snapshots.length === 0) return null;
-  return store.snapshots[store.snapshots.length - 1];
+export function memGetLatestSnapshot(isPaperOverride?: boolean) {
+  const isPaper = isPaperOverride ?? getCtxIsPaper();
+  const filtered = store.snapshots.filter((s) => s.is_paper === isPaper);
+  if (filtered.length === 0) return null;
+  return filtered[filtered.length - 1];
 }
 
 // ── Strategy Config ──

@@ -132,21 +132,15 @@ export default function HeroPnlCard({
           </div>
         </div>
         <div className="bg-white/[0.04] rounded-xl px-2 sm:px-3 py-2">
-          <div className="text-[9px] text-slate-500 mb-0.5">{(withdrawConfig?.totalReserved ?? 0) > 0 ? '인출예약' : '총 자산'}</div>
-          {(withdrawConfig?.totalReserved ?? 0) > 0 ? (
-            <div className="text-sm font-bold text-amber-400 truncate">{mask(fmtWon(withdrawConfig!.totalReserved!))}</div>
+          <div className="text-[9px] text-slate-500 mb-0.5">총 자산</div>
+          <div className="text-sm font-bold text-slate-200 truncate">{mask(fmtWon(totalValue))}</div>
+          {dailyChangePct != null && prevDayTotalValue && prevDayTotalValue > 0 ? (
+            <div className={`text-[10px] font-bold mt-0.5 ${dailyChangePct > 0 ? 'text-emerald-400' : dailyChangePct < 0 ? 'text-rose-400' : 'text-slate-500'}`}>
+              {mask(`${dailyChangePct > 0 ? '+' : ''}${dailyChangePct.toFixed(2)}%`)}
+              <span className="text-slate-600 font-normal ml-1">전일비</span>
+            </div>
           ) : (
-            <>
-              <div className="text-sm font-bold text-slate-200 truncate">{mask(fmtWon(totalValue))}</div>
-              {dailyChangePct != null && prevDayTotalValue && prevDayTotalValue > 0 ? (
-                <div className={`text-[10px] font-bold mt-0.5 ${dailyChangePct > 0 ? 'text-emerald-400' : dailyChangePct < 0 ? 'text-rose-400' : 'text-slate-500'}`}>
-                  {mask(`${dailyChangePct > 0 ? '+' : ''}${dailyChangePct.toFixed(2)}%`)}
-                  <span className="text-slate-600 font-normal ml-1">전일비</span>
-                </div>
-              ) : (
-                <div className="text-[9px] text-slate-600 mt-0.5">{todayTradesLength}건 매매</div>
-              )}
-            </>
+            <div className="text-[9px] text-slate-600 mt-0.5">{todayTradesLength}건 매매</div>
           )}
         </div>
       </div>

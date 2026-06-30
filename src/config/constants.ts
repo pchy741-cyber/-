@@ -61,6 +61,14 @@ export const ChainStatus = {
 } as const;
 export type ChainStatus = (typeof ChainStatus)[keyof typeof ChainStatus];
 
+// ── 트레이딩 모드 (paper/live/p_arch) ──
+export const TradingMode = {
+  PAPER: 'paper',
+  LIVE: 'live',
+  PAPER_ARCHIVE: 'p_arch',
+} as const;
+export type TradingMode = (typeof TradingMode)[keyof typeof TradingMode];
+
 // ── CEO 전략 모드 ──
 export const StrategyMode = {
   SWING: 'SWING', // 🟢 평상시 스윙

@@ -61,6 +61,12 @@ export interface AllocConfig {
 }
 
 export interface WithdrawConfig {
-  totalReserved?: number;
+  is_active?: boolean;
+  withdraw_ratio_pct?: number;
+  min_profit?: number;
+  todayReserved?: number;
+  todayAmount?: number;
+  monthlyTotal?: number;
+  monthlyCap?: number;
   [key: string]: unknown;
 }

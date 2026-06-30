@@ -599,20 +599,27 @@ export class RiskEngine {
           { component: 'RISK' },
         );
         try {
-          await getPool().query(
-            `DELETE FROM portfolio_snapshots WHERE snapshot_at >= $1 AND snapshot_at < $2 AND is_paper = $3`,
-            [weekStartIso, new Date(new Date(weekStartIso).getTime() + 2 * 60 * 60 * 1000).toISOString(), isPaper],
-          );
-          await insertSnapshot({
-            total_value: currentValue,
-            cash_balance: currentBalance.orderableCash,
-            invested_value: currentBalance.totalEvalAmount,
-            unrealized_pnl: currentBalance.totalEvalAmount - currentBalance.purchaseCost, // 실제 미실현PnL
-            daily_pnl: 0,
-            daily_pnl_pct: 0,
-            positions: currentBalance.positions,
-            is_paper: isPaper,
-          });
+          const client = await getPool().connect();
+          try {
+            await client.query('BEGIN');
+            await client.query(
+              `DELETE FROM portfolio_snapshots WHERE snapshot_at >= $1 AND snapshot_at < $2 AND is_paper = $3`,
+              [weekStartIso, new Date(new Date(weekStartIso).getTime() + 2 * 60 * 60 * 1000).toISOString(), isPaper],
+            );
+            await client.query(
+              `INSERT INTO portfolio_snapshots (total_value, cash_balance, invested_value, unrealized_pnl, daily_pnl, daily_pnl_pct, positions, is_paper)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+              [currentValue, currentBalance.orderableCash, currentBalance.totalEvalAmount,
+               currentBalance.totalEvalAmount - currentBalance.purchaseCost, 0, 0,
+               JSON.stringify(currentBalance.positions), isPaper],
+            );
+            await client.query('COMMIT');
+          } catch (txErr) {
+            await client.query('ROLLBACK').catch(() => {});
+            throw txErr;
+          } finally {
+            client.release();
+          }
         } catch {
           /* 스냅샷 교체 실패해도 이번 차단은 해제 */
         }

@@ -411,7 +411,7 @@ sellRoutes.post('/sell-stock/:stockCode', async (c) => {
           const kisPos = bal.positions?.find((p: any) => p.stockCode === stockCode);
           if (!kisPos || kisPos.quantity === 0) {
             kisOrderNo = `FILLED_RETRY_${Date.now().toString(36)}`;
-            result = { success: true } as any;
+            result = { success: true, ok: true } as any;
           }
         } catch {
           /* 잔고 조회 실패 시 원래대로 retry */

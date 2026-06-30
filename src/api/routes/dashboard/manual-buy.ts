@@ -560,7 +560,10 @@ export function registerManualBuyRoutes(app: Hono) {
                   }
                 } finally {
                   if (!orderFilled) {
-                    await getPool().query(`DELETE FROM transaction_chains WHERE id = $1`, [liveChainId]).catch(() => {});
+                    await getPool().query(
+                      `DELETE FROM transaction_chains WHERE id = $1 AND NOT EXISTS (SELECT 1 FROM orders WHERE chain_id = $1)`,
+                      [liveChainId],
+                    ).catch((err) => logger.warn(`체인 삭제 실패 (FK 참조 존재 가능): ${err}`, { component: 'CLAUDE_BUY' }));
                   }
                 }
               }
