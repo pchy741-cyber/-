@@ -1,10 +1,16 @@
 import { analyzeTechnicals } from '../../analysis/indicators.js';
 import { INVERSE_ETF_CODES } from '../../automation/crash-profit.js';
+import { getCtxIsPaper } from '../../config/context.js';
 import { getPool } from '../../db/client.js';
 import type { TradeDecision } from '../../db/models.js';
 import { logger } from '../../utils/logger.js';
 import { resolveStrategyParams, type TechnicalFallbackParams } from './technical-fallback-types.js';
 import { MEGA_CAP_PRIORITY_CODES } from './trading-rules.js';
+
+// Paper 전용 물타기 파라미터 (live는 0 = 비활성 유지)
+const PAPER_AVG_DOWN_TRIGGER = -2.5; // SL -3.5%보다 먼저 개입
+const PAPER_AVG_DOWN_MAX = 1;        // 최대 1회
+const PAPER_SL_WIDENED = -3.5;       // 물타기 공간 확보용 SL
 
 /**
  * 보유 종목 물타기 판단 (지지선+반등신호 게이트)
@@ -17,6 +23,7 @@ export async function generateAveragingDecisions(
 ): Promise<TradeDecision[]> {
   const { livePrices, chartData, openChains, totalAssets } = params;
   const strategyParams = resolveStrategyParams(params.mode, params);
+  const isPaper = getCtxIsPaper();
   const decisions: TradeDecision[] = [];
   let cash = remainingCash;
 
@@ -34,7 +41,9 @@ export async function generateAveragingDecisions(
     const isMegaCap = MEGA_CAP_PRIORITY_CODES.has(chain.stock_code);
     const avgDownTrigger = isMegaCap
       ? -2.5  // 대형주: -2.5% 하락 시 물타기 (SL -5.5%보다 충분히 위)
-      : strategyParams.averageDownPct; // 일반: 전략 설정값 (현재 0 = 비활성)
+      : isPaper
+        ? PAPER_AVG_DOWN_TRIGGER  // paper 일반종목: -2.5% 활성화 (SL -3.5% 공간 확보)
+        : strategyParams.averageDownPct; // live 일반: 0 = 비활성 유지
 
     // 물타기 차단: 익절 진행 중 체인 or SMA20 아래 깊은 하락
     const chainCandles = chartData.get(chain.stock_code);
@@ -106,7 +115,9 @@ export async function generateAveragingDecisions(
     // v13-fix: 대형주 물타기 최대 횟수 오버라이드 (chain.max_averaging_count가 0이어도 2회 허용)
     const effectiveMaxAvgCount = isMegaCap
       ? Math.max(chain.max_averaging_count, 2) // 대형주: 최소 2회 물타기 허용
-      : chain.max_averaging_count;
+      : isPaper
+        ? Math.max(chain.max_averaging_count, PAPER_AVG_DOWN_MAX) // paper: 최소 1회 허용
+        : chain.max_averaging_count;
     if (avgDownTrigger !== 0 && pnlPct <= avgDownTrigger && chain.current_averaging_count < effectiveMaxAvgCount) {
       let hasPendingBuy = false;
       try {
@@ -132,12 +143,30 @@ export async function generateAveragingDecisions(
       if (avgDownSize >= minAvgDownSize) {
         const qty = Math.floor(avgDownSize / price.currentPrice);
         if (qty > 0) {
+          // paper 물타기 시: SL이 -3.5%보다 타이트하면 넓혀서 SL 조기 발동 방지
+          if (isPaper && !isMegaCap) {
+            const currentSl = Number(chain.stop_loss_pct ?? -3.0);
+            if (currentSl > PAPER_SL_WIDENED) {
+              try {
+                await getPool().query(
+                  `UPDATE transaction_chains SET stop_loss_pct = $1 WHERE id = $2`,
+                  [PAPER_SL_WIDENED, chain.id],
+                );
+                logger.info(
+                  `  📐 ${chain.stock_code}: paper SL ${currentSl}% → ${PAPER_SL_WIDENED}% (물타기 공간 확보)`,
+                  { component: 'TRACK_B' },
+                );
+              } catch (e: any) {
+                logger.warn(`  ⚠️ ${chain.stock_code}: SL 업데이트 실패 — ${e.message}`, { component: 'TRACK_B' });
+              }
+            }
+          }
           decisions.push({
             action: 'AVERAGE_DOWN',
             stock_code: chain.stock_code,
             quantity: qty,
             price_type: 'MARKET',
-            reasoning: `기술적 물타기: 평단가 대비 ${pnlPct.toFixed(1)}% (트리거 ${avgDownTrigger}%) | ${chain.current_averaging_count + 1}/${chain.max_averaging_count}차`,
+            reasoning: `기술적 물타기: 평단가 대비 ${pnlPct.toFixed(1)}% (트리거 ${avgDownTrigger}%) | ${chain.current_averaging_count + 1}/${effectiveMaxAvgCount}차${isPaper ? ' [paper]' : ''}`,
             confidence: 0.7,
           });
           cash -= qty * price.currentPrice;

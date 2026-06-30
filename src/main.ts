@@ -300,16 +300,33 @@ async function bootstrap() {
         { component: 'BOOT' },
       );
       // is_paper 분리: 현재 모드 체인만 null값 보충 — live 체인에 paper SL 덮어쓰기 방지
+      // paper 전용: SL -3.5% (물타기 트리거 -2.5%보다 넓은 SL 공간 확보)
+      const effectiveBootSl = baseIsPaper ? -3.5 : sp.stopLossPct;
       await gp().query(
         `UPDATE transaction_chains SET stop_loss_pct=$1 WHERE status IN ('OPEN','AVERAGING','PROFIT_TAKING') AND stop_loss_pct IS NULL AND is_paper = $2`,
-        [sp.stopLossPct, baseIsPaper],
+        [effectiveBootSl, baseIsPaper],
       );
       await gp().query(
         `UPDATE transaction_chains SET target_profit_pct=$1 WHERE status IN ('OPEN','AVERAGING','PROFIT_TAKING') AND target_profit_pct IS NULL AND is_paper = $2`,
         [sp.takeProfitPct, baseIsPaper],
       );
+      // paper 마이그레이션: 기존 타이트한 SL(-1.5% ~ -2.5%) → -3.5% (일반 종목만, MEGA_CAP 제외)
+      if (baseIsPaper) {
+        const { MEGA_CAP_PRIORITY_CODES } = await import('./ai/track-b/trading-rules.js');
+        const megaList = [...MEGA_CAP_PRIORITY_CODES];
+        const { rowCount: migrated } = await gp().query(
+          `UPDATE transaction_chains SET stop_loss_pct = -3.5
+           WHERE is_paper = true AND status IN ('OPEN','AVERAGING','PROFIT_TAKING')
+             AND stop_loss_pct > -3.5 AND stop_loss_pct IS NOT NULL
+             AND NOT (stock_code = ANY($1::text[]))`,
+          [megaList],
+        );
+        if (migrated && migrated > 0) {
+          logger.info(`✅ paper SL 마이그레이션: ${migrated}개 체인 → -3.5% (물타기 공간 확보)`, { component: 'BOOT' });
+        }
+      }
       logger.info(
-        `✅ 기존 체인 null값 보충 (${baseIsPaper ? 'paper' : 'live'}): stop_loss=${sp.stopLossPct}% target=${sp.takeProfitPct}%`,
+        `✅ 기존 체인 null값 보충 (${baseIsPaper ? 'paper' : 'live'}): stop_loss=${effectiveBootSl}% target=${sp.takeProfitPct}%`,
         { component: 'BOOT' },
       );
       // 전략 모드별 TP/SL 보정 — 현재 모드 체인만 (이전 마이그레이션 기본값 4.0/-3.0 수정)
