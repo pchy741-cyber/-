@@ -57,6 +57,7 @@ import { applyDecisionFlow } from './decision-flow.js';
 import {
   buildDefenseParkEntryDecisions,
   buildDefenseParkExitDecisions,
+  deactivateDefensePark,
   getDefenseParkState,
   isPortfolioInDowntrend,
   PARK_STOCK_CODE,
@@ -177,22 +178,32 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         }
       : await getDefenseParkState();
     if (parkState.isActive) {
-      // 회복 판정만 수행 — 즉시 해제 금지
-      const { isMarketRecovering } = await import('./defense-park.js');
-      const { getBatchPrices: getParkPrices } = await import('../../kis/market.js');
-      const parkPrices = await getParkPrices([PARK_STOCK_CODE, ...Array.from(INVERSE_ETF_CODES)]);
-      const recovery = await isMarketRecovering(openChains, parkPrices);
-      if (recovery.recovering) {
-        logger.info(`✅ 방어 파킹 회복 감지 → 해제: ${recovery.reason}`, { component: 'TRACK_B' });
-        return buildDefenseParkExitDecisions(openChains, recovery.reason);
+      const hasInverseChain = openChains.some((c) => INVERSE_ETF_CODES.has(c.stock_code));
+      if (!hasInverseChain) {
+        // 인버스 ETF 포지션 없음 → park state 자동 초기화 (매수 실패/중복 활성화 복구)
+        logger.warn('🛡️ 방어 파킹 활성이나 인버스 ETF 체인 없음 — 자동 초기화 후 재진입 평가', {
+          component: 'TRACK_B',
+        });
+        await deactivateDefensePark('인버스 ETF 없음 — 매수 실패 자동 복구');
+        // isParkingException = false 유지 → 이후 crashSignal 계산 → 재진입 여부 결정
+      } else {
+        // 정상 상태 — 회복 판정만 수행 (즉시 해제 금지)
+        const { isMarketRecovering } = await import('./defense-park.js');
+        const { getBatchPrices: getParkPrices } = await import('../../kis/market.js');
+        const parkPrices = await getParkPrices([PARK_STOCK_CODE, ...Array.from(INVERSE_ETF_CODES)]);
+        const recovery = await isMarketRecovering(openChains, parkPrices);
+        if (recovery.recovering) {
+          logger.info(`✅ 방어 파킹 회복 감지 → 해제: ${recovery.reason}`, { component: 'TRACK_B' });
+          return buildDefenseParkExitDecisions(openChains, recovery.reason);
+        }
+        // 파킹 유지 — 감시목록 상위 5개 대형주는 BUY 허용 (상승세 포착)
+        const PARK_EXCEPT_TOP_N = 5;
+        isParkingException = true;
+        watchlist.slice(0, PARK_EXCEPT_TOP_N).forEach((w) => parkExceptCodes.add(w.stock_code));
+        logger.info(`🛡️ 파킹 유지 — 감시목록 상위 ${PARK_EXCEPT_TOP_N}개 예외 허용: ${[...parkExceptCodes].join(', ')}`, {
+          component: 'TRACK_B',
+        });
       }
-      // 파킹 유지 — 감시목록 상위 3개는 BUY 허용 (예외 종목)
-      const PARK_EXCEPT_TOP_N = 3;
-      isParkingException = true;
-      watchlist.slice(0, PARK_EXCEPT_TOP_N).forEach((w) => parkExceptCodes.add(w.stock_code));
-      logger.info(`🛡️ 파킹 유지 — 감시목록 상위 ${PARK_EXCEPT_TOP_N}개 예외 허용: ${[...parkExceptCodes].join(', ')}`, {
-        component: 'TRACK_B',
-      });
     }
     // v10.9.5: SOFR ETF 보유 시 무조건 즉시 청산 (SOFR 파킹 완전 폐지)
     // 기존 v10.9.4: parkState.isActive면 스킵 → 변경: SOFR은 파킹 상태 무관하게 즉시 매도
@@ -459,7 +470,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       _cachedKospiChangePct !== undefined
         ? Math.min(_liveKospiChangePct, _cachedKospiChangePct) // 더 나쁜 값 선택 (보수적)
         : _liveKospiChangePct;
-    const crashSignal: CrashSignal = assessCrashLevel({
+    let crashSignal: CrashSignal = assessCrashLevel({
       kospiPenalty: kospiRegime.penalty,
       todayDown: kospiRegime.todayDown,
       flashCrash: kospiRegime.flashCrash,
@@ -470,6 +481,20 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       nasdaqChange1d: macroSigForCrash?.nasdaqChange1d ?? undefined,
       inverseEtfChangePct: _inverseEtfPx?.changePct ?? undefined,
     });
+    // 장전 해외장 크래시 오버라이드 — 09:00~11:30 최초 사이클에서 선반영 (KOSPI 인트라데이 데이터 없는 구간)
+    const _preMktLevel = getOverride<'CAUTION' | 'CRASH' | 'PANIC'>('premarket_crash_level');
+    if (_preMktLevel && crashSignal.level === 'NONE') {
+      const levelScore = _preMktLevel === 'PANIC' ? 70 : _preMktLevel === 'CRASH' ? 35 : 20;
+      crashSignal = {
+        ...crashSignal,
+        level: _preMktLevel,
+        score: Math.max(crashSignal.score, levelScore),
+        reasons: [...crashSignal.reasons, `장전신호:${_preMktLevel}`],
+      };
+      logger.warn(`🌙 장전 크래시 오버라이드 적용: ${_preMktLevel} (score=${crashSignal.score})`, {
+        component: 'CRASH_PROFIT',
+      });
+    }
     if (crashSignal.level !== 'NONE') {
       logger.warn(
         `🔻 하락장 신호: ${crashSignal.level} (score=${crashSignal.score}) — ${crashSignal.reasons.join(', ')}`,

@@ -321,6 +321,57 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
+  // 08:30 — 장전 해외장 크래시 사전 감지 (나스닥 전일 변동, Fear/Greed, VKOSPI)
+  // 09:00 Track B 첫 사이클 이전에 인버스 진입 여부를 ai_overrides에 저장 → 즉시 대응
+  cron.schedule(
+    '30 8 * * 1-5',
+    async () => {
+      const { isTradingDay } = await import('../utils/holidays.js');
+      if (!isTradingDay()) return;
+      try {
+        const [{ getMacroSnapshot }, { getMacroSignal }, { assessCrashLevel }, { setOverride }, { sendTelegramMessage }] =
+          await Promise.all([
+            import('../automation/macro-data.js'),
+            import('../market/macro-signal.js'),
+            import('../automation/crash-profit.js'),
+            import('../ai/ai-overrides.js'),
+            import('../notifications/telegram.js'),
+          ]);
+        const [macroSnap, macroSig] = await Promise.all([getMacroSnapshot(), getMacroSignal()]);
+        const preMarketCrash = assessCrashLevel({
+          kospiPenalty: 0,
+          todayDown: false,
+          flashCrash: false,
+          dailyPnlPct: 0,
+          vkospi: macroSnap?.vkospi ?? undefined,
+          fearGreedIndex: macroSnap?.fearGreedIndex ?? undefined,
+          nasdaqChange1d: macroSig?.nasdaqChange1d ?? undefined,
+        });
+        if (preMarketCrash.level !== 'NONE') {
+          await setOverride(
+            'signal',
+            'premarket_crash_level',
+            preMarketCrash.level,
+            `장전감지: nasdaq=${macroSig?.nasdaqChange1d?.toFixed(2)}%, fear=${macroSnap?.fearGreedIndex}, vkospi=${macroSnap?.vkospi}`,
+            180, // 3시간 TTL — 09:00~11:30 유효
+          );
+          logger.warn(
+            `🚨 장전 크래시 감지: ${preMarketCrash.level} (score=${preMarketCrash.score}) — ${preMarketCrash.reasons.join(', ')}`,
+            { component: 'SCHEDULER' },
+          );
+          await sendTelegramMessage(
+            `🚨 장전 크래시 신호: ${preMarketCrash.level} (score=${preMarketCrash.score})\n사유: ${preMarketCrash.reasons.slice(0, 3).join(', ')}`,
+          ).catch(() => {});
+        } else {
+          logger.info('✅ 장전 해외 신호 정상 — 크래시 없음', { component: 'SCHEDULER' });
+        }
+      } catch (e) {
+        logger.error(`장전 크래시 스캔 실패: ${e}`, { component: 'SCHEDULER' });
+      }
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
   // 12:00 — v16: 장중 QA Watchdog (수익성+딜레이 실시간 감시)
   cron.schedule(
     '0 12 * * 1-5',
@@ -713,6 +764,18 @@ export function startScheduler(): void {
       import('../api/routes/dashboard-news.js')
         .then((m) => m.prefetchAllNews())
         .catch((e) => logger.error(`점심 뉴스 갱신 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 장중 장세 추가 재판단 — 10:00, 11:00, 13:00, 14:00 (1시간 간격)
+  // 구조적 한계 개선: 기존 08:00/12:00 두 번만 → 장중 크래시를 최대 1시간 이내 감지
+  cron.schedule(
+    '0 10,11,13,14 * * 1-5',
+    async () => {
+      const { isTradingDay } = await import('../utils/holidays.js');
+      if (!isTradingDay()) return;
+      autoSwitchStrategy().catch((e) => logger.error(`장중 장세 재판단 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );
