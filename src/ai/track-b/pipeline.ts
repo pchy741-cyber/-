@@ -452,13 +452,20 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     // ── 하락장 수익화 — Crash Signal 평가 ──────────────────────────────
     // 인버스 ETF 선행 신호: 252670(KOSPI200선물2X인버스) 주력, 없으면 114800 폴백
     const _inverseEtfPx = livePrices.get('252670') ?? livePrices.get('114800');
+    // kospiChangePct: macroSnapshot는 30분 캐시 → 실시간 todayChangePct를 우선, 캐시값이 더 나쁘면 그걸 사용
+    const _liveKospiChangePct = kospiRegime.todayChangePct;
+    const _cachedKospiChangePct = macroSnapshot?.kospiChange ?? undefined;
+    const kospiChangePctForCrash =
+      _cachedKospiChangePct !== undefined
+        ? Math.min(_liveKospiChangePct, _cachedKospiChangePct) // 더 나쁜 값 선택 (보수적)
+        : _liveKospiChangePct;
     const crashSignal: CrashSignal = assessCrashLevel({
       kospiPenalty: kospiRegime.penalty,
       todayDown: kospiRegime.todayDown,
       flashCrash: kospiRegime.flashCrash,
       dailyPnlPct: dailyLoss.dailyPnlPct,
       vkospi: macroSnapshot?.vkospi ?? undefined,
-      kospiChangePct: macroSnapshot?.kospiChange ?? undefined,
+      kospiChangePct: kospiChangePctForCrash,
       fearGreedIndex: macroSnapshot?.fearGreedIndex ?? undefined,
       nasdaqChange1d: macroSigForCrash?.nasdaqChange1d ?? undefined,
       inverseEtfChangePct: _inverseEtfPx?.changePct ?? undefined,

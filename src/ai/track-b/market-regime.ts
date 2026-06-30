@@ -53,6 +53,8 @@ export interface KospiRegime {
   adamKhoo?: AdamKhooFilter;
   /** KOSPI 5일 수익률 (%) — 종목별 상대강도 계산용 */
   kospi5dReturn?: number;
+  /** 당일 KOSPI 등락률 (%) — 실시간 (macroSnapshot 30분 캐시 대신 사용) */
+  todayChangePct: number;
 }
 
 // ── KOSPI ATR 계산 (True Range 기반 변동성) ──
@@ -187,6 +189,7 @@ export async function fetchKospiRegime(): Promise<KospiRegime> {
     flashCrash: false,
     adaptive: {},
     atrPct: 1.0,
+    todayChangePct: 0,
   };
   try {
     const kospiCandles = await getDailyChart('0001', 420); // MA200 계산용 (300→420: 공휴일 감안 205+ 거래일 확보)
@@ -274,7 +277,7 @@ export async function fetchKospiRegime(): Promise<KospiRegime> {
       });
       const { adaptive, atrPct } = buildAdaptive(kospiCandles, { penalty: 2, boost: false }, adamKhoo);
       _lastKnownPenalty = 2; _lastKnownBoost = false; _lastKnownAdamKhoo = adamKhoo;
-      return { penalty: 2, boost: false, todayDown, todayUp, flashCrash, adaptive, atrPct, adamKhoo, kospi5dReturn };
+      return { penalty: 2, boost: false, todayDown, todayUp, flashCrash, adaptive, atrPct, adamKhoo, kospi5dReturn, todayChangePct };
     }
     if (kospiNow > 0 && kospiNow < kospiTech.sma20) {
       logger.info(`⚠️ KOSPI ${kospiNow.toFixed(0)} < MA20 ${kospiTech.sma20.toFixed(0)} → 조정장 포지션 60%`, {
@@ -282,7 +285,7 @@ export async function fetchKospiRegime(): Promise<KospiRegime> {
       });
       const { adaptive, atrPct } = buildAdaptive(kospiCandles, { penalty: 1, boost: false }, adamKhoo);
       _lastKnownPenalty = 1; _lastKnownBoost = false; _lastKnownAdamKhoo = adamKhoo;
-      return { penalty: 1, boost: false, todayDown, todayUp, flashCrash, adaptive, atrPct, adamKhoo, kospi5dReturn };
+      return { penalty: 1, boost: false, todayDown, todayUp, flashCrash, adaptive, atrPct, adamKhoo, kospi5dReturn, todayChangePct };
     }
     // 강세장: 가격 > MA20 > MA60 = 골든크로스 구간 → 포지션 확대 + TP 상향
     const isBull = kospiNow > 0 && kospiTech.sma20 > kospiTech.sma60;
@@ -298,9 +301,9 @@ export async function fetchKospiRegime(): Promise<KospiRegime> {
       `⚙️ 현재 ATR ${atrPct.toFixed(2)}% | SWING: threshold=${adaptive.SWING?.buyThreshold} TP=${adaptive.SWING?.takeProfitPct}% SL=${adaptive.SWING?.stopLossPct}%`,
       { component: 'REGIME' },
     );
-    return { penalty: 0, boost: isBull, todayDown, todayUp, flashCrash, adaptive, atrPct, adamKhoo, kospi5dReturn };
+    return { penalty: 0, boost: isBull, todayDown, todayUp, flashCrash, adaptive, atrPct, adamKhoo, kospi5dReturn, todayChangePct };
   } catch {
-    return { penalty: 0, boost: false, todayDown: false, todayUp: false, flashCrash: false, adaptive: {}, atrPct: 1.0 };
+    return { penalty: 0, boost: false, todayDown: false, todayUp: false, flashCrash: false, adaptive: {}, atrPct: 1.0, todayChangePct: 0 };
   }
 }
 
