@@ -79,3 +79,85 @@ transparencyRoutes.get('/ai-transparency', async (c) => {
     return c.json({ holdings: [], decisions: [], winRate: null, totalTrades: 0 }, 200);
   }
 });
+
+// ── AI 스코어 vs 실수익 R² 분석 ──
+transparencyRoutes.get('/score-accuracy/r2', async (c) => {
+  try {
+    const pool = getPool();
+
+    const [overall, tier, recent90] = await Promise.all([
+      pool.query(`
+        SELECT
+          COUNT(*)::int AS total,
+          ROUND(CORR(entry_score::float, realized_pnl_pct::float)::numeric, 4) AS pearson_r,
+          ROUND(POWER(CORR(entry_score::float, realized_pnl_pct::float), 2)::numeric, 4) AS r_squared,
+          ROUND(AVG(realized_pnl_pct)::numeric, 2) AS avg_pnl_pct,
+          ROUND(MIN(realized_pnl_pct)::numeric, 2) AS min_pnl_pct,
+          ROUND(MAX(realized_pnl_pct)::numeric, 2) AS max_pnl_pct,
+          COUNT(*) FILTER (WHERE outcome = 'WIN')::int AS wins,
+          COUNT(*) FILTER (WHERE outcome = 'LOSS')::int AS losses
+        FROM score_accuracy
+        WHERE is_paper = false
+          AND entry_score IS NOT NULL
+          AND realized_pnl_pct IS NOT NULL
+      `),
+      pool.query(`
+        SELECT
+          CASE
+            WHEN entry_score >= 90 THEN '90+'
+            WHEN entry_score >= 80 THEN '80-89'
+            WHEN entry_score >= 70 THEN '70-79'
+            ELSE '70미만'
+          END AS tier,
+          COUNT(*)::int AS cnt,
+          ROUND(AVG(realized_pnl_pct)::numeric, 2) AS avg_pnl,
+          ROUND(MIN(realized_pnl_pct)::numeric, 2) AS min_pnl,
+          ROUND(MAX(realized_pnl_pct)::numeric, 2) AS max_pnl,
+          ROUND(COUNT(*) FILTER (WHERE outcome='WIN')::numeric / NULLIF(COUNT(*),0) * 100, 1) AS win_rate
+        FROM score_accuracy
+        WHERE is_paper = false AND entry_score IS NOT NULL
+        GROUP BY 1
+        ORDER BY MIN(entry_score) DESC
+      `),
+      pool.query(`
+        SELECT
+          COUNT(*)::int AS total,
+          ROUND(CORR(entry_score::float, realized_pnl_pct::float)::numeric, 4) AS pearson_r,
+          ROUND(POWER(CORR(entry_score::float, realized_pnl_pct::float), 2)::numeric, 4) AS r_squared
+        FROM score_accuracy
+        WHERE is_paper = false
+          AND entry_score IS NOT NULL
+          AND realized_pnl_pct IS NOT NULL
+          AND recorded_at >= NOW() - INTERVAL '90 days'
+      `),
+    ]);
+
+    const o = overall.rows[0];
+    const r2 = o.r_squared !== null ? Number(o.r_squared) : null;
+    const grade =
+      r2 === null ? null
+      : r2 >= 0.5 ? 'EXCELLENT'
+      : r2 >= 0.25 ? 'GOOD'
+      : r2 >= 0.1 ? 'MODERATE'
+      : 'LOW';
+
+    return c.json({
+      overall: {
+        total: o.total,
+        pearsonR: o.pearson_r,
+        rSquared: o.r_squared,
+        avgPnlPct: o.avg_pnl_pct,
+        minPnlPct: o.min_pnl_pct,
+        maxPnlPct: o.max_pnl_pct,
+        wins: o.wins,
+        losses: o.losses,
+        winRate: o.total > 0 ? Math.round((o.wins / o.total) * 100) : null,
+        grade,
+      },
+      recent90: recent90.rows[0],
+      tiers: tier.rows,
+    });
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500);
+  }
+});
