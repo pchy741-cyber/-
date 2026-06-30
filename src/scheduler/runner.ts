@@ -58,6 +58,9 @@ async function runDomesticDual(label: string, fn: () => Promise<unknown>): Promi
     }
   });
   if (paperOnly) return; // 자율학습 모드: live 완전 스킵
+  // 국내 승률 < 60% → live 차단 (paper only 강제)
+  const { isKrWinRateBelowThreshold } = await import('../risk/win-rate-guard.js');
+  if (await isKrWinRateBelowThreshold(0.60)) return;
   // env DISABLE_LIVE_LOOP=true → live 측 스킵 (Claude Code /loop이 live 매매를 담당하는 경우)
   if (process.env.DISABLE_LIVE_LOOP === 'true') {
     logger.debug(`${label} live 스킵: DISABLE_LIVE_LOOP=true (Claude /loop 단독 운영 모드)`, {

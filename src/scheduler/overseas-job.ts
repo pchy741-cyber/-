@@ -1989,6 +1989,9 @@ export async function runOverseasDual(): Promise<void> {
     logger.info('🇺🇸 paperOnly 모드 — live 스킵', { component: 'OVERSEAS' });
     return;
   }
+  // 해외 승률 < 60% → live 차단 (paper only 강제)
+  const { isOsWinRateBelowThreshold } = await import('../risk/win-rate-guard.js');
+  if (await isOsWinRateBelowThreshold(0.60)) return;
   await runWithMode(false, async () => {
     try {
       await runOverseasJob({ isPaper: false });
