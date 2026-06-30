@@ -89,7 +89,7 @@ export async function loadPipelineData(): Promise<PipelineData> {
 
   // ── 2차 쿼리 병렬 실행 ──
   const [todayRepeatStopCodes, bigLossBlocked, recentlySoldCodes, balanceRaw, lossHistory, pendingPreMarketCodes] = await Promise.all([
-    getTodayRepeatStopCodes(1),      // 당일 1회 이상 손절 → 당일 재진입 차단
+    getTodayRepeatStopCodes(ctxIsPaper ? 3 : 1),  // paper: 3회 이상만 차단 (오전 손절→오후 회복 재진입 허용)
     getBigLossBlockedStocks(),        // -5% 초과 손실 → 30일 절대 차단 (레거시 폴백)
     getRecentlySoldStocks(4),          // v10.3: 최근 4시간 매도 → 재진입 쿨다운 (반복매매=적자 주범)
     ctxIsPaper ? getPaperBalance() : getAccountBalance(true),

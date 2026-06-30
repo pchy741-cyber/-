@@ -491,11 +491,11 @@ export function getDynamicDomesticTpSl(h: DomesticTpSlHints): {
   // ── 10. 시장 레짐 (해외 VIX 대응) ──
   const regime = h.marketRegime ?? 'NORMAL';
   if (regime === 'CRASH') {
-    tp -= 1.5;
+    tp -= 2.5; // v14: -1.5→-2.5 (하락장 회전율 강화 — 작은 수익 빠르게 실현)
     sl += 0.8; // 폭락장: TP 낮추고 SL 타이트 (빠른 탈출)
     parts.push('CRASH');
   } else if (regime === 'CORRECTION') {
-    tp -= 0.5;
+    tp -= 1.5; // v14: -0.5→-1.5 (조정장 조기 수익 확보)
     sl += 0.3;
     parts.push('CORR');
   } else if (regime === 'BULL') {
