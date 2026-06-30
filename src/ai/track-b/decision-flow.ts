@@ -52,7 +52,7 @@ export interface DecisionFlowParams {
   kstH: number;
   kstM: number;
   macroRiskOff?: boolean;
-  isPaper?: boolean;
+  isPaper: boolean;
   crashSignal?: CrashSignal;
   overseasValueKrw?: number;
 }

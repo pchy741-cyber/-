@@ -156,8 +156,8 @@ export interface CashManagerParams {
   blockNewBuys: boolean;
   /** RISK_OFF 조정장 — 대형주 파킹 중단, 현금 유지 */
   macroRiskOff?: boolean;
-  /** Paper 모드 여부 (쿨다운/파라미터 분리) */
-  isPaper?: boolean;
+  /** Paper 모드 여부 (쿨다운/파라미터 분리) — 필수: undefined 허용 안 함 */
+  isPaper: boolean;
   /** 해외 목표 비중 (0~100, 예: 70 = 총자산의 70% 해외 예약) — 국내 파킹 예산 제한용 */
   overseasTargetPct?: number;
 }
@@ -165,7 +165,7 @@ export interface CashManagerParams {
 // ── 동적 파킹 비율 산출: 현금잔고 + 타이밍 품질 → 총자산 대비 % ──
 // Paper: 황금비율 — 유휴현금 적극 배치 (학습 가속, 모의자금이므로 리스크 허용 상향)
 // Live: 보수적 — 실자금 보호 우선
-function getDynamicParkPct(cashRatio: number, timingScore: number, isPaper = false): number {
+function getDynamicParkPct(cashRatio: number, timingScore: number, isPaper: boolean): number {
   let basePct: number;
   if (isPaper) {
     // Paper 황금비율: 현금 많을수록 공격적으로 배치
@@ -427,10 +427,10 @@ export function manageCashParking(params: CashManagerParams): TradeDecision[] {
   const actualPctOfAssets = totalAssets > 0 ? ((actualAmount / totalAssets) * 100).toFixed(1) : '?';
 
   logger.info(
-    `💰 파킹 v2: ${best.name}(${best.code}) ${quantity}주 @${targetPrice.toLocaleString()} ` +
-      `(총자산 ${actualPctOfAssets}%, 현금비중 ${(cashRatio * 100).toFixed(0)}%, ` +
-      `타이밍 ${best.timingScore}점, 당일 ${best.price!.changePct >= 0 ? '+' : ''}${best.price!.changePct.toFixed(2)}%)`,
-    { component: 'CASH_MANAGER' },
+    `💰 파킹 v2 [${isPaper ? 'PAPER' : 'LIVE'}]: ${best.name}(${best.code}) ${quantity}주 @${targetPrice.toLocaleString()} ` +
+      `totalAssets=${Math.round(totalAssets / 10000)}만 | 총자산비중 ${actualPctOfAssets}% | 현금 ${(cashRatio * 100).toFixed(0)}% | ` +
+      `타이밍 ${best.timingScore}점 | 당일 ${best.price!.changePct >= 0 ? '+' : ''}${best.price!.changePct.toFixed(2)}%`,
+    { component: 'CASH_MANAGER', isPaper },
   );
 
   decisions.push({

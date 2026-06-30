@@ -429,8 +429,9 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       overseasValueKrwPromise,
       getMacroSignal().catch(() => null),
     ]);
-    // Paper 모드: getPaperBalance는 국내 자산만 반환 → 해외 포지션 시가 합산
-    if (ctxIsPaper && overseasValueKrw > 0) totalAssets += overseasValueKrw;
+    // Paper 모드: KR 자본만 사이징 기준 (overseas는 별도 $22K 풀 — KR 포지션 사이저와 분리)
+    // cross-market 집중도 체크는 decision-flow에서 !isPaper 조건으로 이미 live-only
+    // (이전 합산 코드 제거: totalAssets += overseasValueKrw → paper 파킹이 KR+OS 합산 1.25억 기준 2× 과다매수 버그)
 
     // DART 공시 캐시 갱신 (1시간 간격 — API 키 없으면 no-op, 모드별 독립)
     const dartMode = getCtxIsPaper() ? 'paper' : 'live';
