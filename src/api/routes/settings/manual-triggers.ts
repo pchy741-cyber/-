@@ -173,8 +173,24 @@ manualTriggersRoutes.post('/loop/stop', async (c) => {
 });
 
 // ── v16: 실전/연습 모드 별도 자동매매 ON/OFF ──
-// 메모리 상태 (배포 시 리셋 → 기본 ON)
+// DB 영속 (system_state: auto_trade_paper / auto_trade_live), 기본값 true
 const _autoTradeEnabled = { paper: true, live: true };
+
+/** 부팅 시 DB → 메모리 복원 (main.ts에서 호출) */
+export async function initAutoTrade(): Promise<void> {
+  try {
+    const { rows } = await getPool().query(
+      `SELECT key, value FROM system_state WHERE key IN ('auto_trade_paper', 'auto_trade_live')`,
+    );
+    for (const r of rows) {
+      if (r.key === 'auto_trade_paper') _autoTradeEnabled.paper = r.value === true || r.value === 'true';
+      if (r.key === 'auto_trade_live') _autoTradeEnabled.live = r.value === true || r.value === 'true';
+    }
+    logger.info(`🔧 자동매매 복원: paper=${_autoTradeEnabled.paper} live=${_autoTradeEnabled.live}`, { component: 'BOOT' });
+  } catch (e: any) {
+    logger.warn(`자동매매 상태 복원 실패 (기본 ON 사용): ${e.message}`, { component: 'BOOT' });
+  }
+}
 
 /** 자동매매 활성화 여부 조회 (Track B, Loop, Overseas에서 참조) */
 export function isAutoTradeEnabled(isPaper: boolean): boolean {
@@ -195,6 +211,17 @@ manualTriggersRoutes.post('/auto-trade/toggle', async (c) => {
   }
 
   _autoTradeEnabled[mode] = enabled;
+
+  // DB 영속 — 재시작 후에도 상태 유지
+  const key = mode === 'paper' ? 'auto_trade_paper' : 'auto_trade_live';
+  getPool()
+    .query(
+      `INSERT INTO system_state (key, value, updated_at) VALUES ($1, $2, NOW())
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
+      [key, JSON.stringify(enabled)],
+    )
+    .catch((e: any) => logger.error(`자동매매 상태 저장 실패: ${e.message}`, { component: 'SETTINGS' }));
+
   logger.info(`🔧 자동매매 ${mode} → ${enabled ? 'ON' : 'OFF'}`, { component: 'SETTINGS' });
   return c.json({ ok: true, mode, enabled, status: _autoTradeEnabled });
 });

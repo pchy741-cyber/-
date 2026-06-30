@@ -37,7 +37,9 @@ export default function InsightsPanel({ insights: insightsProp, trades, onRefres
           <div className="bg-rose-950/30 border border-rose-900/30 rounded-xl p-3 space-y-1.5">
             <p className="text-[10px] text-rose-400 font-medium mb-2">이 가이드와 연관된 손실 매매:</p>
             {d.deleteModal.relatedTrades.map((t: Trade, i: number) => {
-              const avgBuy = Number(t.transaction_chains?.avg_buy_price) || 0;
+              const avgBuy = t.transaction_chains?.avg_buy_price != null
+                ? Number(t.transaction_chains.avg_buy_price)
+                : (t.avg_buy_price != null ? Number(t.avg_buy_price) : 0);
               const filledPx = Number(t.filled_price) || 0;
               const qty = Number(t.quantity) || 0;
               const pnl = avgBuy > 0 && filledPx > 0 ? (filledPx - avgBuy) * qty : 0;

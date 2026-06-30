@@ -153,6 +153,24 @@ export async function applyHardRules(params: {
       continue; // 트레일링 스탑은 technical-fallback 처리
     }
 
+    // ── v16.3: 절대 하방 보호 — 트레일링/버퍼/모드 무관하게 HARD_FLOOR 즉시 강제청산 ──
+    // 트레일링 스탑이 활성화된 상태에서도, 손절 버퍼가 있어도 HARD_FLOOR는 항상 우선 적용
+    if (pnlPct <= HARD_FLOOR) {
+      logger.warn(
+        `🚨 절대 하방 손절: ${chain.stock_code} ${pnlPct.toFixed(1)}% ≤ HARD_FLOOR(${HARD_FLOOR}%) — 트레일링/버퍼 무시 즉시 강제청산`,
+        { component: 'RISK_GUARD' },
+      );
+      result.push({
+        action: 'FORCE_CLOSE',
+        stock_code: chain.stock_code,
+        quantity: chain.total_quantity,
+        price_type: 'MARKET',
+        reasoning: `절대 하방 손절: ${pnlPct.toFixed(1)}% ≤ HARD_FLOOR(${HARD_FLOOR}%) — 트레일링/버퍼 무시 즉시 강제청산`,
+        confidence: 1.0,
+      });
+      continue;
+    }
+
     const peakForTrail = chain.peak_price_since_open ? Number(chain.peak_price_since_open) : 0;
 
     if (peakForTrail > 0 && pnlPct >= 0.5) {

@@ -37,6 +37,8 @@ interface DartResult {
   keyRisks: string[];
   keyStrengths: string[];
   analyzedAt: string;
+  earningsDate?: string;       // "2026-07-25" 형식
+  earningsDaysLeft?: number;   // 오늘 기준 남은 일수
 }
 
 
@@ -131,7 +133,7 @@ export function ResearchBotPanel() {
     setDartLoading(true);
     setDartError(null);
     try {
-      const stockCodes = krWatchlist.map((s) => s.code).slice(0, 15);
+      const stockCodes = krWatchlist.map((s) => s.code).slice(0, 20);
       if (stockCodes.length === 0) {
         setDartError('감시목록에 KR 종목이 없습니다');
         setDartLoading(false);
@@ -222,6 +224,49 @@ export function ResearchBotPanel() {
           );
       })
       .catch(() => {});
+  }, []);
+
+  // KR 감시목록 로드 완료 또는 새 종목 추가 → DART 자동 분석
+  // prevKrLenRef: 이전 길이 추적 → 증가 시(새 종목 추가) 즉시 재분석 (24h 캐시로 기존 결과는 즉시 반환)
+  const prevKrLenRef = React.useRef(0);
+  useEffect(() => {
+    const prev = prevKrLenRef.current;
+    prevKrLenRef.current = krWatchlist.length;
+    if (krWatchlist.length > prev && !dartLoading) {
+      loadDartReports();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [krWatchlist.length]);
+
+  // US 감시목록 로드 완료 → SEC 자동 분석
+  useEffect(() => {
+    if (usWatchlist.length > 0 && secResults.length === 0 && !secLoading) {
+      loadSecReports();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [usWatchlist.length]);
+
+  // stale closure 방지: 최신 함수 ref 유지
+  const dartRefetchRef = React.useRef(loadDartReports);
+  const secRefetchRef = React.useRef(loadSecReports);
+  const dartLoadingRef = React.useRef(dartLoading);
+  const secLoadingRef = React.useRef(secLoading);
+  const krLenRef = React.useRef(krWatchlist.length);
+  const usLenRef = React.useRef(usWatchlist.length);
+  useEffect(() => { dartRefetchRef.current = loadDartReports; });
+  useEffect(() => { secRefetchRef.current = loadSecReports; });
+  useEffect(() => { dartLoadingRef.current = dartLoading; }, [dartLoading]);
+  useEffect(() => { secLoadingRef.current = secLoading; }, [secLoading]);
+  useEffect(() => { krLenRef.current = krWatchlist.length; }, [krWatchlist.length]);
+  useEffect(() => { usLenRef.current = usWatchlist.length; }, [usWatchlist.length]);
+
+  // 30분마다 재분석 (안 잡힌 종목 포함, 24h 캐시로 완료 종목은 즉시 반환)
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (!dartLoadingRef.current && krLenRef.current > 0) dartRefetchRef.current();
+      if (!secLoadingRef.current && usLenRef.current > 0) secRefetchRef.current();
+    }, 30 * 60 * 1000);
+    return () => clearInterval(timer);
   }, []);
 
   const crawl = async () => {
@@ -388,8 +433,8 @@ export function ResearchBotPanel() {
             {!dartLoading && dartResults.length === 0 && !dartError && (
               <div className="text-center py-6">
                 <span className="text-3xl opacity-30">📊</span>
-                <p className="text-xs text-slate-500 mt-2">버튼을 눌러 DART 재무분석을 실행하세요</p>
-                <p className="text-[10px] text-slate-600 mt-1">Gemini GCP 크레딧 사용 · 실전/연습 공통</p>
+                <p className="text-xs text-slate-500 mt-2">감시목록 로드 완료 시 자동 분석 시작됩니다</p>
+                <p className="text-[10px] text-slate-600 mt-1">Gemini GCP 크레딧 사용 · 24h 캐시 · 30분 자동 재분석</p>
               </div>
             )}
 
@@ -405,9 +450,21 @@ export function ResearchBotPanel() {
                         className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-white/[0.02] transition-colors text-left"
                         onClick={() => setExpandedDart(isExpanded ? null : r.stockCode)}
                       >
-                        <div className="flex-1 min-w-0 flex items-center gap-2">
+                        <div className="flex-1 min-w-0 flex items-center gap-2 flex-wrap">
                           <span className="text-xs font-bold text-slate-100">{krName(r.stockCode) || r.corpName || r.stockCode}</span>
                           <span className="text-[9px] text-slate-600 bg-slate-800/80 rounded px-1.5 py-0.5">{r.stockCode}</span>
+                          {/* 실적발표 D-N 배지 */}
+                          {r.earningsDaysLeft != null && r.earningsDaysLeft >= 0 && r.earningsDaysLeft <= 30 && (
+                            <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border animate-pulse ${
+                              r.earningsDaysLeft <= 3
+                                ? 'bg-red-500/20 text-red-400 border-red-500/40'
+                                : r.earningsDaysLeft <= 7
+                                ? 'bg-amber-500/20 text-amber-400 border-amber-500/40'
+                                : 'bg-violet-500/15 text-violet-400 border-violet-500/30'
+                            }`}>
+                              실적 D-{r.earningsDaysLeft}
+                            </span>
+                          )}
                         </div>
                         {/* 점수 배지 */}
                         <div className="flex items-center gap-2 shrink-0">

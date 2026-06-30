@@ -3,13 +3,12 @@ import { STRATEGY_PARAMS, type StrategyMode } from '../config/constants.js';
 import { getCtxIsPaper } from '../config/context.js';
 import { getActiveStrategy, getOpenChains, getPool } from '../db/client.js';
 import type { TradeDecision } from '../db/models.js';
-import { getCurrentPrice } from '../kis/market.js';
+import { getBatchPrices, getCurrentPrice } from '../kis/market.js';
 import { sendByPaperFlag } from '../notifications/mode-message.js';
 import { tradeExecutor } from '../trading/executor.js';
 import { reconcileExternalSells } from '../trading/fill-reconciler.js';
 import { logger } from '../utils/logger.js';
 import { calcPnlPct } from '../utils/money.js';
-import { sleep } from '../utils/sleep.js';
 
 /**
  * 트레일링 스탑 설정
@@ -64,6 +63,12 @@ export async function runHoldingCheckJob(): Promise<void> {
     const now = new Date();
     const forceCloseDecisions: TradeDecision[] = [];
 
+    // 현재가 일괄 조회 (N+1 → 1 배치 호출)
+    const activeCodes = chains
+      .filter((c) => c.total_quantity > 0)
+      .map((c) => c.stock_code);
+    const batchPriceMap = await getBatchPrices(activeCodes);
+
     for (const chain of chains) {
       if (chain.total_quantity <= 0) continue;
 
@@ -85,17 +90,17 @@ export async function runHoldingCheckJob(): Promise<void> {
       // 1영업일 미만은 건드리지 않음
       if (businessDays < 1) continue;
 
-      // 현재가 확인 — 최대 2회 재시도
+      // 현재가 확인 — 배치 맵 우선, 실패 시 1회 재시도
       let currentPrice: number | null = null;
-      for (let attempt = 1; attempt <= 2; attempt++) {
+      const batchPrice = batchPriceMap.get(chain.stock_code);
+      if (batchPrice && batchPrice.currentPrice > 0) {
+        currentPrice = batchPrice.currentPrice;
+      } else {
         try {
           const priceData = await getCurrentPrice(chain.stock_code);
-          if (priceData.currentPrice > 0) {
-            currentPrice = priceData.currentPrice;
-            break;
-          }
+          if (priceData.currentPrice > 0) currentPrice = priceData.currentPrice;
         } catch {
-          if (attempt < 2) await sleep(1000);
+          // currentPrice remains null
         }
       }
 

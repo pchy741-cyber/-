@@ -100,6 +100,120 @@ app.get('/review/diag', async (c) => {
   }
 });
 
+/** Track B (클로드 코드) 매수 성과 전수조사 — /review/track-b-perf */
+app.get('/review/track-b-perf', async (c) => {
+  try {
+    const { getPool } = await import('../../../db/client.js');
+    const pool = getPool();
+
+    // 1. TRACK_B 매수로 생성된 체인 전체 (live 모드만)
+    const { rows: chains } = await pool.query(`
+      SELECT
+        tc.id,
+        tc.stock_code,
+        tc.strategy_mode,
+        tc.status,
+        tc.total_quantity,
+        tc.avg_buy_price::numeric AS avg_buy,
+        tc.realized_pnl::numeric AS realized_pnl,
+        tc.close_reason,
+        tc.opened_at,
+        tc.closed_at,
+        (SELECT trigger_source FROM orders
+         WHERE chain_id = tc.id AND side = 'BUY'
+         ORDER BY created_at ASC LIMIT 1) AS buy_source
+      FROM transaction_chains tc
+      WHERE tc.is_paper = false
+        AND EXISTS (
+          SELECT 1 FROM orders o
+          WHERE o.chain_id = tc.id AND o.side = 'BUY'
+            AND o.trigger_source = 'TRACK_B'
+        )
+      ORDER BY tc.opened_at DESC
+    `);
+
+    // 2. TRACK_B가 아닌 매수 출처 비교 (같은 기간 live)
+    const minDate = chains.length > 0
+      ? chains[chains.length - 1].opened_at
+      : new Date(Date.now() - 90 * 86400000).toISOString();
+
+    const { rows: otherChains } = await pool.query(`
+      WITH chain_sources AS (
+        SELECT
+          tc.realized_pnl::numeric AS pnl,
+          (SELECT o2.trigger_source FROM orders o2
+           WHERE o2.chain_id = tc.id AND o2.side = 'BUY'
+           ORDER BY o2.created_at ASC LIMIT 1) AS buy_source
+        FROM transaction_chains tc
+        WHERE tc.is_paper = false
+          AND tc.status = 'CLOSED'
+          AND tc.opened_at >= $1
+          AND NOT EXISTS (
+            SELECT 1 FROM orders o WHERE o.chain_id = tc.id AND o.side = 'BUY'
+              AND o.trigger_source = 'TRACK_B'
+          )
+      )
+      SELECT
+        buy_source,
+        COUNT(*) as cnt,
+        ROUND(AVG(pnl), 0) as avg_realized_pnl,
+        SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
+        SUM(CASE WHEN pnl <= 0 THEN 1 ELSE 0 END) as losses,
+        SUM(pnl) as total_pnl
+      FROM chain_sources
+      GROUP BY buy_source
+      ORDER BY total_pnl DESC
+    `, [minDate]);
+
+    // 3. TRACK_B 통계 집계
+    const closed = chains.filter((c: any) => c.status === 'CLOSED');
+    const open = chains.filter((c: any) => c.status !== 'CLOSED');
+    const wins = closed.filter((c: any) => Number(c.realized_pnl) > 0);
+    const losses = closed.filter((c: any) => Number(c.realized_pnl) <= 0);
+    const totalPnl = closed.reduce((s: number, c: any) => s + Number(c.realized_pnl ?? 0), 0);
+    const totalGain = wins.reduce((s: number, c: any) => s + Number(c.realized_pnl), 0);
+    const totalLoss = losses.reduce((s: number, c: any) => s + Number(c.realized_pnl), 0);
+
+    // 손실 거래 상세 (큰 손실 순 정렬)
+    const lossTrades = losses
+      .sort((a: any, b: any) => Number(a.realized_pnl) - Number(b.realized_pnl))
+      .map((c: any) => ({
+        stock_code: c.stock_code,
+        pnlKrw: Math.round(Number(c.realized_pnl)),
+        close_reason: c.close_reason,
+        opened_at: c.opened_at,
+        closed_at: c.closed_at,
+        avg_buy: Math.round(Number(c.avg_buy)),
+        qty: c.total_quantity,
+        strategy: c.strategy_mode,
+      }));
+
+    const summary = {
+      trackB: {
+        total: chains.length,
+        closed: closed.length,
+        open: open.length,
+        wins: wins.length,
+        losses: losses.length,
+        winRate: closed.length > 0 ? ((wins.length / closed.length) * 100).toFixed(1) + '%' : '-',
+        totalPnlKrw: Math.round(totalPnl),
+        totalGainKrw: Math.round(totalGain),
+        totalLossKrw: Math.round(totalLoss),
+        avgPnlPerTrade: closed.length > 0 ? Math.round(totalPnl / closed.length) : 0,
+        verdict: totalPnl > 0 ? '✅ 순이익' : '❌ 순손실',
+      },
+      lossTrades,  // 손실 거래 상세 (큰 손실 순)
+      other: otherChains,
+      chains,
+    };
+
+    return c.json(summary);
+  } catch (err) {
+    logger.error(`Track B 성과 조회 실패: ${err}`, { component: 'DIAGNOSTICS' });
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
 app.post('/review/paper-reset', async (c) => {
   try {
     const { getPool } = await import('../../../db/client.js');

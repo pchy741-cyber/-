@@ -807,7 +807,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       .then((m) =>
         m
           .getPool()
-          .query('SELECT * FROM portfolio_allocation_config WHERE is_active = true AND is_paper = $1 LIMIT 1', [
+          .query('SELECT stock_pct, rebalance_threshold_pct, is_active FROM portfolio_allocation_config WHERE is_active = true AND is_paper = $1 LIMIT 1', [
             getCtxIsPaper(),
           ]),
       )

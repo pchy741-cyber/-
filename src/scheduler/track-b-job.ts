@@ -1,4 +1,5 @@
 import { runTrackBPipeline } from '../ai/track-b/pipeline.js';
+import { runPortfolioHealthAudit } from '../ai/track-b/health-auditor.js';
 import { logSystemEvent } from '../utils/system-events.js';
 import { INVERSE_ETF_CODES } from '../automation/crash-profit.js';
 import { isRiskOffToday } from '../automation/market-routing.js';
@@ -158,6 +159,8 @@ export async function runTrackBJob(): Promise<void> {
     if (filtered.length === 0) {
       logger.info(`Track B[${mt}]: 실행할 매매 없음`, { component: 'SCHEDULER', mode: mt });
       logSystemEvent(`Track B[${mt}]`, 'success', `스캔 완료 — 매매 없음 (${decisions.length}종목 분석)`);
+      // 유휴 시간 활용: 포트폴리오 헬스 감사 (20분 쿨다운, fire-and-forget, Max 토큰 사용)
+      runPortfolioHealthAudit(modeKey).catch(() => {});
       reportSuccess();
       return;
     }

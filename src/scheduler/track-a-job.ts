@@ -1,4 +1,6 @@
 import { runTrackAPipeline } from '../ai/track-a/pipeline.js';
+import { refreshStaleNewsScores } from '../ai/track-a/rss-scorer.js';
+import { getPool } from '../db/client.js';
 import { refreshConsensusSignals } from '../market/consensus.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
 import { reportError, reportSuccess } from '../risk/kill-switch.js';
@@ -31,6 +33,20 @@ export async function runTrackAJob(additionalSources?: string): Promise<void> {
 
     await runTrackAPipeline(additionalSources);
     reportSuccess();
+
+    // Track A 완료 후 뉴스 캐시 갱신 (fire-and-forget, 최대 10종목)
+    getPool()
+      .query<{ stock_code: string; stock_name: string }>(`SELECT stock_code, stock_name FROM watchlist WHERE is_active = true LIMIT 30`)
+      .then(({ rows }) =>
+        refreshStaleNewsScores(
+          rows.map((r) => ({ stockCode: r.stock_code, stockName: r.stock_name })),
+          10,
+        ),
+      )
+      .then((n) => {
+        if (n > 0) logger.info(`📰 Track A 완료 후 뉴스 ${n}종목 갱신`, { component: 'TRACK_A' });
+      })
+      .catch(() => {});
 
     const elapsed = ((Date.now() - start) / 1000).toFixed(1);
     await sendTelegramMessage(`✅ Track A 분석 완료 (${elapsed}초)`).catch(() => {});

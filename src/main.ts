@@ -588,6 +588,9 @@ async function bootstrap() {
     import('./risk/trade-gate.js')
       .then(({ restoreCooldownResetAt }) => restoreCooldownResetAt())
       .catch((e: any) => logger.warn(`쿨다운 리셋 복원 실패 (무시): ${e.message}`, { component: 'BOOT' })),
+    import('./api/routes/settings/manual-triggers.js')
+      .then(({ initAutoTrade }) => initAutoTrade())
+      .catch((e: any) => logger.warn(`자동매매 상태 복원 실패 (기본 ON 사용): ${e.message}`, { component: 'BOOT' })),
     // Pre-TP peak 복원: 재시작 시 _preTpPeakMap 손실 방지
     (async () => {
       const { getPool: gp } = await import('./db/client.js');

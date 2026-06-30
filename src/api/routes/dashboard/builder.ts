@@ -96,7 +96,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     : () => withTimeout(getAccountBalance(true), 6000, defaultBalance as any);
 
   // v10.10.5c: watchlist를 Promise.all에 포함 (기존: 순차 호출 → 5-15ms 절약)
-  const [balanceResult, chains, strategy, insightRows, defensePark, , watchlist] = await Promise.all([
+  const [balanceResult, chains, strategy, insightRows, defensePark, rebalanceProposalsResult, watchlist] = await Promise.all([
     balanceFn().catch(() => defaultBalance),
     getOpenChains(viewIsPaper).catch(() => []),
     runWithMode(viewIsPaper, () => getActiveStrategy()).catch(() => null),
@@ -113,9 +113,15 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       entryReason: null,
       enteredAt: null,
     })),
-    Promise.resolve(null),
+    safeQuery<{ id: number; situation: string; context: unknown; created_at: string; expires_at: string }>(
+      `SELECT id, situation, context, created_at, expires_at
+       FROM pending_decisions
+       WHERE category = 'rebalance' AND status = 'PENDING' AND expires_at > NOW()
+       ORDER BY created_at DESC LIMIT 10`,
+    ).catch(() => ({ rows: [] as any[] })),
     getActiveWatchlist().catch(() => []),
   ]);
+  const rebalanceProposals = (rebalanceProposalsResult as any)?.rows ?? [];
   const balance = balanceResult ?? defaultBalance;
   const stockCodes = watchlist.map((w) => w.stock_code);
 
@@ -374,9 +380,10 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     const pfx = viewIsPaper ? 'p_' : 'l_';
 
     // Paper: orders 기반 실시간 계산 (USD), Live: DB에서 KRW 읽기
-    const { rows: osRows } = await safeQuery('SELECT * FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1', [
-      viewIsPaper,
-    ]);
+    const { rows: osRows } = await safeQuery(
+      'SELECT stock_code, quantity, avg_price, last_price, last_price_at, exchange, tp_pct, sl_pct FROM overseas_holdings WHERE quantity > 0 AND is_paper = $1',
+      [viewIsPaper],
+    );
     if (viewIsPaper) {
       overseasCash = await computePaperCash(); // USD (결정론적 — orders 기반)
     } else {
@@ -720,6 +727,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     })(),
     insights: insightRows.rows,
     defensePark,
+    rebalanceProposals,
 
     suggestedActions: buildSuggestedActions(overseasHoldings, displayChains, grandTotalValue, assets.unifiedCash).map((a) => ({
       ...a,

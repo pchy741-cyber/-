@@ -66,7 +66,7 @@ function cacheKey(key: string, isPaper: boolean): string {
 export async function loadOverridesCache(): Promise<void> {
   try {
     const { rows } = await getPool().query<AiOverride>(
-      `SELECT * FROM ai_overrides WHERE expires_at IS NULL OR expires_at > NOW()`,
+      `SELECT id, category, key, value, reason, is_paper, expires_at, created_at, updated_at FROM ai_overrides WHERE expires_at IS NULL OR expires_at > NOW()`,
     );
     _cache.clear();
     for (const r of rows) {
@@ -207,7 +207,7 @@ export async function getAllOverrides(isPaper?: boolean): Promise<AiOverride[]> 
   const mode = isPaper ?? getCtxIsPaper();
   try {
     const { rows } = await getPool().query<AiOverride>(
-      `SELECT * FROM ai_overrides
+      `SELECT id, category, key, value, reason, is_paper, expires_at, created_at, updated_at FROM ai_overrides
        WHERE is_paper = $1 AND (expires_at IS NULL OR expires_at > NOW())
        ORDER BY category, key`,
       [mode],
@@ -220,7 +220,7 @@ export async function getAllOverrides(isPaper?: boolean): Promise<AiOverride[]> 
 
 export async function getCommandHistory(limit: number = 50): Promise<unknown[]> {
   try {
-    const { rows } = await getPool().query(`SELECT * FROM ai_command_log ORDER BY created_at DESC LIMIT $1`, [limit]);
+    const { rows } = await getPool().query(`SELECT id, command_type, payload, result, reject_reason, is_paper, created_at FROM ai_command_log ORDER BY created_at DESC LIMIT $1`, [limit]);
     return rows;
   } catch {
     return [];

@@ -143,6 +143,18 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
     }
   }
 
+  // ── 0d. DIVIDEND 모드: 신규 매수 전면 차단 (배당 자산 파킹 — 보유 유지, 신규 진입 없음) ──
+  if (mode === 'DIVIDEND') {
+    const blockedBuys = decisions.filter((d) => d.action === 'BUY' || d.action === 'AVERAGE_DOWN');
+    if (blockedBuys.length > 0) {
+      logger.info(
+        `🏦 DIVIDEND 모드: 신규매수 ${blockedBuys.length}건 차단 (배당 파킹 — 기존 보유 유지)`,
+        { component: 'DECISION_FLOW' },
+      );
+      decisions = decisions.filter((d) => d.action !== 'BUY' && d.action !== 'AVERAGE_DOWN');
+    }
+  }
+
   // ── 1. 집중도 부분매도 주입 ─────────────────────────────────────────
   const concentrationTargets = getConcentrationSellTargets(
     openChains,

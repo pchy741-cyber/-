@@ -58,7 +58,10 @@ export default function PortfolioSection(props: PortfolioSectionProps) {
   const krTarget = Number(allocConfig?.kr_pct ?? 70);
   const usTarget = Number(allocConfig?.us_pct ?? 30);
   const krActualPct = domesticInvested > 0
-    ? (chains.reduce((s: number, ch: Chain) => s + (ch.unrealizedPnl ?? 0), 0) / domesticInvested) * 100
+    ? (chains.reduce((s: number, ch: Chain) => {
+        const pnl = ch.unrealizedPnl;
+        return s + (pnl != null && !isNaN(pnl) ? pnl : 0);
+      }, 0) / domesticInvested) * 100
     : 0;
   const usActualPct = overseasInvestedUsd > 0 ? (overseasPnlUsd / overseasInvestedUsd) * 100 : 0;
   const krUnderperform = chains.length > 0 && usHoldings.length > 0 && krActualPct < usActualPct - 2;
