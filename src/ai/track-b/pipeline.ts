@@ -1000,7 +1000,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       // v13-fix: KOSPI todayDown(-1%) 글로벌 차단 제거 → 점수 감산(-5~-15)으로 자연 필터링
       // 기존: KOSPI -1%면 삼성전자도 전면 차단 → 개별 종목 강세도 기회 상실
       // 개선: flashCrash(-1% 5분내), CRASH/PANIC 시그널은 유지. 일반 하락은 점수 감산으로 대응
-      (!ctxIsPaper && !isKospiOverrideActive() && kospiRegime.penalty >= 3 && kospiRegime.todayDown) || // penalty 3+ 극단적 하락장만 차단
+      (!ctxIsPaper && !isKospiOverrideActive() && kospiRegime.penalty >= 2 && kospiRegime.todayDown && topScore < 90) || // penalty 2+ 하락장 차단 강화 (90+점 고확신은 허용)
       // portfolioStress >= 2: 포지션 축소로 대응 (blockNewBuys 제거 → 회복 매수 허용)
       // 기존: 완전 차단 → 손절 후 빈 포트폴리오가 회복 불가
       // 개선: 사이징 단계에서 0.5x 배율 적용 (portfolio-guard.getPerformanceMultiplier)

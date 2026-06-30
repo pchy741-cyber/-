@@ -101,15 +101,16 @@ export function checkEntryTiming(params: {
   const kstH = (now.getUTCHours() + 9) % 24;
   const kstM = now.getUTCMinutes();
 
-  // ─ v16: 규칙 A: 저녁 18-24 KST → 소프트 (30% 축소, 완전 차단 제거) ─
+  // ─ v17: 규칙 A: 저녁 18-24 KST → 하드블락 복원 (v16 regression 수정) ─
+  // v16에서 소프트로 완화됐으나 CEO 290건 분석 -6%~-14% 손실 구간 → 하드블락 유지
   if (isEveningHardBlock(kstH, kstM)) {
     return {
-      allowed: true,
-      scoreBonus: 15, // 높은 점수 요구 (사실상 고확신만 통과)
-      sizeMultiplier: 0.3,
-      reason: `🟡 저녁 소프트 (${String(kstH).padStart(2, '0')}:${String(kstM).padStart(2, '0')} KST): 18-24시 → 30% 축소`,
+      allowed: false,
+      scoreBonus: 0,
+      sizeMultiplier: 1,
+      reason: `🚫 저녁 하드블락 (${String(kstH).padStart(2, '0')}:${String(kstM).padStart(2, '0')} KST): 18-24시 → 290건 분석 손실 구간`,
       details: {
-        phase: 'EVENING_SOFT',
+        phase: 'EVENING_HARD',
         rsi: tech.rsi ?? null,
         volumeRatio: tech.volumeRatio ?? null,
         aboveMa20: tech.aboveMa20 ?? null,
