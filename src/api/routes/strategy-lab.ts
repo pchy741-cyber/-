@@ -25,7 +25,12 @@ strategyLabRoutes.get('/strategy-lab/overview', async (c) => {
         .catch(() => ({ rows: [] })),
     ]);
 
-    const modes = new Set([...paperPerfs.map((p) => p.mode), ...livePerfs.map((p) => p.mode)]);
+    // DIVIDEND/SCALPING: 전략랩 대상 아님 (매수 차단 모드)
+    const EXCLUDED_MODES = new Set(['DIVIDEND', 'SCALPING']);
+    const modes = new Set(
+      [...paperPerfs.map((p) => p.mode), ...livePerfs.map((p) => p.mode)]
+        .filter((m) => !EXCLUDED_MODES.has(m)),
+    );
     const strategies = [...modes].map((mode) => ({
       mode,
       paper: paperPerfs.find((p) => p.mode === mode) ?? null,
@@ -225,7 +230,7 @@ strategyLabRoutes.post('/strategy-lab/insights/:id/approve', async (c) => {
       `
       UPDATE strategy_config
       SET take_profit_pct = $1, updated_at = NOW()
-      WHERE mode = $2 AND is_active = true
+      WHERE mode = $2 AND is_active = true AND is_paper = true
     `,
       [suggestedAction.value, insight.strategy_mode],
     ).catch(() => {
@@ -237,7 +242,7 @@ strategyLabRoutes.post('/strategy-lab/insights/:id/approve', async (c) => {
       `
       UPDATE strategy_config
       SET buy_threshold = $1, updated_at = NOW()
-      WHERE mode = $2 AND is_active = true
+      WHERE mode = $2 AND is_active = true AND is_paper = true
     `,
       [suggestedAction.value, insight.strategy_mode],
     ).catch(() => {

@@ -18,8 +18,8 @@ strategyRoutes.put('/strategy', async (c) => {
   const body = await c.req.json();
 
   const rawMode = (body.mode ?? 'SWING') as keyof typeof STRATEGY_PARAMS;
-  // SCALPING/EOD_BETTING 영구 비활성화 — API 레벨 차단 (UI 우회 방지)
-  const BLOCKED_MODES = new Set(['SCALPING', 'EOD_BETTING']);
+  // SCALPING/DIVIDEND 영구 비활성화 — API 레벨 차단 (UI 우회 방지)
+  const BLOCKED_MODES = new Set(['SCALPING', 'DIVIDEND']);
   const requestedMode = BLOCKED_MODES.has(rawMode) ? 'SWING' : rawMode;
   const modeBase = STRATEGY_PARAMS[requestedMode] ?? STRATEGY_PARAMS.SWING;
   // 강제 ON: AI 자동 관리 — UI에서 변경 불가

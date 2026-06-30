@@ -9,6 +9,7 @@ export function HistoryRow({ h }: { h: StrategyGraduation }) {
     APPROVED: { color: 'text-blue-400', text: '승인' },
     REJECTED: { color: 'text-rose-400', text: '거부' },
     EXPIRED: { color: 'text-slate-500', text: '만료' },
+    REVOKED: { color: 'text-orange-400', text: '강등' },
   };
   const st = statusMap[h.status] ?? { color: 'text-slate-500', text: h.status };
 
@@ -16,7 +17,8 @@ export function HistoryRow({ h }: { h: StrategyGraduation }) {
     <div className="flex items-center gap-3 px-4 py-2.5 hover:bg-white/[0.02] transition-colors">
       <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${
         h.status === 'AUTO_APPLIED' || h.status === 'APPROVED' ? 'bg-emerald-500' :
-        h.status === 'REJECTED' ? 'bg-rose-500' : 'bg-slate-600'
+        h.status === 'REJECTED' ? 'bg-rose-500' :
+        h.status === 'REVOKED' ? 'bg-orange-500' : 'bg-slate-600'
       }`} />
       <div className="flex-1 min-w-0">
         <span className="text-[11px] text-slate-200 font-medium">{label}</span>

@@ -22,8 +22,8 @@ import { logger } from '../utils/logger.js';
 
 const COMP = 'OPTIMIZER';
 
-// 최적화 대상 전략 (DIVIDEND: 매수 안 함, EOD_BETTING: 별도 체계)
-const TARGET_MODES: StrategyMode[] = ['SWING', 'DEFENSE', 'SNIPER', 'BOTTOM_FISHING', 'BREAKOUT'];
+// 최적화 대상 전략 (DIVIDEND/SCALPING: 매수 차단 모드 — 전략랩 제외)
+const TARGET_MODES: StrategyMode[] = ['SWING', 'DEFENSE', 'SNIPER', 'BOTTOM_FISHING', 'BREAKOUT', 'EOD_BETTING'];
 
 // 그리드 서치 범위
 const TP_STEPS = [-1.0, -0.5, 0, 0.5, 1.0]; // 현재값 기준 ±1%

@@ -7,7 +7,7 @@ export const SIM_AMOUNTS = [1000, 3000, 5000, 10000];
 
 export const STRATEGY_LABELS: Record<string, string> = {
   SWING: '스윙', BREAKOUT: '돌파', SCALPING: '스캘핑', SNIPER: '스나이퍼',
-  EOD_BETTING: '장마감', BOTTOM_FISHING: '저점매수', DEFENSE: '방어', DIVIDEND: '배당',
+  EOD_BETTING: '종가베팅', BOTTOM_FISHING: '저점매수', DEFENSE: '방어',
   PULLBACK: '눌림', PARKING: '파킹',
 };
 
@@ -21,7 +21,7 @@ export const TRIGGER_LABELS: Record<string, string> = {
 
 export const STRATEGY_ICONS: Record<string, string> = {
   SWING: '〰', BREAKOUT: '⚡', SCALPING: '⏱', SNIPER: '◎',
-  EOD_BETTING: '🌅', BOTTOM_FISHING: '⬇', DEFENSE: '🛡', DIVIDEND: '💰',
+  EOD_BETTING: '🌅', BOTTOM_FISHING: '⬇', DEFENSE: '🛡',
   PULLBACK: '↘', PARKING: '🅿',
 };
 
