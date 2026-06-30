@@ -1510,6 +1510,38 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
+  // 📊 DART 야간 전체 배치 — 매일 22:00 (주말 포함, 제한 없이 감시목록 전종목)
+  // 08:35/10:00-15:00 배치의 종목 수 캡(15/10개) 보완 — 누락 없이 전체 커버
+  cron.schedule(
+    '0 22 * * *',
+    async () => {
+      try {
+        const { getActiveWatchlist } = await import('../db/client.js');
+        const { getSmartDartTargets, runDartResearchBatch } = await import('../automation/dart-research.js');
+
+        const watchlist = await getActiveWatchlist();
+        const watchCodes = watchlist
+          .map((w: { stock_code: string }) => w.stock_code)
+          .filter((c: string) => /^\d{6}$/.test(c));
+
+        // 제한 없이 전종목 캐시미스 확인 (주말/공휴일 포함 매일)
+        const targets = await getSmartDartTargets(watchCodes, 999);
+
+        if (targets.length > 0) {
+          logger.info(`📊 DART 야간 전체배치: ${targets.length}/${watchCodes.length}종목 (캐시미스)`, { component: 'SCHEDULER' });
+          runDartResearchBatch(targets).catch((e) =>
+            logger.warn(`DART 야간 배치 실패 (스킵): ${e}`, { component: 'SCHEDULER' }),
+          );
+        } else {
+          logger.info('📊 DART 야간배치 스킵 — 전종목 분기캐시 히트', { component: 'SCHEDULER' });
+        }
+      } catch (e) {
+        logger.warn(`DART 야간배치 실패: ${e}`, { component: 'SCHEDULER' });
+      }
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
   // 데이터 아카이빙 — 매주 월요일 02:00 (일→월 변경: 주말 Cloud SQL 중지 유지)
   cron.schedule(
     '0 2 * * 1',
@@ -1572,7 +1604,7 @@ export function startScheduler(): void {
 
   logger.info('✅ 스케줄러 등록 완료 (v16.1 최적화 — GCP비용↓ 토큰↓ 딜레이↓)', { component: 'SCHEDULER' });
   logger.info(
-    `  Track A: 07:30/09:00/12:30/18:00 (4회) | Track B: ${SCHEDULE.TRACK_B_INTERVAL_MINUTES}분 (황금시간 1분) | 뉴스: 30분`,
+    `  Track A: 07:30/09:00/12:30/18:00 (4회) | Track B: ${SCHEDULE.TRACK_B_INTERVAL_MINUTES}분 (황금시간 1분) | 뉴스: 30분 | DART: 08:35/10-15시/16:05/22:00`,
     { component: 'SCHEDULER' },
   );
   logger.info(
