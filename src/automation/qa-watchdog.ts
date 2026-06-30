@@ -81,7 +81,7 @@ export async function runQAWatchdog(): Promise<void> {
   const issues: QAIssue[] = [];
 
   try {
-    // 병렬 전수조사 (v16: 수익성 분석 + 매매 딜레이 추가)
+    // 병렬 전수조사 (v17: 대형손실 감지 추가)
     const results = await Promise.allSettled([
       checkBalanceIntegrity(issues),
       checkCrossContamination(issues),
@@ -91,12 +91,13 @@ export async function runQAWatchdog(): Promise<void> {
       checkOrderChainConsistency(issues),
       checkProfitability(issues),
       checkTradeLatency(issues),
+      checkLargeLoss(issues),
     ]);
 
     // 실패한 검사 자체도 이슈로 기록
     results.forEach((r, i) => {
       if (r.status === 'rejected') {
-        const names = ['잔고정합', '크로스오염', '매매로직', 'AI비용', '시스템헬스', '주문체인', '수익성', '매매딜레이'];
+        const names = ['잔고정합', '크로스오염', '매매로직', 'AI비용', '시스템헬스', '주문체인', '수익성', '매매딜레이', '대형손실'];
         issues.push({
           severity: 'WARNING',
           category: '시스템',
@@ -179,14 +180,14 @@ export async function runQAWatchdog(): Promise<void> {
 
 /** 1. 잔고 정합성 — 스냅샷 vs 실시간 잔고 교차 검증 */
 async function checkBalanceIntegrity(issues: QAIssue[]): Promise<void> {
-  // 오늘 첫 스냅샷과 현재 잔고 비교
+  // 오늘 첫 스냅샷과 현재 잔고 비교 (is_paper 별로 최신 1개씩 → 중복 CRITICAL 방지)
   const today = getKSTNow().toISOString().split('T')[0];
 
   const { rows: snapshots } = await safeQuery<Record<string, unknown>>(
-    `SELECT total_value, cash_balance, invested_value, is_paper
+    `SELECT DISTINCT ON (is_paper) total_value, cash_balance, invested_value, is_paper
      FROM portfolio_snapshots
      WHERE snapshot_at >= $1
-     ORDER BY snapshot_at DESC LIMIT 2`,
+     ORDER BY is_paper, snapshot_at DESC`,
     [`${today}T00:00:00+09:00`],
   );
 
@@ -380,20 +381,28 @@ async function checkAICostAnomaly(issues: QAIssue[]): Promise<void> {
 
 /** 5. 시스템 헬스 체크 */
 async function checkSystemHealth(issues: QAIssue[]): Promise<void> {
-  // 최근 1시간 에러 건수
+  // 최근 1시간 에러 건수 — UPPER() 대소문자 무관 (DB: 'ERROR'/'WARN' 대문자)
   const { rows: errorRows } = await safeQuery<{ cnt: string }>(
     `SELECT COUNT(*) as cnt FROM system_log
-     WHERE level = 'error' AND timestamp >= NOW() - INTERVAL '1 hour'`,
+     WHERE UPPER(level) = 'ERROR' AND timestamp >= NOW() - INTERVAL '1 hour'`,
     [],
   );
   const recentErrors = Number(errorRows[0]?.cnt ?? 0);
 
   if (recentErrors >= 10) {
+    // 에러 상위 컴포넌트 파악
+    const { rows: topComponents } = await safeQuery<{ component: string; cnt: string }>(
+      `SELECT component, COUNT(*) as cnt FROM system_log
+       WHERE UPPER(level) = 'ERROR' AND timestamp >= NOW() - INTERVAL '1 hour'
+       GROUP BY component ORDER BY cnt DESC LIMIT 3`,
+      [],
+    );
+    const topStr = topComponents.map((r) => `${r.component}(${r.cnt})`).join(', ');
     issues.push({
       severity: 'CRITICAL',
       category: '시스템',
       title: `1시간 에러 ${recentErrors}건 — 시스템 불안정`,
-      detail: `최근 1시간 에러 급증. 로그 확인 필요.`,
+      detail: `최근 1시간 에러 급증. 주요 컴포넌트: ${topStr || '확인 필요'}`,
     });
   } else if (recentErrors >= 5) {
     issues.push({
@@ -542,13 +551,14 @@ async function checkProfitability(issues: QAIssue[]): Promise<void> {
 async function checkTradeLatency(issues: QAIssue[]): Promise<void> {
   const pool = getPool();
 
-  // 최근 4시간 주문의 생성→체결 시간 분석
+  // 체결 지연: updated_at - created_at 기준 (orders에 filled_at 없음 → updated_at 대체)
   const { rows } = await pool.query(`
     SELECT stock_code, side, is_paper,
-           EXTRACT(EPOCH FROM (filled_at - created_at)) as latency_sec,
-           created_at, filled_at
+           EXTRACT(EPOCH FROM (updated_at - created_at)) AS latency_sec,
+           created_at, updated_at
     FROM orders
-    WHERE status = 'FILLED' AND filled_at IS NOT NULL
+    WHERE status = 'FILLED' AND updated_at IS NOT NULL
+      AND is_paper = false
       AND created_at >= NOW() - INTERVAL '4 hours'
     ORDER BY latency_sec DESC
     LIMIT 5
@@ -557,12 +567,12 @@ async function checkTradeLatency(issues: QAIssue[]): Promise<void> {
   for (const r of rows) {
     const latency = Number(r.latency_sec ?? 0);
     const mode = r.is_paper ? 'PAPER' : 'LIVE';
-    if (latency > 300) { // 5분 초과
+    if (latency > 300) {
       issues.push({
         severity: 'WARNING',
         category: '매매로직',
         title: `[${mode}] 체결 지연 ${Math.round(latency)}초: ${r.stock_code} ${r.side}`,
-        detail: `주문: ${r.created_at}, 체결: ${r.filled_at}`,
+        detail: `주문: ${r.created_at}, 체결확인: ${r.updated_at}`,
       });
     }
   }
@@ -583,6 +593,37 @@ async function checkTradeLatency(issues: QAIssue[]): Promise<void> {
       category: '매매로직',
       title: `[${mode}] 미체결 ${ageMin}분: ${r.stock_code} ${r.side}`,
       detail: `주문시각: ${r.created_at} — 자동취소 또는 수동 확인 필요`,
+    });
+  }
+}
+
+/** 9. v17: 대형 손실 체인 감지 — SL 초과 손실 (갭 하락·SL 미작동 의심) */
+async function checkLargeLoss(issues: QAIssue[]): Promise<void> {
+  const pool = getPool();
+
+  // 최근 2일 내 단일 체인 손실이 SL의 1.5배 초과 → 갭 하락 슬리피지 또는 SL 미작동
+  const { rows } = await pool.query(`
+    SELECT stock_code, is_paper, pnl_pct, stop_loss_pct, realized_pnl, closed_at
+    FROM transaction_chains
+    WHERE status = 'CLOSED'
+      AND closed_at >= NOW() - INTERVAL '2 days'
+      AND pnl_pct < 0
+      AND stop_loss_pct < 0
+      AND ABS(pnl_pct) > ABS(stop_loss_pct) * 1.5
+    ORDER BY pnl_pct ASC
+    LIMIT 5
+  `);
+
+  for (const r of rows) {
+    const mode = r.is_paper ? 'PAPER' : 'LIVE';
+    const pnl = Number(r.pnl_pct).toFixed(1);
+    const sl = Number(r.stop_loss_pct).toFixed(1);
+    const pnlAmt = Number(r.realized_pnl).toLocaleString();
+    issues.push({
+      severity: 'WARNING',
+      category: '매매로직',
+      title: `[${mode}] SL 초과 손실: ${r.stock_code} ${pnl}% (SL ${sl}%)`,
+      detail: `${pnlAmt}원 손실 — 갭 하락 슬리피지 또는 SL 미작동 의심`,
     });
   }
 }
