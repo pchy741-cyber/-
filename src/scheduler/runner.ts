@@ -6,7 +6,7 @@ import { analyzeCapitalFlow } from '../automation/capital-flow.js';
 import { generateDailyReport } from '../automation/daily-report.js';
 import { monitorDisclosures } from '../automation/dart-monitor.js';
 import { archiveOldData } from '../automation/data-archiver.js';
-import { runHotSectorWatchlist } from '../automation/hot-sector-watchlist.js';
+import { pruneAutoWatchlist, runHotSectorWatchlist } from '../automation/hot-sector-watchlist.js';
 import { analyzeWatchlistFlows } from '../automation/investor-flow.js';
 import { getMacroSnapshot } from '../automation/macro-data.js';
 import { autoSwitchStrategy } from '../automation/market-regime.js';
@@ -845,7 +845,7 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 16:00 — 일일 자동 리포트 (Telegram) + 체결 캐시 정리 (paper + live 양쪽)
+  // 16:00 — 일일 자동 리포트 (Telegram) + 체결 캐시 정리 + 자동 워치리스트 가지치기
   // 시간외종가(15:40~16:00) + 환전/외화RP 정산 완료 후 세션 마감
   cron.schedule(
     '0 16 * * 1-5',
@@ -856,6 +856,8 @@ export function startScheduler(): void {
       import('../trading/executor.js')
         .then((m) => m.tradeExecutor.clearConfirmedOrders())
         .catch((e) => logger.warn(`체결캐시 클리어 실패: ${e}`, { component: 'SCHEDULER' }));
+      // 자동 편입 종목 가지치기 — HOT_SECTOR 소스만 대상, CEO MANUAL 절대 건드리지 않음
+      pruneAutoWatchlist().catch((e) => logger.error(`워치리스트 가지치기 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );

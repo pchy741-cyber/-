@@ -25,11 +25,18 @@ const HOT_SECTOR_CHANGE_PCT = 1.5;
 const MIN_AI_SCORE = 60;
 // 편입 최대 종목 수 (1회 실행당)
 const MAX_ADD_PER_RUN = 8;
-// 최소 거래량 (유동성)
-const MIN_VOLUME = 30_000;
-// 가격 범위 — 상한 제거 (현대오토에버 80만원, LG이노텍 15만원 등 모두 포함)
+// 최소 거래량 — 잡주 차단 (일 10만주 이상 거래되는 종목만)
+const MIN_VOLUME = 100_000;
+// 최소 시가총액 (억원) — 500억 미만 소형주/잡주 제외
+const MIN_MARKET_CAP_EOK = 500;
+// 가격 범위
 const MIN_PRICE = 1_000;
-const MAX_PRICE = 5_000_000; // 사실상 제한 없음
+const MAX_PRICE = 5_000_000;
+
+// 자동 추가 종목 가지치기 기준
+const PRUNE_NO_TRADE_DAYS = 7;   // 7거래일 동안 시스템이 한 번도 매매 안 한 종목
+const PRUNE_LOW_SCORE_DAYS = 3;  // AI 스코어 40 미만이 3일 연속이면 제거
+const PRUNE_LOW_SCORE_THRESHOLD = 40;
 
 // KIS 업종 코드 → 한국어 이름
 const SECTOR_NAMES: Record<string, string> = {
@@ -273,9 +280,14 @@ export async function runHotSectorWatchlist(): Promise<void> {
       for (const r of settled) {
         if (r.status === 'fulfilled') {
           const { cand, price } = r.value;
-          if (price.currentPrice >= MIN_PRICE && price.currentPrice <= MAX_PRICE && price.volume >= MIN_VOLUME) {
-            validCandidates.push(cand);
-          }
+          // 잡주/상폐 필터: 가격·거래량·시총·시장경보 모두 통과해야 편입
+          const isJunk =
+            price.currentPrice < MIN_PRICE ||
+            price.currentPrice > MAX_PRICE ||
+            price.volume < MIN_VOLUME ||
+            (price.marketCapEok > 0 && price.marketCapEok < MIN_MARKET_CAP_EOK) ||
+            (price.mrktWarnClsCode && price.mrktWarnClsCode !== '00'); // 투자경고/위험/정리매매 제외
+          if (!isJunk) validCandidates.push(cand);
         }
       }
       await sleep(300);
@@ -338,6 +350,104 @@ export async function runHotSectorWatchlist(): Promise<void> {
     await sendTelegramMessage(msg).catch(() => {});
   } catch (err) {
     logger.error(`핫 업종 자동 편입 실패: ${err instanceof Error ? err.message : String(err)}`, {
+      component: COMPONENT,
+    });
+  }
+}
+
+/**
+ * 자동 추가 종목 자동 가지치기 (16:00 실행)
+ *
+ * 대상: source LIKE 'HOT_SECTOR%' — CEO 직접 추가(MANUAL) 종목은 절대 건드리지 않음
+ * 제거 조건 (하나라도 해당):
+ *   1. 최근 7거래일 동안 시스템 매매 기록 없음 + AI 스코어 40 미만 3일 연속
+ *   2. 시장경보 코드 ≠ '00' (투자경고/위험/정리매매 진입)
+ *   3. 시가총액 < 200억 (시총이 급락해 잡주화)
+ */
+export async function pruneAutoWatchlist(): Promise<void> {
+  logger.info('✂️ 자동 워치리스트 가지치기 시작', { component: COMPONENT });
+  const pool = getPool();
+
+  try {
+    // 자동 편입 활성 종목만 대상 (CEO MANUAL 제외)
+    const { rows: autoStocks } = await pool.query<{ stock_code: string; stock_name: string }>(
+      `SELECT stock_code, stock_name FROM watchlist
+       WHERE is_active = true AND source LIKE 'HOT_SECTOR%'`,
+    );
+
+    if (autoStocks.length === 0) {
+      logger.info('가지치기 대상 자동 편입 종목 없음', { component: COMPONENT });
+      return;
+    }
+
+    const pruned: string[] = [];
+
+    for (const stock of autoStocks) {
+      try {
+        // 조건 1: 최근 N일 매매 기록 확인
+        const { rows: tradeRows } = await pool.query(
+          `SELECT COUNT(*) AS cnt FROM transaction_chains
+           WHERE stock_code = $1
+             AND created_at >= CURRENT_DATE - INTERVAL '${PRUNE_NO_TRADE_DAYS} days'`,
+          [stock.stock_code],
+        );
+        const recentTrades = Number(tradeRows[0]?.cnt ?? 0);
+
+        // 조건 2: AI 스코어 연속 저점
+        const { rows: scoreRows } = await pool.query(
+          `SELECT COUNT(*) AS cnt FROM ai_scores
+           WHERE stock_code = $1
+             AND score_date >= CURRENT_DATE - INTERVAL '${PRUNE_LOW_SCORE_DAYS} days'
+             AND composite_score < $2`,
+          [stock.stock_code, PRUNE_LOW_SCORE_THRESHOLD],
+        );
+        const lowScoreDays = Number(scoreRows[0]?.cnt ?? 0);
+        const poorPerformer = recentTrades === 0 && lowScoreDays >= PRUNE_LOW_SCORE_DAYS;
+
+        // 조건 3: 상폐/잡주 실시간 체크 (KIS API — 이미 율 제한 없음)
+        let warnFail = false;
+        try {
+          const price = await getCurrentPrice(stock.stock_code);
+          if (price.mrktWarnClsCode && price.mrktWarnClsCode !== '00') {
+            warnFail = true;
+            logger.warn(`⛔ 경보종목 감지 → 제거: ${stock.stock_name}(${stock.stock_code}) 경보코드=${price.mrktWarnClsCode}`, {
+              component: COMPONENT,
+            });
+          } else if (price.marketCapEok > 0 && price.marketCapEok < 200) {
+            warnFail = true;
+            logger.warn(`⛔ 시총 급락 잡주 감지 → 제거: ${stock.stock_name}(${stock.stock_code}) 시총=${price.marketCapEok}억`, {
+              component: COMPONENT,
+            });
+          }
+        } catch {
+          // 가격 조회 실패는 제거 사유 아님 — 보수적으로 유지
+        }
+
+        if (poorPerformer || warnFail) {
+          const reason = warnFail ? '상폐/잡주위험' : `${PRUNE_NO_TRADE_DAYS}일무매매+저점수`;
+          await pool.query(
+            `UPDATE watchlist SET is_active = false, source = $1 WHERE stock_code = $2`,
+            [`PRUNED:${reason}`, stock.stock_code],
+          );
+          pruned.push(`${stock.stock_name}(${stock.stock_code}): ${reason}`);
+          logger.info(`✂️ 워치리스트 제거: ${stock.stock_name}(${stock.stock_code}) — ${reason}`, { component: COMPONENT });
+        }
+
+        await sleep(200); // rate limit 여유
+      } catch (err) {
+        logger.warn(`가지치기 실패 (${stock.stock_code}): ${err}`, { component: COMPONENT });
+      }
+    }
+
+    if (pruned.length > 0) {
+      await sendTelegramMessage(
+        `✂️ *자동 워치리스트 가지치기*\n제거 ${pruned.length}개:\n${pruned.map((s) => `• ${s}`).join('\n')}`,
+      ).catch(() => {});
+    } else {
+      logger.info('✂️ 가지치기 대상 없음 — 모든 자동 편입 종목 유지', { component: COMPONENT });
+    }
+  } catch (err) {
+    logger.error(`자동 워치리스트 가지치기 실패: ${err instanceof Error ? err.message : String(err)}`, {
       component: COMPONENT,
     });
   }
