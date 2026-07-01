@@ -1807,7 +1807,7 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
           stockEV && stockEV.sampleCount >= 3
             ? ` EV${stockEV.evPct >= 0 ? '+' : ''}${stockEV.evPct.toFixed(1)}%×${evMult.toFixed(2)}`
             : '';
-        const slTag = targetBucket === 'TACTICAL' ? ' ⚡SL-1.5%' : '';
+        const slTag = targetBucket === 'TACTICAL' ? ` ⚡SL-${tacticalSl.toFixed(1)}%` : '';
         const buyLog = [
           `매수 ${target.code} x${exec.filledQty} @$${entryP.toFixed(2)} ${buyMode}${slTag}`,
           `📌 목표: $${tpPrice}(+${tpPct.toFixed(1)}%) | 손절: $${slPrice}(-${effectiveSlPct.toFixed(1)}%) | ATR트레일: ${entryTrailDrop.toFixed(1)}%(ATR${entryAtrPct.toFixed(1)}%) [${tpLabel}]`,

@@ -268,8 +268,12 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
           const isDipBuy = (t.rsi <= 30 && t.price.changePct <= -2.5)
             || (t.rsi <= 25 && t.price.changePct <= -1.5)
             || t.rsi <= 20;
-          if (isDipBuy) {
-            logger.info(`🎯 쿨다운 바이패스(급락매수): ${t.code} RSI=${t.rsi.toFixed(0)} 등락=${t.price.changePct.toFixed(1)}%`, { component: 'OVERSEAS' });
+          // v17: 과매도 반등 바이패스 (RSI≤30 + 양봉 + 데드캣 방어)
+          const _deadCat = t.adx >= 55 && !t.aboveMA60 && t.score <= -25;
+          const _oversoldBounce = t.rsi <= 30 && t.price.changePct >= 1.0
+            && t.score > -30 && !_deadCat && (t.dayRangePct ?? 50) <= 80;
+          if (isDipBuy || _oversoldBounce) {
+            logger.info(`🎯 쿨다운 바이패스(${_oversoldBounce ? '과매도반등' : '급락매수'}): ${t.code} RSI=${t.rsi.toFixed(0)} 등락=${t.price.changePct.toFixed(1)}%`, { component: 'OVERSEAS' });
             return true;
           }
           logger.info(`⏸️ 쿨다운Lv${gradualCooldown.level} 전체 차단: ${t.code}`, { component: 'OVERSEAS' });
@@ -359,13 +363,21 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         const isDipBuyEntry = (t.rsi <= 30 && t.price.changePct <= -2.5)
           || (t.rsi <= 25 && t.price.changePct <= -1.5)
           || t.rsi <= 20;
+        // v17: 과매도 반등 진입 — RSI ≤ 30 + 양봉 반등 + 데드캣 바운스 방어
+        // 기존 dipBuy는 "아직 하락 중"만 잡음 → 반등 초기(양봉)도 포착
+        const isDeadCatBounce = t.adx >= 55 && !t.aboveMA60 && t.score <= -25;
+        const isOversoldBounce = t.rsi <= 30
+          && t.price.changePct >= 1.0       // 최소 1% 반등 (노이즈 제외)
+          && t.score > -30                  // 극단적 기술 악화 아님
+          && !isDeadCatBounce               // 초강세 하락추세 + MA60하방 + 극약 → 차단
+          && t.dayRangePct <= 80;           // 당일 고점 추격 방지
         // v15: RSI 28-38 + ADX≥20 진입 (깊은 조정 후 반등)
         const isNearOversold = t.rsi > RSI_OVERSOLD && t.rsi <= 38 && t.adx >= 20;
         // v15: score > 0이면 추세 필터 완화 (기술점수 양호 = 진입 여건 있음)
         const scoreBypass = t.score > 0 && t.adx >= 15;
         const trendFilterOk =
           t.isMomentum || t.isBigMover || isOversold || isDeveloping || isDipBuyEntry
-          || isNearOversold || scoreBypass || (isAbove50 && t.adx > adxThreshold);
+          || isOversoldBounce || isNearOversold || scoreBypass || (isAbove50 && t.adx > adxThreshold);
         if (!trendFilterOk) {
           logger.info(`  ⛔ 진입 필터 탈락: ${t.code} RSI=${t.rsi.toFixed(0)} ADX=${t.adx.toFixed(0)} score=${t.score}`, {
             component: 'OVERSEAS',
@@ -375,10 +387,11 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         // v15: MA/BB 바이패스 조건 대폭 완화 — 조정장에서 MA20 하방 차단이 매수 0건의 주범
         const signalPass = (t.signal === 'STRONG_BUY' || t.signal === 'BUY')
           || (paperValidated.has(t.code) && t.score >= 20);
-        // 조정장 급락 바이패스
+        // 조정장 급락 바이패스 + 과매도 반등 바이패스
         const dipBuyPass = (t.rsi <= 30 && t.price.changePct <= -2.5)
           || (t.rsi <= 25 && t.price.changePct <= -1.5)
-          || t.rsi <= 20;
+          || t.rsi <= 20
+          || isOversoldBounce; // v17: 과매도 반등도 MA20/MA60 바이패스
         // AI 매수 추천 바이패스 — 단, 손실 재진입 종목은 제외 (행동편향 방지)
         const ai = aiMap.get(t.code);
         const isRecentLoss = recentLossSet.has(t.code) || lossCooldownSet.has(t.code);
@@ -390,6 +403,9 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
             && !signalPass && !dipBuyPass && !aiBypass && !trendAliveBypass) {
           logger.info(`  ⛔ MA20 하방 진입 차단: ${t.code}`, { component: 'OVERSEAS' });
           return false;
+        }
+        if (isOversoldBounce) {
+          logger.info(`  🔄 과매도 반등 진입: ${t.code} RSI=${t.rsi.toFixed(0)} ADX=${t.adx.toFixed(0)} 등락=${t.price.changePct.toFixed(1)}% score=${t.score}`, { component: 'OVERSEAS' });
         }
         // v15: MA60 차단도 동일하게 완화 (AI/추세 바이패스 추가)
         if (!t.isMomentum && t.aboveMA60 === false && !signalPass && !dipBuyPass && !aiBypass && !trendAliveBypass) {
