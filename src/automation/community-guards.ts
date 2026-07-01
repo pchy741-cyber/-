@@ -6,7 +6,7 @@
  *
  * 절대 원칙:
  * - 커뮤니티 데이터 단독 매수 금지
- * - 상방 가점 최대 +5, 하방 감점 최대 -20 (비대칭)
+ * - 상방 가점 최대 +10, 하방 감점 최대 -20 (비대칭)
  * - RED source 데이터 저장 금지
  * - YELLOW source 원문 저장 금지
  */
@@ -202,18 +202,20 @@ export interface CommunityScoreInput {
   pumpRisk: PumpRiskResult;
   dryPullbackValid: boolean;
   crossValidated: boolean;
+  sentimentVelocity: number; // 감성 변화 속도 (양수=개선, 음수=악화)
 }
 
 /**
- * 커뮤니티 점수 조정 계산 (v16.1: 비대칭 확대 — 최대 +8, 최소 -20)
+ * 커뮤니티 점수 조정 계산 (v16.3: 비대칭 확대 — 최대 +10, 최소 -20)
  *
- * v16.1 변경:
- * - 가점 상한 +5→+8 (긍정+교차검증+눌림목+적정언급)
- * - 긍정 심리 60%+에서 55%+로 완화 (약한 긍정도 인정)
- * - 중간 가점 구간 추가 (+5: 긍정+교차검증)
+ * v16.3 변경:
+ * - 가점 상한 +8→+10 (긍정+교차검증+눌림목+감성개선)
+ * - sentimentVelocity 반영 (감성 변화 속도)
+ * - 반대매매 신호 추가 (극단적 낙관 = 고점 설거지 경고)
+ * - 감성 급격 악화 감점 추가
  */
 export function computeCommunityAdj(input: CommunityScoreInput): number {
-  const { mentionZ, posRatio, negRatio, pumpRisk, dryPullbackValid, crossValidated } = input;
+  const { mentionZ, posRatio, negRatio, pumpRisk, dryPullbackValid, crossValidated, sentimentVelocity } = input;
 
   // HARD: 펌프 감지 → 최대 감점
   if (pumpRisk.blockEntry) return -20;
@@ -225,14 +227,25 @@ export function computeCommunityAdj(input: CommunityScoreInput): number {
   if (pumpRisk.pumpRiskScore >= 60) return -15;
   if (pumpRisk.pumpRiskScore >= 40) return -8;
 
+  // 반대매매 신호: 극단 낙관 + 언급 급증 → 무조건 경고 (교차검증 통과해도)
+  if (posRatio > 0.9 && mentionZ > 2.0) return -5;
+
+  // 반대매매 신호: 극단 낙관 + 교차검증 실패 → 고점 설거지 경고
+  if (posRatio > 0.85 && !crossValidated) return -8;
+
+  // 감성 급격 악화 + 부정 → 추가 감점
+  if (sentimentVelocity < -30 && negRatio > 0.4) return -12;
+
   // 부정 심리 지배
   if (negRatio > 0.7) return -10;
   if (negRatio > 0.5) return -5;
 
-  // v16.2: 긍정 + 교차검증은 mentionZ 높아도 가점 (교차검증이 과열 필터 역할)
-  // 기존 버그: mentionZ>2.5 → -5가 교차검증 가점보다 먼저 반환되어 강한 종목 차단
+  // v16.3: 긍정 + 교차검증 + 눌림목 + 감성 개선 → 최고 가점 +10
   if (posRatio > 0.55 && crossValidated && dryPullbackValid && mentionZ >= 1.0) {
-    return mentionZ > 3.5 ? 3 : 8; // 극단 과열만 감점 (3.5+), 나머지 최고 가점
+    if (sentimentVelocity > 20) {
+      return mentionZ > 3.5 ? 5 : 10; // 감성 개선 중 → 최고 가점
+    }
+    return mentionZ > 3.5 ? 3 : 8;
   }
 
   if (posRatio > 0.55 && crossValidated && mentionZ >= 0.5) {

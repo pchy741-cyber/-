@@ -481,6 +481,8 @@ export class TradeExecutor {
 
       // 호가 진입 타이밍 — ask2 이하일 때만 매수 (ETF 파킹/바닥낚시 제외 — 시간외 단일가는 호가 무의미)
       // v10: 예약매수 — bid1~ask1 중간가 지정가 주문 (기존 ask1 → mid 가격으로 개선)
+      // v16.3: 고확신 모멘텀 종목은 시장가 유지 (스마트매수 지정가 변환 시 체결률 저하 방지)
+      const isHighConviction = (aiScore ?? 0) >= 85 && (tpSlHints?.confidence ?? 0) >= 0.7;
       let smartBuyPrice: number | undefined;
       if (!skipGates) {
         try {
@@ -489,28 +491,38 @@ export class TradeExecutor {
           const ask2 = book[1]?.askPrice ?? 0;
           const bid1 = book[0]?.bidPrice ?? 0;
           if (ask1 > 0 && ask2 > 0 && estimatedPrice > ask2) {
-            releaseBuyIntent(stockCode);
-            logger.warn(`⏸️ 호가 진입 보류: ${stockCode} 현재가 ${estimatedPrice} > ask2 ${ask2} — 스킵`, {
-              component: 'EXECUTOR',
-            });
-            this._logFire('WARN', 'EXECUTOR', `호가 진입 보류: ${stockCode} 현재가=${estimatedPrice} ask2=${ask2}`);
-            return;
+            if (isHighConviction) {
+              // 고확신 모멘텀: ask2 초과해도 수량 50% 축소 후 시장가 진입
+              gatedQuantity = Math.max(1, Math.floor(gatedQuantity * 0.5));
+              logger.info(
+                `🚀 모멘텀 진입: ${stockCode} 현재가 ${estimatedPrice} > ask2 ${ask2} — 수량 50% 축소(${gatedQuantity}주), 시장가`,
+                { component: 'EXECUTOR' },
+              );
+            } else {
+              releaseBuyIntent(stockCode);
+              logger.warn(`⏸️ 호가 진입 보류: ${stockCode} 현재가 ${estimatedPrice} > ask2 ${ask2} — 스킵`, {
+                component: 'EXECUTOR',
+              });
+              this._logFire('WARN', 'EXECUTOR', `호가 진입 보류: ${stockCode} 현재가=${estimatedPrice} ask2=${ask2}`);
+              return;
+            }
+          } else if (!isHighConviction) {
+            // 일반 종목: 기존 bid-ask 중간가 지정가 주문
+            if (bid1 > 0 && ask1 > 0) {
+              smartBuyPrice = Math.floor((bid1 + ask1) / 2);
+              if (smartBuyPrice <= bid1) smartBuyPrice = bid1;
+              logger.info(
+                `💰 예약매수: ${stockCode} bid1=${bid1.toLocaleString()} mid=${smartBuyPrice.toLocaleString()} ask1=${ask1.toLocaleString()} → 지정가`,
+                { component: 'EXECUTOR' },
+              );
+            } else if (ask1 > 0) {
+              smartBuyPrice = ask1;
+              logger.info(`💰 스마트 매수: ${stockCode} ask1=${ask1.toLocaleString()} → 지정가 폴백`, {
+                component: 'EXECUTOR',
+              });
+            }
           }
-          // v10: 예약매수 — bid1~ask1 중간가로 지정가 주문 (ask1 대비 스프레드 절반 절감)
-          // 체결 안 되면 confirmFill 타임아웃(~30s)에서 자동 취소 → 다음 사이클에서 재시도
-          if (bid1 > 0 && ask1 > 0) {
-            smartBuyPrice = Math.floor((bid1 + ask1) / 2);
-            if (smartBuyPrice <= bid1) smartBuyPrice = bid1;
-            logger.info(
-              `💰 예약매수: ${stockCode} bid1=${bid1.toLocaleString()} mid=${smartBuyPrice.toLocaleString()} ask1=${ask1.toLocaleString()} → 지정가`,
-              { component: 'EXECUTOR' },
-            );
-          } else if (ask1 > 0) {
-            smartBuyPrice = ask1;
-            logger.info(`💰 스마트 매수: ${stockCode} ask1=${ask1.toLocaleString()} → 지정가 폴백`, {
-              component: 'EXECUTOR',
-            });
-          }
+          // 고확신 모멘텀 + ask2 이하: 시장가 유지 (smartBuyPrice undefined → 시장가)
         } catch (e) {
           logger.warn(`호가 조회 실패 → 시장가 폴백: ${stockCode} ${(e as Error).message}`, { component: 'EXECUTOR' });
         }

@@ -189,8 +189,10 @@ export async function executeBuyDecisions(
     winRates,
     candidates,
     macroSizingMult: _macroMult,
+    softBlockSizingMult: _softBlockMult,
   } = params;
   const macroSizingMult = _macroMult ?? 1.0;
+  const softBlockSizingMult = _softBlockMult ?? 1.0;
   const strategyParams = resolveStrategyParams(mode, params);
   const aiScoreMap = buildAiScoreMap(params.aiScores);
   const noAiScores = hasNoAiScores(params.aiScores);
@@ -793,8 +795,9 @@ export async function executeBuyDecisions(
     // v9: 곱연산 배수 합산 하한 — 과도한 축소 방지
     // 이전: 0.5×0.6×0.65×0.5 = 0.098 → 25%→2.4% (거의 매수 불가)
     // 수정: 합산 배수 최소 0.25 보장 → 25%→6.25% 이상 유지
+    // v16.3: softBlockSizingMult 적용 (점심/뉴스끊김 → 완전 차단 대신 수량 축소)
     const rawCompoundMult =
-      modeScale * macroSizingMult * winRateMultiplier * lossStreakMult * evSizingMult * visionSizingMult;
+      modeScale * macroSizingMult * softBlockSizingMult * winRateMultiplier * lossStreakMult * evSizingMult * visionSizingMult;
     // v9-fix: Paper는 학습용 → 곱연산 하한 0.5 (Live: 0.25) — 데이터 수집 위해 적극적 매수
     // v11: paper도 live와 동일 바닥 (실전 동일 조건 학습)
     // Innovation #3: Paper에서 unified sizer 사용 시 compoundMult 이중적용 방지 (이미 내재됨)

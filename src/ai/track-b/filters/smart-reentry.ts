@@ -157,11 +157,12 @@ function checkConditionD(candles: DailyCandle[]): { pass: boolean; sl?: number }
 
 /**
  * Condition C: 주도주 필터
- * — 거래대금 ≥ 150억원 OR 60일 신고가 이력
+ * — 거래대금 ≥ 50억원 OR 60일 신고가 이력
+ * v16.3: 150억→50억 완화 — 중소형주 영구 재진입 불가 문제 해결
  */
 function checkConditionC(candles: DailyCandle[], tradingValue: number): boolean {
-  // 거래대금 150억 이상
-  if (tradingValue >= 15_000_000_000) return true;
+  // 거래대금 50억 이상 (v16.3: 150억→50억 완화)
+  if (tradingValue >= 5_000_000_000) return true;
 
   // 60일 신고가 이력 (최근 10일 내) — descending: index 0 = newest
   if (candles.length >= 62) {

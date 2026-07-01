@@ -61,7 +61,9 @@ export function adjustPositionSizes(params: {
       const slPct = Math.max(0.01, Math.abs(_params.stopLossPct) / 100);
       const maxBudgetByLoss =
         totalAssets > 0 ? Math.floor((totalAssets * 0.015) / slPct) : Infinity;
-      const budget = Math.min(rawBudget, absoluteCap, maxBudgetByLoss);
+      // floor 5만원: 곱연산 누적으로 예산이 극소화되어 수량 0주 되는 문제 방지
+      const BUDGET_FLOOR = 50_000;
+      const budget = Math.max(BUDGET_FLOOR, Math.min(rawBudget, absoluteCap, maxBudgetByLoss));
       const targetQty = Math.max(1, Math.floor(budget / price));
       const currentQty = d.quantity ?? 0;
 

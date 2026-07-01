@@ -958,9 +958,18 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       logger.warn(`📰 뉴스 수집 끊김 (마지막: ${newsLastAt ? Math.round((Date.now() - newsLastAt) / 60000) + '분 전' : '오늘 없음'}) — Live 신규매수 차단`, { component: 'TRACK_B' });
     }
 
+    // v16.3: 점심(11:30-13:00) + 뉴스끊김 → 완전 차단 대신 사이징 축소로 전환
+    // 고확신 종목의 매수 기회를 보존하면서 리스크를 제한
+    const softBlockSizingMult =
+      (!ctxIsPaper && isLunchBlock) ? 0.4 :   // 점심: 40% 수량만 허용
+      isNewsStale ? 0.5 :                      // 뉴스 끊김: 50% 수량만 허용
+      1.0;
+    if (softBlockSizingMult < 1.0) {
+      logger.info(`📉 소프트 블록: 사이징 ${Math.round(softBlockSizingMult * 100)}% 적용 (${isLunchBlock ? '점심시간' : '뉴스끊김'})`, { component: 'TRACK_B' });
+    }
+
     const blockNewBuys =
       (!ctxIsPaper && isPastClose) || // Paper: 마감시간 면제 (적극적 매매)
-      (!ctxIsPaper && isLunchBlock) || // 점심블록: 랠리일 해제
       isSwingEodRestricted || // SWING 14:30 이전: 종가우선 (랠리일/70+점 예외)
       isOpeningBlock || // 개장블록: 랠리일 09:10으로 단축
       isMaxPositionsReached || // 최대 동시 포지션 수 초과: 신규 매수 차단
@@ -975,7 +984,6 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       // 개선: 사이징 단계에서 0.5x 배율 적용 (portfolio-guard.getPerformanceMultiplier)
       (!ctxIsPaper && crashSignal.level === 'CRASH') || // 크래시 시그널 CRASH
       (!ctxIsPaper && crashSignal.level === 'PANIC') || // 크래시 시그널 PANIC
-      isNewsStale || // 📰 뉴스 수집 90분 이상 끊김: Live 신규매수 차단
       eodOnlyActive; // 🎰 연패 EOD-only 모드 (Paper는 이미 false 반환)
 
     // ── entry-timing-guard 연결: 이브닝 블록 + 전략 필터 + 기술지표 다중 확증 ──
@@ -1087,8 +1095,9 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         // Track A 07:30 생성 → 15:30까지 8시간. 오래된 점수의 신뢰도 하락 반영
         const scoredAt = s.created_at ? new Date(s.created_at).getTime() : 0;
         const ageHours = scoredAt > 0 ? (Date.now() - scoredAt) / 3_600_000 : 0;
+        // v16.3: 감쇠 완화 — Track A 07:30→12:30(5h) 재실행 고려, 중간 시간대 점수 보존력 강화
         const decayWeight =
-          ageHours <= 2 ? 1.0 : ageHours <= 4 ? 0.88 : ageHours <= 6 ? 0.75 : ageHours <= 24 ? 0.6 : 0.45;
+          ageHours <= 2 ? 1.0 : ageHours <= 4 ? 0.95 : ageHours <= 6 ? 0.88 : ageHours <= 24 ? 0.75 : 0.5;
         const base = 50 + (rawBase - 50) * decayWeight; // 중립(50)으로 수렴
         const adj = flowAdjMap.get(s.stock_code) ?? 0;
         const capAdj = marketCapAdjMap.get(s.stock_code) ?? 0;
@@ -1197,7 +1206,8 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
           );
           return { stock_code: s.stock_code, score: Math.max(0, Math.round(base)) || 0 };
         }
-        const boundedAdj = Math.max(-25, Math.min(30, totalAdj)); // v13: 뉴스 테마 부스트 추가로 상한 25→30, 하한 -20→-25
+        // v16.3: 18개 보정 항목의 극단 신호 반영력 강화 (-25→-40, +30→+35)
+        const boundedAdj = Math.max(-40, Math.min(35, totalAdj));
         const rawScore = Math.min(100, Math.max(0, base + boundedAdj));
         return { stock_code: s.stock_code, score: Math.round(rawScore) };
       });
@@ -1271,7 +1281,8 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       dailyPnlPct: dailyLoss.dailyPnlPct,
       portfolioUtil,
     });
-    const feedbackThreshold = Math.max(thresholdFloor, adaptiveThresholdResult);
+    // 절대 상한 92: threshold가 100+로 올라가 매수 수학적 불가능 상태(데드락) 방지
+    const feedbackThreshold = Math.min(92, Math.max(thresholdFloor, adaptiveThresholdResult));
     if (winFeedback.thresholdBonus > 0 || winFeedback.requirePullback || winFeedback.minVolumeRatio > 1.0) {
       logger.info(`🎯 승률피드백 적용: ${winFeedback.summary}`, { component: 'TRACK_B' });
     }
@@ -1425,6 +1436,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       // penalty=2(하락장, KOSPI<MA60)만 차단. SCALPING 모드면 macro/regime 면제
       blockNewBuys: blockNewBuysFinal,
       macroSizingMult,
+      softBlockSizingMult,
       lossHistory,
       kospiBoost: kospiRegime.boost,
       allocationTarget: allocCfg
@@ -1473,6 +1485,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
           minVolumeRatio: 1.0,
           blockNewBuys: blockNewBuysFinal,
           macroSizingMult,
+          softBlockSizingMult,
           lossHistory,
           kospiBoost: kospiRegime.boost,
           allocationTarget: null,

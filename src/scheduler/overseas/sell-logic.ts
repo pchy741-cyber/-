@@ -71,10 +71,14 @@ const MIN_AI_SELL_CONF_HIGH_BETA = 0.82;
 const MIN_AI_SELL_CONF_DEFAULT = 0.78;
 /** RSI threshold for BigMover overbought exit */
 const RSI_BIGMOVER_OVERBOUGHT = 82;
-/** Profit tightening thresholds (% from peak) */
-// v14: 10/15/20→15/20/25 (+10%에서 타이트닝 시작은 너무 이름 → 위너 라이딩 기회 확대)
-const PROFIT_TIGHTEN_THRESHOLDS = { HIGH: 25, MEDIUM: 20, LOW: 15 } as const;
-const PROFIT_TIGHTEN_VALUES = { HIGH: 1.5, MEDIUM: 1.0, LOW: 0.5 } as const;
+/** Profit tightening thresholds (% from peak) — 근거 기반 5단계 래칫
+ * arXiv:2604.27150 (8,960 config 백테스트): 최적 트레일 활성화 3%, 거리 5%
+ * Snorrason & Yusupov (2009, Lund대): 15~20% 트레일이 11년 최고 누적수익
+ * Decoding Markets (11,000주, 1990-2020): 20% 트레일 risk-adjusted 최고 (0.57)
+ * 래칫 원칙 (업계 합의): 각 단계에서 누적 수익의 ~50% 잠금
+ */
+const PROFIT_TIGHTEN_THRESHOLDS = { HIGH: 25, MEDIUM: 20, LOW: 15, MID: 8, ENTRY: 3 } as const;
+const PROFIT_TIGHTEN_VALUES = { HIGH: 1.5, MEDIUM: 1.0, LOW: 0.5, MID: 0.3, ENTRY: 0.15 } as const;
 /** Milliseconds per day */
 const MS_PER_DAY = 1000 * 60 * 60 * 24;
 
@@ -271,11 +275,13 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
       adx: tech.adx,
       rsi: tech.rsi,
     });
-    // 수익 크기 비례 트레일 타이트닝: 수익 클수록 보호 강화 (2×ATR 연구 — 드로다운 32% 감소 검증)
-    // maxPnl 10%+: 추가 0.5% 타이트, 15%+: 1.0% 타이트, 20%+: 1.5% 타이트
+    // 수익 크기 비례 5단계 래칫 타이트닝 (arXiv:2604.27150 + Snorrason & Yusupov)
+    // 3%+: 0.15% | 8%+: 0.3% | 15%+: 0.5% | 20%+: 1.0% | 25%+: 1.5% 타이트
     const profitTighten = maxPnlPct >= PROFIT_TIGHTEN_THRESHOLDS.HIGH ? PROFIT_TIGHTEN_VALUES.HIGH
       : maxPnlPct >= PROFIT_TIGHTEN_THRESHOLDS.MEDIUM ? PROFIT_TIGHTEN_VALUES.MEDIUM
-      : maxPnlPct >= PROFIT_TIGHTEN_THRESHOLDS.LOW ? PROFIT_TIGHTEN_VALUES.LOW : 0;
+      : maxPnlPct >= PROFIT_TIGHTEN_THRESHOLDS.LOW ? PROFIT_TIGHTEN_VALUES.LOW
+      : maxPnlPct >= PROFIT_TIGHTEN_THRESHOLDS.MID ? PROFIT_TIGHTEN_VALUES.MID
+      : maxPnlPct >= PROFIT_TIGHTEN_THRESHOLDS.ENTRY ? PROFIT_TIGHTEN_VALUES.ENTRY : 0;
     // v10.10.5c: trailTighten/profitTighten은 양수값 — 음수 trail에 더해야 0에 가까워져 타이트해짐
     // 예: trail=-4.0 + tighten=2.0 → -2.0 (2%드롭에서 트리거 = 더 빨리 보호)
     // 기존 버그: 빼면 -6.0 → 6%드롭까지 허용 = VIX 위기 시 오히려 더 느슨해짐
@@ -403,13 +409,15 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
       sellReason = `약세조기탈출(${pnlPct.toFixed(1)}%): score=${tech.score} RSI=${tech.rsi.toFixed(0)} MA20↓ → SL전 정리`;
 
       // ── 1d. 시장 급락 수익 선제 확정 ──
-      // VIX FEAR/PANIC + 수익 구간 → 마이너스 전환 전 즉시 청산 (수익 반납 방지)
+      // 근거: VIX>30 후 12개월 수익 중앙값 +22.4% (Bansal & Stivers 2023), 10일 내 반전 78.4% (iPresage)
+      // 1% 청산은 반등 알파 파괴 → 레짐별 차등 임계: STRESS≥3%, CRISIS≥2%
+      // VIX 스파이크 중 개별주 일일 변동 2~5% → 1% 수익은 노이즈 (Volatility Box 연구)
     } else if (
       (vixRegime.regime === 'STRESS' || vixRegime.regime === 'CRISIS') &&
-      pnlPct >= 1.0 &&
+      pnlPct >= (vixRegime.regime === 'CRISIS' ? 2.0 : 3.0) &&
       holdingDays >= 0.5 && // v11.1: 매수 직후 즉시청산 방지 (12h 가드)
       // CRISIS 진입 포지션(과매도반등/BigMover)은 조기 청산하지 않음 — 평균 +5~10% 목표
-      !(vixRegime.regime === 'CRISIS' && pnlPct < 3.0 && holdingDays < 2)
+      !(vixRegime.regime === 'CRISIS' && pnlPct < 5.0 && holdingDays < 2)
     ) {
       sellReason = `VIX급락 수익선제확정(${vixRegime.regime}): +${pnlPct.toFixed(1)}% → 급락전 청산`;
 

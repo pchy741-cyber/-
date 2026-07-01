@@ -204,13 +204,28 @@ export function ResearchBotPanel() {
     }
   };
 
+  // 캐시된 DART 결과 자동 로드 (Gemini 호출 없음 — DB 캐시에서 즉시 반환)
+  const loadCachedDartResults = async (codes: string[]) => {
+    if (codes.length === 0) return;
+    try {
+      const data = await api(`/research/dart/cached?codes=${codes.slice(0, 30).join(',')}`);
+      if (data.ok && Array.isArray(data.results) && data.results.length > 0) {
+        setDartResults(data.results);
+      }
+    } catch { /* 캐시 로드 실패 시 무시 — 수동 버튼으로 폴백 */ }
+  };
+
   useEffect(() => {
     loadNotes();
-    // KR 감시목록 로드
+    // KR 감시목록 로드 → 완료 후 캐시된 DART 결과 자동 로드
     api('/watchlist?viewMode=live')
       .then((items: WatchlistItem[]) => {
-        if (Array.isArray(items))
-          setKrWatchlist(items.map((i) => ({ code: i.stock_code, name: String(i.stock_name ?? i.stock_code) })));
+        if (Array.isArray(items)) {
+          const mapped = items.map((i) => ({ code: i.stock_code, name: String(i.stock_name ?? i.stock_code) }));
+          setKrWatchlist(mapped);
+          // 탭 진입 시 캐시된 결과 자동 로드 (Gemini 호출 없음)
+          loadCachedDartResults(mapped.map((s) => s.code));
+        }
       })
       .catch(() => {});
     // US 감시목록 로드

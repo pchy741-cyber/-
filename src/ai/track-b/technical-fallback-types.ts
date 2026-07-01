@@ -53,6 +53,8 @@ export interface TechnicalFallbackParams {
   marketSignals?: Map<string, StockSignals>;
   /** 매크로/레짐 기반 포지션 축소 배율 (RISK_OFF=0.5, 하락장=0.5, 조정=0.7, 정상=1.0) */
   macroSizingMult?: number;
+  /** 소프트 블록 사이징 배율 (점심=0.4, 뉴스끊김=0.5, 정상=1.0) — 완전 차단 대신 수량 축소 */
+  softBlockSizingMult?: number;
   /** 손실 이력 (스마트 재진입용) — pipeline에서 getLossHistory() 로딩 */
   lossHistory?: Map<string, import('../../db/client.js').LossRecord>;
   /** 장기보유(LTH) 종목 코드 — 일반 SL/TP 무시, 하락장에서만 매도 후 재매수 허용 */

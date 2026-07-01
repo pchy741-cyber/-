@@ -543,7 +543,7 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
 
       // 4-h. 커뮤니티 감성 섹션
       if (communityResult.status === 'fulfilled' && communityResult.value.length > 0) {
-        const meaningful = communityResult.value.filter((c) => Math.abs(c.score) >= 30);
+        const meaningful = communityResult.value.filter((c) => Math.abs(c.score) >= 15);
         if (meaningful.length > 0) {
           const lines = meaningful.map(
             (c) =>

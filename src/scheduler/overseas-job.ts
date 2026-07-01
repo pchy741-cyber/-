@@ -736,7 +736,8 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
 
     const latestSessionCache = getSessionCache(region);
     let aiInputs = allAiInputs;
-    if (latestSessionCache) {
+    if (latestSessionCache && !isPaper()) {
+      // Live: 세션 캐시로 AI 입력 최적화 (토큰 절약)
       const topSet = new Set(latestSessionCache.topCodes);
       aiInputs = allAiInputs.filter(
         (si) => heldSet.has(si.code) || topSet.has(si.code) || si.isMomentum || si.isBigMover,
@@ -748,19 +749,22 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
         );
       }
     }
+    // Paper: 세션 캐시 필터 안 함 → 전 종목 AI 분석 (GPT-4o-mini 비용 무시 수준, 학습 데이터 극대화)
 
     const hasBuyCandidates = aiInputs.some((si) => !si.isHolding);
     const hasSellCandidates = aiInputs.some((si) => si.isHolding);
     const now_ms = Date.now();
     const intervalMs = OVERSEAS.AI_INTERVAL_MS;
     const lastAiCall = isPaper() ? s.lastPaperAiCallAt : s.lastUSAiCallAt;
-    const aiCooldownOk = isUSSession ? now_ms - lastAiCall >= intervalMs : true;
+    // Paper: 쿨다운 절반 (5분) — 학습용이므로 기회 놓치면 데이터 손실
+    const effectiveInterval = isPaper() ? intervalMs / 2 : intervalMs;
+    const aiCooldownOk = isUSSession ? now_ms - lastAiCall >= effectiveInterval : true;
     // 🔧 보유종목 악화 신호 시 쿨다운 바이패스 — 매도 결정 지연 방지
     const hasUrgentSell = aiInputs.some((si) => si.isHolding && (si.score <= -15 || si.rsi > 72));
     const shouldCallAI = (hasBuyCandidates || hasSellCandidates) && (aiCooldownOk || hasUrgentSell);
     if ((hasBuyCandidates || hasSellCandidates) && !aiCooldownOk && !hasUrgentSell) {
       logger.info(
-        `🤖 AI 대기 중 — 다음 호출까지 ${Math.ceil((intervalMs - (now_ms - lastAiCall)) / 60000)}분 (무료 한도 절약)`,
+        `🤖 AI 대기 중 — 다음 호출까지 ${Math.ceil((effectiveInterval - (now_ms - lastAiCall)) / 60000)}분`,
         { component: 'OVERSEAS' },
       );
     }
@@ -1266,7 +1270,8 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
       }
     }
 
-    const minCashForBuy = portfolioValue * (isPaper() ? 0.15 : 0.05); // Live 5%, Paper 15% — 통합증거금 적극 활용
+    // Paper/Live 동일 파라미터 — Freqtrade·Alpaca·Lumibot 등 업계 합의: 실행 레이어만 다르고 전략 파라미터 동일 유지
+    const minCashForBuy = portfolioValue * 0.05;
     if (riskBlocked || allocBlocked || currentHoldingCount >= MAX_POSITIONS || cash < minCashForBuy) {
       const reasons: string[] = [];
       if (riskBlocked) reasons.push(`리스크차단(-${lossPctOfPortfolio.toFixed(1)}%)`);

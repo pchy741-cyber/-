@@ -7,7 +7,7 @@
  * 핵심 원칙:
  * - 커뮤니티 데이터 단독 매수 금지
  * - 커뮤니티 데이터 단독 비중 확대 금지
- * - 상방 가점 최대 +5, 하방 감점 최대 -20 (비대칭)
+ * - 상방 가점 최대 +10, 하방 감점 최대 -20 (비대칭)
  * - 원문/닉네임/개인정보 저장 금지 — 집계 통계만 유지
  * - 로그인 우회, 쿠키 재사용, 캡차 우회, 세션 탈취 금지
  *
@@ -22,10 +22,12 @@ import {
   assessPumpRisk,
   checkDryPullback,
   computeCommunityAdj,
+  crossValidate,
   FOMO_KEYWORDS,
   PUMP_KEYWORDS,
   type PumpRiskResult,
 } from './community-guards.js';
+import { getCachedFundamentalScore } from './dart-research.js';
 import { logger } from '../utils/logger.js';
 import { sleep } from '../utils/sleep.js';
 
@@ -38,12 +40,13 @@ export interface CommunitySentinelResult {
   mentionCount: number;     // 제목 수 (원문 미저장)
   mentionZ: number;         // 롤링 Z-score
   sentimentScore: number;   // -100 ~ +100
+  sentimentVelocity: number; // 감성 변화 속도 (양수=개선, 음수=악화)
   posRatio: number;         // 0.0~1.0
   negRatio: number;         // 0.0~1.0
   pumpRisk: PumpRiskResult;
   fomoDetected: boolean;
   dryPullback: boolean;
-  scoreAdj: number;         // -20 ~ +5 (파이프라인 연동값)
+  scoreAdj: number;         // -20 ~ +10 (파이프라인 연동값)
   fetchedAt: number;
 }
 
@@ -57,6 +60,9 @@ const _mentionHistory = new Map<string, number[]>();
 const HISTORY_MAX_DAYS = 7;
 const HISTORY_MAX_ENTRIES = 200;
 
+// 롤링 7회 감성 이력 (velocity 계산용, 수치만 저장)
+const _sentimentHistory = new Map<string, number[]>();
+
 // 만료 엔트리 정리 (30분 주기)
 setInterval(() => {
   const now = Date.now();
@@ -65,20 +71,25 @@ setInterval(() => {
   }
   if (_resultCache.size > 500) _resultCache.clear();
   if (_mentionHistory.size > HISTORY_MAX_ENTRIES) _mentionHistory.clear();
+  if (_sentimentHistory.size > HISTORY_MAX_ENTRIES) _sentimentHistory.clear();
 }, 30 * 60 * 1000).unref();
 
-// ── 키워드 목록 (기존 community-sentiment.ts 확장) ──
+// ── 가중치 키워드 (rss-scorer 패턴: [keyword, weight] — 강(3)/중(2)/약(1)) ──
 
-const POSITIVE_WORDS = [
-  '상승', '급등', '호재', '매수', '돌파', '강세', '신고가',
-  '저점', '반등', '추천', '목표가', '상향', '흑자', '성장', '기대',
-  '실적개선', '수주', '흑전', '배당',
+const WEIGHTED_POS: [string, number][] = [
+  ['어닝서프라이즈', 3], ['실적개선', 3], ['목표가상향', 3],
+  ['흑자전환', 3], ['신고가', 2], ['돌파', 2], ['상향', 2],
+  ['수주', 2], ['성장', 1], ['반등', 1], ['기대', 1],
+  ['상승', 1], ['호재', 1], ['매수', 1], ['저점', 1],
+  ['강세', 1], ['배당', 1], ['추천', 1], ['흑전', 1],
 ];
 
-const NEGATIVE_WORDS = [
-  '하락', '급락', '악재', '매도', '주의', '약세', '신저가',
-  '고점', '손절', '폭락', '위험', '하향', '적자', '우려', '조심',
-  '상폐', '감자', '횡령', '배임', '유증',
+const WEIGHTED_NEG: [string, number][] = [
+  ['상폐', 3], ['분식회계', 3], ['횡령', 3], ['배임', 3],
+  ['감자', 3], ['유증', 3], ['폭락', 2], ['급락', 2],
+  ['적자', 2], ['악재', 2], ['하향', 2], ['손절', 2],
+  ['하락', 1], ['매도', 1], ['주의', 1], ['약세', 1],
+  ['위험', 1], ['우려', 1], ['조심', 1], ['신저가', 1],
 ];
 
 // ── Z-Score 계산 ──
@@ -104,6 +115,23 @@ function updateMentionHistory(stockCode: string, count: number): void {
   history.push(count);
   if (history.length > HISTORY_MAX_DAYS) history.shift();
   _mentionHistory.set(stockCode, history);
+}
+
+// ── 감성 속도(Velocity) 추적 ──
+
+function calcSentimentVelocity(code: string, currentScore: number): number {
+  const history = _sentimentHistory.get(code) ?? [];
+  if (history.length < 2) return 0;
+  const recentSlice = history.slice(-3);
+  const prevAvg = recentSlice.reduce((a, b) => a + b, 0) / recentSlice.length;
+  return currentScore - prevAvg; // 양수=개선, 음수=악화
+}
+
+function updateSentimentHistory(code: string, score: number): void {
+  const history = _sentimentHistory.get(code) ?? [];
+  history.push(score);
+  if (history.length > HISTORY_MAX_DAYS) history.shift();
+  _sentimentHistory.set(code, history);
 }
 
 // ── 네이버 토론방 스크래핑 (기존 패턴 확장) ──
@@ -144,19 +172,19 @@ async function fetchNaverBoardStats(stockCode: string): Promise<NaverBoardStats 
 
     if (titles.length === 0) return null;
 
-    // 키워드 매칭 (집계만, 원문 미보존)
-    let posCount = 0, negCount = 0, pumpHits = 0, fomoHits = 0;
+    // 가중치 키워드 매칭 (집계만, 원문 미보존)
+    let weightedPos = 0, weightedNeg = 0, pumpHits = 0, fomoHits = 0;
     for (const t of titles) {
-      for (const w of POSITIVE_WORDS) if (t.includes(w)) posCount++;
-      for (const w of NEGATIVE_WORDS) if (t.includes(w)) negCount++;
+      for (const [w, weight] of WEIGHTED_POS) if (t.includes(w)) weightedPos += weight;
+      for (const [w, weight] of WEIGHTED_NEG) if (t.includes(w)) weightedNeg += weight;
       for (const w of PUMP_KEYWORDS) if (t.includes(w)) pumpHits++;
       for (const w of FOMO_KEYWORDS) if (t.includes(w)) fomoHits++;
     }
 
-    const total = posCount + negCount;
-    const posRatio = total > 0 ? posCount / total : 0.5;
-    const negRatio = total > 0 ? negCount / total : 0.5;
-    const sentimentScore = total > 0 ? Math.round(((posCount - negCount) / total) * 100) : 0;
+    const total = weightedPos + weightedNeg;
+    const posRatio = total > 0 ? weightedPos / total : 0.5;
+    const negRatio = total > 0 ? weightedNeg / total : 0.5;
+    const sentimentScore = total > 0 ? Math.round(((weightedPos - weightedNeg) / total) * 100) : 0;
 
     return {
       titleCount: titles.length,
@@ -210,6 +238,10 @@ export async function runCommunitySentinel(
         const mentionZ = calcMentionZScore(code, stats.titleCount);
         updateMentionHistory(code, stats.titleCount);
 
+        // 감성 속도 계산 + 이력 갱신
+        const sentimentVelocity = calcSentimentVelocity(code, stats.sentimentScore);
+        updateSentimentHistory(code, stats.sentimentScore);
+
         // 가격 변동 데이터
         const priceData = priceChanges?.get(code);
         const change1D = priceData?.change1D ?? 0;
@@ -239,8 +271,16 @@ export async function runCommunitySentinel(
         const candles = chartDataMap?.get(code);
         const dryPullback = candles ? checkDryPullback(candles) : false;
 
-        // 교차검증은 간략 버전 (V1: DART 악재 없으면 통과)
-        const crossValidated = dartAdj >= 0;
+        // 교차검증: 5개 조건 중 3개 이상 충족 필요
+        const crossResult = crossValidate({
+          hasDartNoNegative: dartAdj >= 0,
+          fundamentalScore: getCachedFundamentalScore(code) ?? undefined,
+          hasInstitutionalBuy: false,  // V1에서는 미사용 (수급 신호 없으면 false)
+          hasForeignBuy: false,
+          hasSufficientLiquidity: true, // 감시목록에 있으면 유동성 충분 가정
+          hasTechnicalSetup: dryPullback,
+        });
+        const crossValidated = crossResult.passed;
 
         // 최종 점수 조정 계산
         const scoreAdj = computeCommunityAdj({
@@ -250,6 +290,7 @@ export async function runCommunitySentinel(
           pumpRisk,
           dryPullbackValid: dryPullback,
           crossValidated,
+          sentimentVelocity,
         });
 
         const result: CommunitySentinelResult = {
@@ -257,6 +298,7 @@ export async function runCommunitySentinel(
           mentionCount: stats.titleCount,
           mentionZ,
           sentimentScore: stats.sentimentScore,
+          sentimentVelocity,
           posRatio: stats.posRatio,
           negRatio: stats.negRatio,
           pumpRisk,
@@ -300,7 +342,7 @@ export async function runCommunitySentinel(
 /**
  * Track B pipeline.ts 점수 조정용 (기존 dartAdj 패턴과 동일)
  * 캐시 미스 시 0 반환 (fail-safe)
- * Range: -20 ~ +5
+ * Range: -20 ~ +10
  */
 export function getCommunityScoreAdjustment(stockCode: string): number {
   try {
@@ -308,7 +350,7 @@ export function getCommunityScoreAdjustment(stockCode: string): number {
     if (!cached || Date.now() - cached.fetchedAt > CACHE_TTL_MS) return 0;
     const adj = cached.scoreAdj;
     if (!Number.isFinite(adj)) return 0;
-    return Math.max(-20, Math.min(5, adj));
+    return Math.max(-20, Math.min(8, adj));
   } catch (err) {
     logger.debug(`커뮤니티 스코어 조회 실패 (${stockCode}): ${err}`, { component: 'COMMUNITY' });
     return 0;
@@ -337,8 +379,10 @@ export function clearCommunitySentinelCache(code?: string): void {
   if (code) {
     _resultCache.delete(code);
     _mentionHistory.delete(code);
+    _sentimentHistory.delete(code);
   } else {
     _resultCache.clear();
     _mentionHistory.clear();
+    _sentimentHistory.clear();
   }
 }
