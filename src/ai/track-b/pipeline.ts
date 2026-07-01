@@ -694,12 +694,14 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     // 승률 65%+(5건+): +5점 보너스, 승률 35%-(5건+): -8점 페널티
     const stockAccAdjMap = new Map<string, number>();
     try {
+      // v17: 데이터스누핑 방지 — 최근 7일 holdout gap (T+1 결제 반영 대기)
       const { rows: accRows } = await getPool().query(
         `SELECT stock_code,
                 COUNT(*)::int AS total,
                 SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END)::int AS wins
            FROM score_accuracy
           WHERE recorded_at >= NOW() - INTERVAL '90 days'
+            AND recorded_at <= NOW() - INTERVAL '7 days'
             AND is_paper = $1
             AND stock_code = ANY($2)
           GROUP BY stock_code
@@ -708,8 +710,11 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       );
       for (const r of accRows) {
         const wr = r.wins / r.total;
-        if (wr >= 0.65) stockAccAdjMap.set(r.stock_code, 5);
-        else if (wr <= 0.35) stockAccAdjMap.set(r.stock_code, -8);
+        // v17: 승률 구간별 세밀 보정 (자기학습 강화)
+        if (wr >= 0.75 && r.total >= 8) stockAccAdjMap.set(r.stock_code, 10);      // 75%+ (8건+): 강한 실적
+        else if (wr >= 0.65) stockAccAdjMap.set(r.stock_code, 5);                  // 65%+: 양호
+        else if (wr <= 0.25 && r.total >= 8) stockAccAdjMap.set(r.stock_code, -12); // 25%- (8건+): 심각
+        else if (wr <= 0.35) stockAccAdjMap.set(r.stock_code, -8);                  // 35%-: 불량
       }
       if (stockAccAdjMap.size > 0) {
         logger.info(

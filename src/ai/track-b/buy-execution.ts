@@ -21,6 +21,7 @@ import {
 } from './technical-fallback-types.js';
 import { PRIORITY_SECTOR_CODES, MEGA_CAP_PRIORITY_CODES } from './trading-rules.js';
 import { computeUnifiedPositionSize } from './unified-sizer.js';
+import { getAdaptiveBuyThreshold } from './adaptive-threshold.js';
 
 // ── 국내 주식 Kelly 사이징 (해외 kelly.ts 패턴 재사용) ──
 interface DomesticKellyResult {
@@ -194,6 +195,21 @@ export async function executeBuyDecisions(
   const macroSizingMult = _macroMult ?? 1.0;
   const softBlockSizingMult = _softBlockMult ?? 1.0;
   const strategyParams = resolveStrategyParams(mode, params);
+
+  // v17: 적응형 매수 임계값 — 레짐/변동성/연승패/가동률 반영
+  const portfolioUtil = totalAssets && totalAssets > 0
+    ? Math.max(0, 1 - (orderableCash / totalAssets))
+    : undefined;
+  const firstCandRegime = candidates[0]?.regimeRoute?.regime;
+  const adaptiveBuyThreshold = getAdaptiveBuyThreshold({
+    base: strategyParams.buyThreshold ?? 65,
+    regime: firstCandRegime,
+    atrPct: candidates[0]?.tech?.atrPct,
+    recentStreak: undefined, // TODO: 연승/연패 추적 추가 시 연결
+    portfolioUtil,
+  });
+  strategyParams.buyThreshold = adaptiveBuyThreshold;
+
   const aiScoreMap = buildAiScoreMap(params.aiScores);
   const noAiScores = hasNoAiScores(params.aiScores);
   const decisions: TradeDecision[] = [];
