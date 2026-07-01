@@ -846,14 +846,22 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 🌍 해외장 Track A — 미국장 시간대 AI 분석 (paper 백데이터 축적 + 실전 신호 강화)
+  // 🌍 해외장 Track A — 미국장 시간대 AI 분석 (paper+live 듀얼 실행)
   // 개장 직후(22:45/23:45 DST/표준) + 핵심시간(01:00) + 파워아워(05:00)
   for (const usCron of ['45 22 * * 1-5', '45 23 * * 1-5', '0 1 * * 2-6', '0 5 * * 2-6']) {
     cron.schedule(
       usCron,
-      () => {
+      async () => {
         logger.info(`🌍 해외장 Track A (${usCron})`, { component: 'SCHEDULER' });
-        runTrackAJob().catch((e) => logger.error(`해외 Track A 실패: ${e}`, { component: 'SCHEDULER' }));
+        // paper → live 순 듀얼 실행 (paper 백데이터 축적 + 실전 신호 강화)
+        await runWithMode(true, async () => {
+          await runTrackAJob().catch((e) => logger.error(`해외 Track A paper 실패: ${e}`, { component: 'SCHEDULER' }));
+        });
+        if (!paperOnly) {
+          await runWithMode(false, async () => {
+            await runTrackAJob().catch((e) => logger.error(`해외 Track A live 실패: ${e}`, { component: 'SCHEDULER' }));
+          });
+        }
       },
       { timezone: MARKET.TIMEZONE },
     );
