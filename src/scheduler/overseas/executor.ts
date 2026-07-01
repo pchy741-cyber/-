@@ -190,6 +190,9 @@ export async function executeOverseasOrder(
     const MAX_SELL_RETRIES = side === 'SELL' ? 2 : 0;
     const RETRY_DELAYS = [1000, 2000]; // 1초, 2초 백오프
 
+    // v17: 주문 의도 로그 — API 호출 전 기록하여 유실 방지
+    logger.info(`🔜 [LIVE] 주문 시도: ${side} ${code} x${qty} @$${price.toFixed(2)}`, { component: 'OVERSEAS' });
+
     for (let attempt = 0; attempt <= MAX_SELL_RETRIES; attempt++) {
       try {
         // 주간거래 시간(KST 10:00~18:00) 감지 → Blue Ocean ATS API 자동 라우팅
@@ -300,9 +303,49 @@ export async function executeOverseasOrder(
           };
         }
       } catch (e) {
-        // SELL 에러 시 재시도
-        if (attempt < MAX_SELL_RETRIES) {
-          logger.warn(`🔄 SELL 재시도 ${attempt + 1}/${MAX_SELL_RETRIES}: ${code} - ${(e as Error).message} (${RETRY_DELAYS[attempt]}ms 후)`, { component: 'OVERSEAS' });
+        // v17: SELL 에러 시 KIS 잔고 확인 후 재시도 (중복 주문 방지)
+        // KIS API 성공했지만 네트워크 타임아웃 → exception 발생 가능
+        // 이 경우 재시도하면 중복 매도 → 잔고 변동 여부로 판단
+        if (side === 'SELL' && attempt < MAX_SELL_RETRIES) {
+          try {
+            invalidateBalanceCache();
+            await sleep(500); // KIS 반영 대기
+            const { getOverseasBalance } = await import('../../kis/overseas.js');
+            const balItems = await getOverseasBalance(exchange);
+            const currentHolding = balItems.find((b: { stockCode: string }) => b.stockCode === code);
+            const currentQty = currentHolding ? Number(currentHolding.quantity || 0) : 0;
+            if (currentQty < previousQty) {
+              // 잔고 이미 줄었음 → 주문이 실제로 체결된 것 → 재시도 금지
+              const filledQty = previousQty - currentQty;
+              logger.warn(`⚠️ SELL 예외 발생했지만 잔고 감소 확인: ${code} ${previousQty}→${currentQty} (체결${filledQty}주) — 재시도 안함`, { component: 'OVERSEAS' });
+              // PENDING으로 기록 → syncPendingOverseasOrders가 후속 정리
+              const errorOrderId = await insertOrder({
+                chain_id: null, stock_code: code, side, order_type: '01',
+                quantity: qty, price, kis_order_no: `ERR_RECOVERED_${Date.now()}`,
+                kis_status: 'UNCONFIRMED', filled_quantity: filledQty,
+                filled_price: price, status: 'PENDING',
+                trading_mode: 'live', trigger_source: 'OVERSEAS',
+                ai_reasoning: `[에러복구] ${reasoning} — ${(e as Error).message}`,
+                avg_buy_price: previousAvgPrice,
+              });
+              logger.info(`🌍 [LIVE] 에러복구 기록: SELL ${code} x${filledQty} @$${price.toFixed(2)} (DB#${errorOrderId})`, { component: 'OVERSEAS' });
+              return {
+                submitted: true, filledQty, filledPrice: price,
+                finalQty: currentQty,
+                finalAvgPrice: currentQty > 0 ? previousAvgPrice : 0,
+                orderNo: `ERR_RECOVERED_${Date.now()}`,
+              };
+            }
+            // 잔고 변동 없음 → 진짜 실패 → 재시도 OK
+            logger.warn(`🔄 SELL 재시도 ${attempt + 1}/${MAX_SELL_RETRIES}: ${code} - ${(e as Error).message} (잔고 변동 없음, ${RETRY_DELAYS[attempt]}ms 후)`, { component: 'OVERSEAS' });
+          } catch (balErr) {
+            // 잔고 조회도 실패 → 안전하게 재시도 중단
+            logger.error(`🚫 SELL 재시도 중단 (잔고 조회 실패): ${code} - ${(balErr as Error).message}`, { component: 'OVERSEAS' });
+            return {
+              submitted: false, filledQty: 0, filledPrice: price,
+              finalQty: previousQty, finalAvgPrice: previousAvgPrice, orderNo: '',
+            };
+          }
           await sleep(RETRY_DELAYS[attempt]);
           continue;
         }
