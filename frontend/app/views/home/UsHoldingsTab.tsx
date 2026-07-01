@@ -138,7 +138,7 @@ function UsHoldingsTab({
                           const liveUS = livePrefix(viewMode);
                           if (!await confirm({title: `${liveUS}${usDisplayName} ${sellQty}주 (${pct}%) 시장가 매도하시겠습니까?`, confirmLabel: '매도', confirmVariant: 'danger'})) return;
                           try {
-                            const r = await api(`/sell-overseas/${h.stock_code}`, { method: 'POST', body: JSON.stringify({ is_paper: viewMode === 'paper', quantity: sellQty }), timeout: 40000 });
+                            const r = await api(`/sell-overseas/${h.stock_code}?viewMode=${viewMode}`, { method: 'POST', body: JSON.stringify({ is_paper: viewMode === 'paper', quantity: sellQty }), timeout: 40000 });
                             toast(r.message || '매도 완료', 'ok');
                             onRefresh();
                           } catch (err: unknown) { toast('매도 실패: ' + (err as Error).message, 'err'); }
@@ -152,13 +152,13 @@ function UsHoldingsTab({
                       const liveUS = livePrefix(viewMode);
                       if (!await confirm({title: `${liveUS}${usDisplayName} ${h.quantity}주 전량 시장가 매도하시겠습니까?`, confirmLabel: '전량 매도', confirmVariant: 'danger'})) return;
                       try {
-                        const r = await api(`/sell-overseas/${h.stock_code}`, { method: 'POST', body: JSON.stringify({ is_paper: viewMode === 'paper' }), timeout: 40000 });
+                        const r = await api(`/sell-overseas/${h.stock_code}?viewMode=${viewMode}`, { method: 'POST', body: JSON.stringify({ is_paper: viewMode === 'paper' }), timeout: 40000 });
                         toast(r.message || '매도 완료', 'ok');
                         onRefresh();
                       } catch (err: unknown) {
                         if (await confirm({title: `매도 실패: ${(err as Error).message}`, description: `장마감 등으로 KIS 주문 불가 시, 강제 DB 청산하시겠습니까?\n(마지막 시세 $${displayPrice.toFixed(2)} 기준 정산)`, confirmLabel: '강제 청산', confirmVariant: 'danger'})) {
                           try {
-                            const r2 = await api(`/sell-overseas-force/${h.stock_code}`, { method: 'POST', body: JSON.stringify({ is_paper: viewMode === 'paper' }), timeout: 20000 });
+                            const r2 = await api(`/sell-overseas-force/${h.stock_code}?viewMode=${viewMode}`, { method: 'POST', body: JSON.stringify({ is_paper: viewMode === 'paper' }), timeout: 20000 });
                             toast(r2.message || '강제 청산 완료', 'ok');
                             onRefresh();
                           } catch (e2: unknown) { toast('강제 청산 실패: ' + (e2 as Error).message, 'err'); }
@@ -200,7 +200,7 @@ function UsHoldingsTab({
                 const liveUS = livePrefix(viewMode);
                 if (!await confirm({title: `${liveUS}해외 보유종목 ${usHoldings.length}종목 전부 일괄 청산하시겠습니까?`, description: '장마감 시 마지막 시세 기준 DB 강제 청산됩니다.', confirmLabel: '일괄 청산', confirmVariant: 'danger'})) return;
                 try {
-                  const r = await api('/sell-overseas-all', { method: 'POST', body: JSON.stringify({ is_paper: viewMode === 'paper', force_db: true }), timeout: 60000 });
+                  const r = await api(`/sell-overseas-all?viewMode=${viewMode}`, { method: 'POST', body: JSON.stringify({ is_paper: viewMode === 'paper', force_db: true }), timeout: 60000 });
                   toast(r.message || '전종목 청산 완료', 'ok');
                   onRefresh();
                 } catch (err: unknown) { toast('일괄 청산 실패: ' + (err as Error).message, 'err'); }

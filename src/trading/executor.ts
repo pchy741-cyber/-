@@ -264,7 +264,7 @@ export class TradeExecutor {
           await this.executeAverageDown(stock_code, quantity, price_type, limit_price, reasoning);
           break;
         case 'PARTIAL_SELL':
-          await this.executePartialSell(stock_code, quantity, reasoning);
+          await this.executePartialSell(stock_code, quantity, reasoning, decision.partial_tp_stage);
           break;
         case 'SELL':
         case 'FORCE_CLOSE':
@@ -362,6 +362,9 @@ export class TradeExecutor {
       const firstTranche = useScaleIn ? Math.ceil(quantity / 3) : quantity;
       const secondTranche = useScaleIn ? Math.floor(quantity / 3) : 0;
       const thirdTranche = useScaleIn ? quantity - firstTranche - secondTranche : 0;
+      // ScaleIn 2/3차는 executeAverageDown→addAveraging을 거치며 max_averaging_count 가드에 걸림.
+      // 계획된 분할진입은 진짜 물타기가 아니므로 가드에서 제외되도록 카운트를 미리 확보 (투자금 불일치 버그 수정)
+      const scaleInTrancheCount = (secondTranche > 0 ? 1 : 0) + (thirdTranche > 0 ? 1 : 0);
 
       const params = STRATEGY_PARAMS[mode] ?? STRATEGY_PARAMS.SWING;
       if (!STRATEGY_PARAMS[mode]) {
@@ -615,7 +618,7 @@ export class TradeExecutor {
               quantity: filledQty,
               targetProfitPct,
               stopLossPct,
-              maxAveragingCount: params.maxAveragingCount,
+              maxAveragingCount: params.maxAveragingCount + (useScaleIn ? scaleInTrancheCount : 0),
               isPaper: isPaperSnapshot,
             });
             // orders.chain_id 연결 — 고아 포지션 방지 (audit P0)
@@ -944,7 +947,12 @@ export class TradeExecutor {
   /**
    * 부분 익절
    */
-  private async executePartialSell(stockCode: string, quantity: number, reasoning: string): Promise<void> {
+  private async executePartialSell(
+    stockCode: string,
+    quantity: number,
+    reasoning: string,
+    partialTpStage?: number,
+  ): Promise<void> {
     const isPaperSnapshot = getCtxIsPaper();
     const chain = await chainManager.findOpenChain(stockCode, isPaperSnapshot);
     if (!chain) return;
@@ -1006,8 +1014,18 @@ export class TradeExecutor {
       const pnlPct = avgBuy > 0 ? ((fill.filledPrice - avgBuy) / avgBuy) * 100 : 0;
       await chainManager.partialProfit(chain.id, soldQty, fill.filledPrice, chain);
 
-      // v10.11: 분할TP 스테이지 카운터 — 체결 확인 후 증가 (기존: 결정 생성시 미리 증가 → 실패시 영구 스킵)
-      if (reasoning.includes('분할TP') || reasoning.includes('Partial TP')) {
+      // v18: 분할TP 스테이지 카운터 — decision에 실려온 번호를 직접 저장 (기존 reasoning 정규식 파싱은
+      // 파싱 실패/문구 변경 시 조용히 스킵되어 스테이지가 영구히 0에 머무는 버그 원인이었음 — 실측 확인됨)
+      if (partialTpStage != null) {
+        try {
+          await setKrPartialTpStageNum(chain.id, partialTpStage);
+        } catch (e) {
+          logger.error(`분할TP 스테이지 저장 실패 (다음 사이클에 동일 단계 재실행 위험): ${stockCode} — ${e}`, {
+            component: 'EXECUTOR',
+          });
+        }
+      } else if (reasoning.includes('분할TP') || reasoning.includes('Partial TP')) {
+        // 폴백: partial_tp_stage가 안 실려온 경우(구버전 호출 경로 등)에만 정규식 파싱 시도
         try {
           const stageMatch = reasoning.match(/(\d+)단계/);
           if (stageMatch) {
@@ -1041,6 +1059,36 @@ export class TradeExecutor {
     const failCount = this._closeFailCount.get(failKey) ?? 0;
     if (failCount >= 5) {
       // v10: 5회 이상 실패 → 체인 자동 강제 종료 (무한 루프 완전 차단)
+      // v17-fix: 종료 전 실제 KIS 잔고 확인 필수 — 검증 없이 종료하면 실보유 포지션이
+      // DB 장부에서만 사라지고 계좌엔 그대로 남아 "물린 포지션"이 됨 (라이브 자금 고착 원인)
+      if (!isPaperSnapshot) {
+        try {
+          invalidateBalanceCache();
+          const kisPosition = await getPositionForStock(stockCode);
+          const actualQty = kisPosition?.quantity ?? 0;
+          if (actualQty > 0) {
+            logger.error(
+              `🚨 ${stockCode} 청산 ${failCount}회 연속 실패했지만 KIS 실보유 ${actualQty}주 확인됨 → 강제종료 보류, 수동 확인 필요`,
+              { component: 'EXECUTOR' },
+            );
+            import('../notifications/telegram.js')
+              .then(({ sendTelegramMessage }) =>
+                sendTelegramMessage(
+                  `🚨 매도 반복실패 (실전)\n종목: ${stockCode}\nKIS 실보유: ${actualQty}주 (매도 안 됨!)\n⚠️ 자동종료 보류 — KIS 앱에서 수동 매도 필요`,
+                ).catch((e) => logger.warn(`반복실패 텔레그램 실패: ${e}`, { component: 'EXECUTOR' })),
+              )
+              .catch(() => {});
+            return; // 체인 유지 — 다음 사이클에 재시도, 절대 장부에서 지우지 않음
+          }
+        } catch (posCheckErr) {
+          // KIS 조회 자체가 실패하면 실보유 여부를 알 수 없으므로 안전 우선 — 종료 보류
+          logger.error(
+            `🚨 ${stockCode} 청산 실패 + KIS 잔고 조회도 실패 → 안전을 위해 강제종료 보류: ${posCheckErr}`,
+            { component: 'EXECUTOR' },
+          );
+          return;
+        }
+      }
       logger.warn(`🔄 ${stockCode} 청산 ${failCount}회 연속 실패 → 체인 자동 강제 종료`, { component: 'EXECUTOR' });
       try {
         const avgBuy = Number(chain.avg_buy_price) || 0;

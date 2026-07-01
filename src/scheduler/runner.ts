@@ -269,10 +269,10 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // ⚡ Quick Re-Score — 매 2분 (v16.1: 1분→2분, CPU 50% 절약, paid AI 0)
-  // 황금구간: 내부 throttle이 적응형 조절 / 마의시간: 15분 내부 throttle
+  // ⚡ Quick Re-Score — 매 1분 (v18: 2분→1분, 무료 RSS라 유지비 영향 없음 — 급등주 반응성 우선)
+  // 황금구간: 내부 throttle이 적응형 조절 / 마의시간: 5분 내부 throttle
   cron.schedule(
-    '*/2 9-15 * * 1-5',
+    '*/1 9-15 * * 1-5',
     () => {
       runWithMode(false, async () => {
         const { runQuickRescore } = await import('../ai/track-a/quick-rescore.js');

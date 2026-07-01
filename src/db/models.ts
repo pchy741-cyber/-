@@ -166,6 +166,7 @@ export const TradeDecisionSchema = z.object({
   pullback_signal: z.boolean().optional(),
   envelope_pos: z.string().optional(),
   regime_position_scale: z.number().optional(), // 레짐별 포지션 배율 (RANGE_HIGH_VOL=0.5, DIST=0.4, BEAR=0.3, BULL=1.2)
+  partial_tp_stage: z.number().int().optional(), // v18: 분할TP 스테이지 번호 직접 전달 (reasoning 정규식 파싱 제거 — 파싱 실패 시 스테이지 미저장 버그 방지)
 });
 export type TradeDecision = z.infer<typeof TradeDecisionSchema>;
 

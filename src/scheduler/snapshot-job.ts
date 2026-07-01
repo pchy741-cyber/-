@@ -13,7 +13,7 @@ import { logger } from '../utils/logger.js';
  */
 
 /** Paper 해외 포트폴리오 KRW 합산 (스냅샷용 — 대시보드 calc와 동일 산식) */
-async function getOverseasValueKrw(isPaper: boolean): Promise<{ totalKrw: number; unrealizedPnlKrw: number }> {
+export async function getOverseasValueKrw(isPaper: boolean): Promise<{ totalKrw: number; unrealizedPnlKrw: number }> {
   try {
     const { fetchExchangeRate } = await import('../automation/macro-data.js');
     const fxRate = await fetchExchangeRate().catch(() => FALLBACK_FX_RATE);

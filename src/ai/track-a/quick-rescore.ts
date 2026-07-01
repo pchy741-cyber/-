@@ -21,7 +21,10 @@ import { getActiveWatchlist, getPool, upsertAIScore } from '../../db/client.js';
 import { getDailyChart } from '../../kis/market.js';
 import { logger } from '../../utils/logger.js';
 import { analyzeNewsWithGroq } from './groq-news.js';
+import { filterCandidatesWithLLM } from './llm-signal-filter.js';
 import { runRSSScoring } from './rss-scorer.js';
+
+const BUY_THRESHOLD = 68; // rss-scorer.ts와 동일 기준 (여기 재정의는 순환 import 회피용)
 
 const COMP = 'QUICK_RESCORE';
 const KST_OFFSET_MS = 9 * 60 * 60 * 1000; // KST = UTC+9 in ms
@@ -35,14 +38,15 @@ const MAX_STOCKS = 30;
 // 장세별 최소 간격 (분) — GCP 유지비 영향 미미하므로 타이트하게
 // (KIS API rate limit + RSS Google News만 사용 — 무료)
 const MIN_INTERVAL_MIN: Record<string, number> = {
-  BULLISH: 5, // 강세장: 5분 (매우 타이트, 모멘텀 놓치지 않음)
-  NEUTRAL: 10, // 평상: 10분
-  BEARISH: 20, // 약세: 20분 (매매 적으니 빈도 낮춤)
-  PANIC: 60, // 패닉: 1시간 (거의 매매 안 함)
+  BULLISH: 3, // 강세장: 3분 (v18: 5→3, 모멘텀 포착 강화)
+  NEUTRAL: 5, // 평상: 5분 (v18: 10→5)
+  BEARISH: 10, // 약세: 10분 (v18: 20→10, 매매 적으니 여전히 낮은 빈도)
+  PANIC: 30, // 패닉: 30분 (v18: 60→30)
 };
 
 let _lastRunAt = 0;
 let _lastRegime = 'NEUTRAL';
+let _lastOnDemandSurgeAt = 0;
 
 async function getCurrentRegime(): Promise<string> {
   try {
@@ -66,15 +70,15 @@ async function shouldRunNow(): Promise<{ run: boolean; reason: string; intervalM
   _lastRegime = regime;
 
   // KST 황금구간 → 1분 간격 (CEO 강화: "반응 더 좋게")
-  // 마의시간 → 15분
-  // 그 외 → 장세별 5-60분
+  // 마의시간 → 5분 (v18: 15→5, 무료 RSS라 비용 영향 없음)
+  // 그 외 → 장세별 3-30분
   const now = new Date();
   const kstH = (now.getUTCHours() + 9) % 24;
   const kstM = now.getUTCMinutes();
   const t = kstH * 100 + kstM;
   const inGolden = (t >= 930 && t < 1020) || (t >= 1300 && t < 1500);
   const inCursed = t >= 1020 && t < 1300;
-  const intervalMin = inGolden ? 1 : inCursed ? 15 : (MIN_INTERVAL_MIN[regime] ?? 10);
+  const intervalMin = inGolden ? 1 : inCursed ? 5 : (MIN_INTERVAL_MIN[regime] ?? 5);
 
   const elapsedMin = (Date.now() - _lastRunAt) / 60_000;
   if (elapsedMin < intervalMin) {
@@ -110,8 +114,19 @@ export async function runQuickRescore(): Promise<{ scored: number; errors: numbe
 
     // 황금구간(1분 간격) 시 15종목, 아니면 30종목
     const maxStocks = decision.intervalMin === 1 ? MAX_STOCKS_GOLDEN : MAX_STOCKS;
-    const codes = fullWatchlist.slice(0, maxStocks).map((w) => w.stock_code);
-    logger.info(`⚡ Quick Re-Score 시작: ${codes.length}종목 (RSS only, paid AI 0)`, { component: COMP });
+    // v17: getActiveWatchlist()는 added_at ASC(오래된 순) → 그냥 slice(0,N)하면
+    // surge-detector가 방금 편입한 급등/모멘텀 종목이 리스트 뒤쪽에 밀려 재스코어링 순번이 영영 안 옴.
+    // 최근 4시간 내 편입 종목을 최우선으로 배치하고, 남는 자리를 나머지(오래된 순)로 채운다.
+    const RECENT_ADD_WINDOW_MS = 4 * 3600_000;
+    const now = Date.now();
+    const recent = fullWatchlist.filter((w) => now - new Date(w.added_at).getTime() < RECENT_ADD_WINDOW_MS);
+    const rest = fullWatchlist.filter((w) => now - new Date(w.added_at).getTime() >= RECENT_ADD_WINDOW_MS);
+    const prioritized = [...recent, ...rest].slice(0, maxStocks);
+    const codes = prioritized.map((w) => w.stock_code);
+    logger.info(
+      `⚡ Quick Re-Score 시작: ${codes.length}종목 (RSS only, paid AI 0, 최근편입 ${recent.length}종목 우선)`,
+      { component: COMP },
+    );
 
     // 일봉 차트 데이터 병렬 수집 (10개씩 배치, 1초 간격 — KIS rate limit)
     const chartData = new Map<string, Awaited<ReturnType<typeof getDailyChart>>>();
@@ -189,6 +204,47 @@ export async function runQuickRescore(): Promise<{ scored: number; errors: numbe
       false, // KR 종목
     );
 
+    // 🤖 LLM 신호 검증 필터 — RSS+이벤트가 이미 BUY_THRESHOLD 이상으로 걸러낸 소수 후보만,
+    // GPT-4o-mini로 "노이즈/거짓신호인지" 검증 (딥리서치 근거: 1분 황금구간은 지연시간 리스크로 제외)
+    if (decision.intervalMin > 1) {
+      const eligible = results.filter((r) => (enhanced.get(r.stock_code)?.finalScore ?? r.composite_score) >= BUY_THRESHOLD);
+      if (eligible.length > 0) {
+        try {
+          const validated = await filterCandidatesWithLLM(eligible);
+          for (const v of validated) {
+            const orig = results.find((r) => r.stock_code === v.stock_code);
+            if (!orig) continue;
+            orig.reasoning = v.reasoning;
+            if (v.composite_score !== orig.composite_score) {
+              const enh = enhanced.get(v.stock_code);
+              if (enh) enh.finalScore = v.composite_score;
+              else orig.composite_score = v.composite_score;
+              orig.signal = v.signal;
+            }
+          }
+        } catch (e) {
+          logger.warn(`LLM 신호 검증 필터 실패 (원본 유지): ${e}`, { component: COMP });
+        }
+      }
+    }
+
+    // 🔎 워치리스트 전멸 감지 — 현재 후보 전원이 매수권(BUY_THRESHOLD) 미달이면
+    // 30분 주기를 기다리지 않고 즉시 급등/뉴스/테마 감지기를 돌려 다른 방향 종목을 흡수
+    if (results.length > 0) {
+      const bestScore = Math.max(...results.map((r) => enhanced.get(r.stock_code)?.finalScore ?? r.composite_score));
+      const COOLDOWN_MS = 15 * 60_000;
+      if (bestScore < BUY_THRESHOLD && Date.now() - _lastOnDemandSurgeAt > COOLDOWN_MS) {
+        _lastOnDemandSurgeAt = Date.now();
+        logger.info(
+          `📉 워치리스트 ${results.length}종목 전원 매수권 미달 (최고 ${bestScore.toFixed(0)}점) → 급등/뉴스/테마 즉시 재탐색`,
+          { component: COMP },
+        );
+        import('../../automation/surge-detector.js')
+          .then((m) => m.runSurgeDetector())
+          .catch((e) => logger.warn(`즉시 재탐색 실패: ${e}`, { component: COMP }));
+      }
+    }
+
     // ai_scores UPSERT + history INSERT (시계열 추적)
     // v17: 앙상블 점수 덮어쓰기 방지 — Gemini 앙상블 결과가 있으면 RSS만으로 덮어쓰지 않음
     const existingScoresMap = new Map<string, { composite_score: number; hasEnsemble: boolean }>();
@@ -208,24 +264,21 @@ export async function runQuickRescore(): Promise<{ scored: number; errors: numbe
 
     let scored = 0;
     let errors = 0;
-    let skippedEnsemble = 0;
     const today = new Date(Date.now() + KST_OFFSET_MS).toISOString().slice(0, 10); // KST
     for (const r of results) {
       const enh = enhanced.get(r.stock_code);
       const finalScore = enh ? enh.finalScore : r.composite_score;
 
-      // v17: 앙상블 보호 — Gemini 분석 있는 점수는 RSS로 덮어쓰기 방지 (delta 15점+ 시만 갱신)
+      // v19: 핵심엔진(RSS+NLP) 우선 — 앙상블 보호 게이트 제거.
+      // 이전엔 Gemini 앙상블 점수와 15점+ 차이 나야만 갱신 허용했으나, 그러면 실시간성이
+      // 생명인 눌림목/모멘텀/거래량/버즈 신호가 하루 3-4회 도는 앙상블에 항상 밀림.
+      // CEO 방침: RSS+NLP 코어엔진이 핵심, 앙상블은 보조 — 매 사이클 갱신을 그대로 반영한다.
       const existing = existingScoresMap.get(r.stock_code);
       if (existing?.hasEnsemble) {
         const delta = Math.abs(finalScore - existing.composite_score);
-        if (delta < 15) {
-          skippedEnsemble++;
-          continue; // 앙상블 점수 보호 — 소폭 변동은 무시
+        if (delta >= 15) {
+          logger.info(`⚡ ${r.stock_code}: 앙상블 대비 큰 폭 갱신 (Δ${delta.toFixed(0)}점)`, { component: COMP });
         }
-        logger.info(
-          `⚡ ${r.stock_code}: 앙상블 점수 갱신 허용 (Δ${delta.toFixed(0)}점 ≥ 15)`,
-          { component: COMP },
-        );
       }
 
       try {
@@ -299,7 +352,7 @@ export async function runQuickRescore(): Promise<{ scored: number; errors: numbe
     );
 
     const elapsed = ((Date.now() - start) / 1000).toFixed(1);
-    logger.info(`⚡ Quick Re-Score 완료: ${scored}건 갱신, ${errors}건 에러, ${skippedEnsemble}건 앙상블보호 (${elapsed}초)`, { component: COMP });
+    logger.info(`⚡ Quick Re-Score 완료: ${scored}건 갱신, ${errors}건 에러 (${elapsed}초)`, { component: COMP });
     // 마지막 실행 시각 system_state에 기록
     try {
       await getPool().query(

@@ -69,7 +69,8 @@ async function fetchNewsViaRss(companyName: string): Promise<string[]> {
 
   const xml = await res.text();
   const titles: string[] = [];
-  const re = /<title><!\[CDATA\[([^\]]+)\]\]><\/title>/g;
+  // v20: 구글뉴스 RSS는 CDATA 래핑 없이 평문 <title>로 내려와 기존 정규식이 항상 0건 매치였음
+  const re = /<title>([^<]+)<\/title>/g;
   let m: RegExpExecArray | null = re.exec(xml);
   while (m !== null) {
     const t = m[1].trim();

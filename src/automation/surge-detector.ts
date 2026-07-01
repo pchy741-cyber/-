@@ -59,6 +59,80 @@ export const ANCHOR_STOCKS: { code: string; name: string }[] = [
   { code: '000660', name: 'SK하이닉스' },
 ];
 
+// 잡주 자동정리 기준: 최근 3일간 스코어 이력 중 매수권 근처(42점)도 못 간 종목
+const JUNK_LOOKBACK_DAYS = 3;
+const JUNK_MAX_SCORE_THRESHOLD = 42;
+const JUNK_MIN_SAMPLES = 8; // 표본 부족한 신규 편입 종목은 제외
+const JUNK_MIN_AGE_HOURS = 24; // 편입 24시간 미만은 판단 유예
+
+/**
+ * 잡주(만년 저점수) 자동 정리 — 삭제가 아니라 is_active=false (관측 이력 보존)
+ * - 최근 3일 스코어 이력이 계속 42점을 넘지 못한 종목
+ * - 앵커 종목/보유 중(체인 OPEN 등) 종목은 제외
+ */
+export async function cleanupJunkWatchlist(): Promise<void> {
+  const pool = getPool();
+  try {
+    const anchorCodes = ANCHOR_STOCKS.map((a) => a.code);
+    const { rows: candidates } = await pool.query(
+      `SELECT w.stock_code, w.stock_name, MAX(h.composite_score) AS max_score, COUNT(h.id) AS samples
+       FROM watchlist w
+       JOIN ai_scores_history h ON h.stock_code = w.stock_code
+         AND h.recorded_at > NOW() - INTERVAL '${JUNK_LOOKBACK_DAYS} days'
+       WHERE w.is_active = true
+         AND w.added_at < NOW() - INTERVAL '${JUNK_MIN_AGE_HOURS} hours'
+         AND w.stock_code != ALL($1)
+       GROUP BY w.stock_code, w.stock_name
+       HAVING COUNT(h.id) >= $2 AND MAX(h.composite_score) < $3`,
+      [anchorCodes, JUNK_MIN_SAMPLES, JUNK_MAX_SCORE_THRESHOLD],
+    );
+
+    if (candidates.length === 0) return;
+
+    // 보유 중(청산 전) 종목은 워치리스트에서 빼면 안 됨 — 제외
+    const codes = candidates.map((c: Record<string, unknown>) => String(c.stock_code));
+    const { rows: heldRows } = await pool.query(
+      `SELECT DISTINCT stock_code FROM transaction_chains
+       WHERE status IN ('OPEN', 'AVERAGING', 'PROFIT_TAKING') AND stock_code = ANY($1)`,
+      [codes],
+    );
+    const heldSet = new Set(heldRows.map((r: Record<string, unknown>) => String(r.stock_code)));
+    const toRemove = candidates.filter((c: Record<string, unknown>) => !heldSet.has(String(c.stock_code)));
+
+    if (toRemove.length === 0) return;
+
+    const removedLabels: string[] = [];
+    for (const c of toRemove) {
+      const code = String(c.stock_code);
+      const name = String(c.stock_name);
+      const maxScore = Number(c.max_score);
+      try {
+        await pool.query(
+          `UPDATE watchlist SET is_active = false,
+             notes = COALESCE(notes || ' | ', '') || '자동정리(잡주, 최근${JUNK_LOOKBACK_DAYS}일 최고 ${maxScore.toFixed(0)}점)'
+           WHERE stock_code = $1`,
+          [code],
+        );
+        removedLabels.push(`${name}(${code}) 최고${maxScore.toFixed(0)}점`);
+        logger.info(`🧹 잡주 자동정리: ${name}(${code}) — 최근${JUNK_LOOKBACK_DAYS}일 최고 ${maxScore.toFixed(0)}점`, {
+          component: COMPONENT,
+        });
+      } catch (err) {
+        logger.warn(`잡주 정리 실패 ${code}: ${err}`, { component: COMPONENT });
+      }
+    }
+
+    if (removedLabels.length > 0) {
+      await sendTelegramMessage(
+        `🧹 잡주 자동정리 (${removedLabels.length}개, 워치리스트 제외)\n` +
+          removedLabels.map((s) => `• ${s}`).join('\n'),
+      ).catch(() => {});
+    }
+  } catch (err) {
+    logger.warn(`잡주 자동정리 실패: ${err}`, { component: COMPONENT });
+  }
+}
+
 /**
  * 앵커 종목이 워치리스트에서 빠진 경우 재편입 보장
  */
@@ -95,6 +169,9 @@ export async function runSurgeDetector(): Promise<void> {
   try {
     // 앵커 종목 보장 (항상 실행)
     await ensureAnchorStocks();
+
+    // 잡주(만년 저점수) 자동 정리 — 새 후보 편입 전에 먼저 정리
+    await cleanupJunkWatchlist().catch((e) => logger.debug(`잡주 정리 스킵: ${e}`, { component: COMPONENT }));
 
     // KIS 즐겨찾기 → 워치리스트 동기화 (30분마다 재확인)
     // CEO가 KIS 앱에 추가한 종목이 즉시 감시목록에 반영됨

@@ -14,10 +14,12 @@
  * 비용: $0/일 (Google News RSS 무료)
  */
 
+import OpenAI from 'openai';
 import { analyzeTechnicals } from '../../analysis/indicators.js';
 import type { ScoringResult, WatchlistItem } from '../../db/models.js';
 import type { DailyCandle } from '../../kis/market.js';
 import { logger } from '../../utils/logger.js';
+import { logTokenUsage, calcGptCost } from '../../utils/ai-token-logger.js';
 
 const COMP = 'RSS_SCORER';
 
@@ -94,6 +96,10 @@ const POSITIVE: [string, number][] = [
   ['AI 수혜', 2],
   ['반도체 호황', 2],
   ['수출 호조', 2],
+  ['특징주', 1],
+  ['신기록', 2],
+  ['품절', 1],
+  ['완판', 1],
 ];
 const NEGATIVE: [string, number][] = [
   // 실적 (강)
@@ -143,14 +149,71 @@ const NEGATIVE: [string, number][] = [
   ['금리 인상', 2],
   ['경기침체', 2],
   ['무역분쟁', 2],
+  ['급감', 1],
+  ['부진', 1],
+  ['불확실성', 1],
 ];
 
 
 // ── 뉴스 감성 점수 캐시 (Track B 파이프라인 연동용) ──
 // Quick Re-Score(1~60분) / Surge Detector가 getNewsScore() 호출 시 자동 적재
 // Track B pipeline은 getCachedNewsAdj()로 네트워크 호출 없이 참조
-const NEWS_SCORE_CACHE = new Map<string, { score: number; fetchedAt: number }>();
+const NEWS_SCORE_CACHE = new Map<string, { score: number; headlines: string[]; fetchedAt: number }>();
 const NEWS_CACHE_TTL_MS = 90 * 60_000; // 90분 (Quick Re-Score 주기보다 여유)
+
+// ── LLM 헤드라인 감성 분류 (GPT-4o-mini, 키워드 매칭보다 문맥/부정어 정확도 높음) ──
+// v20: 비용 통제 — RSS 무료조회는 매 호출 유지하되, "재조회+재분류"는 캐시가 만료됐을 때만 수행.
+// 캐시(90분) 덕분에 워치리스트 ~30종목 기준 하루 최대 수백 회 호출 수준 (일 $0.1~0.3 예상, GCP 인프라비 대비 미미).
+const LLM_MODEL = 'gpt-4o-mini';
+const LLM_TIMEOUT_MS = 6_000;
+
+function getNewsClient(): OpenAI | null {
+  const key = process.env.OPENAI_API_KEY;
+  if (!key || key.startsWith('your_')) return null;
+  return new OpenAI({ apiKey: key, timeout: LLM_TIMEOUT_MS });
+}
+
+/** 헤드라인 배열 → -max~max 감성 점수. 키 없음/실패/타임아웃 시 null (키워드 폴백용) */
+async function classifyHeadlinesLLM(headlines: string[], max: number, label: string): Promise<number | null> {
+  if (headlines.length === 0) return null;
+  const client = getNewsClient();
+  if (!client) return null;
+  try {
+    const prompt = `다음은 한국 주식 관련 뉴스 헤드라인이야. 전체 투자 심리를 -${max}(매우부정)~+${max}(매우긍정) 정수로 평가해.
+단순 키워드가 아니라 문맥/부정어/반어법까지 고려해서 실제 의미로 판단해.
+
+헤드라인:
+${headlines.map((h, i) => `${i + 1}. ${h}`).join('\n')}
+
+JSON만 출력 (코드블록 없이): {"score": 정수}`;
+
+    const res = await client.chat.completions.create({
+      model: LLM_MODEL,
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0,
+      max_tokens: 40,
+    });
+    const text = res.choices[0]?.message?.content ?? '';
+    const parsed = JSON.parse(text.replace(/```json|```/g, '').trim());
+    const raw = Number(parsed.score);
+    if (!Number.isFinite(raw)) return null;
+
+    const usage = res.usage;
+    if (usage) {
+      logTokenUsage({
+        provider: 'gpt',
+        model: LLM_MODEL,
+        inputTokens: usage.prompt_tokens,
+        outputTokens: usage.completion_tokens,
+        costUsd: calcGptCost(usage.prompt_tokens, usage.completion_tokens),
+        label,
+      });
+    }
+    return Math.max(-max, Math.min(max, Math.round(raw)));
+  } catch {
+    return null;
+  }
+}
 
 /** Track B 파이프라인용: 캐시된 뉴스 감성 → 점수 보정값 (-6 ~ +5) */
 export function getCachedNewsAdj(stockCode: string): number {
@@ -170,32 +233,49 @@ export function getCachedNewsAdj(stockCode: string): number {
 
 /** Google News RSS로 종목 뉴스 감성 점수 계산 (-15 ~ +15) */
 export async function getNewsScore(_stockCode: string, stockName: string): Promise<{ score: number; headlines: string[] }> {
+  // v20: 비용 최적화 — 캐시 신선하면 재조회/재분류(특히 LLM 호출) 자체를 스킵.
+  const cached = NEWS_SCORE_CACHE.get(_stockCode);
+  if (cached && Date.now() - cached.fetchedAt < NEWS_CACHE_TTL_MS) {
+    return { score: cached.score, headlines: cached.headlines };
+  }
+
   try {
     const url = `https://news.google.com/rss/search?q=${encodeURIComponent(stockName)}&hl=ko&gl=KR&ceid=KR:ko`;
     const res = await fetch(url, { signal: AbortSignal.timeout(4000) });
     if (!res.ok) return { score: 0, headlines: [] };
     const xml = await res.text();
 
-    const titles = [...xml.matchAll(/<title><!\[CDATA\[(.*?)\]\]><\/title>/g)]
-      .slice(1, 8) // 최대 7개 (더 넓은 범위)
+    // v20: 구글뉴스 RSS는 CDATA 래핑 없이 평문 <title>...</title>로 내려옴 — 기존 CDATA 전용
+    // 정규식이 단 한 건도 매치 못 해 news 점수가 항상 0으로 고정되는 완전 침묵 실패였음.
+    // index 0="검색어 - Google 뉴스", index 1="Google 뉴스"(피드명) → 실제 기사 제목은 index 2부터.
+    const titles = [...xml.matchAll(/<title>(.*?)<\/title>/g)]
+      .slice(2, 9) // 실제 기사 제목 최대 7개
       .map((m) => m[1]);
 
     if (titles.length === 0) return { score: 0, headlines: [] };
 
-    let score = 0;
-    for (const title of titles) {
-      for (const [kw, weight] of POSITIVE) {
-        if (title.includes(kw)) score += weight;
+    // v20: 문맥/부정어를 못 읽는 키워드 매칭 대신 LLM 판정 우선, 실패 시에만 키워드 폴백.
+    let bounded: number;
+    const llmScore = await classifyHeadlinesLLM(titles, NEWS_SCORE_MAX, 'news_sentiment');
+    if (llmScore !== null) {
+      bounded = llmScore;
+    } else {
+      let score = 0;
+      for (const title of titles) {
+        for (const [kw, weight] of POSITIVE) {
+          if (title.includes(kw)) score += weight;
+        }
+        for (const [kw, weight] of NEGATIVE) {
+          if (title.includes(kw)) score -= weight;
+        }
       }
-      for (const [kw, weight] of NEGATIVE) {
-        if (title.includes(kw)) score -= weight;
-      }
+      bounded = Math.max(-NEWS_SCORE_MAX, Math.min(NEWS_SCORE_MAX, score));
     }
 
-    const bounded = Math.max(-NEWS_SCORE_MAX, Math.min(NEWS_SCORE_MAX, score));
+    const headlines = titles.slice(0, 3);
     // 캐시 적재 — Track B pipeline이 getCachedNewsAdj()로 참조
-    NEWS_SCORE_CACHE.set(_stockCode, { score: bounded, fetchedAt: Date.now() });
-    return { score: bounded, headlines: titles.slice(0, 3) };
+    NEWS_SCORE_CACHE.set(_stockCode, { score: bounded, headlines, fetchedAt: Date.now() });
+    return { score: bounded, headlines };
   } catch {
     return { score: 0, headlines: [] };
   }
@@ -244,35 +324,43 @@ async function getMarketSentiment(): Promise<number> {
     const res = await fetch(url, { signal: AbortSignal.timeout(4000) });
     if (!res.ok) return 0;
     const xml = await res.text();
-    const titles = [...xml.matchAll(/<title><!\[CDATA\[(.*?)\]\]><\/title>/g)].slice(1, 6).map((m) => m[1]);
+    // v20: getNewsScore와 동일한 CDATA 파싱 버그 — 평문 <title> 매칭 + 실제기사는 index 2부터
+    const titles = [...xml.matchAll(/<title>(.*?)<\/title>/g)].slice(2, 7).map((m) => m[1]);
 
-    let score = 0;
-    const MARKET_POS: [string, number][] = [
-      ['상승', 2],
-      ['반등', 2],
-      ['랠리', 3],
-      ['외국인 매수', 2],
-      ['최고치', 2],
-      ['호조', 1],
-    ];
-    const MARKET_NEG: [string, number][] = [
-      ['하락', 2],
-      ['폭락', 3],
-      ['급락', 3],
-      ['외국인 매도', 2],
-      ['경기침체', 3],
-      ['금리', 1],
-      ['공포', 2],
-    ];
-    for (const title of titles) {
-      for (const [kw, w] of MARKET_POS) {
-        if (title.includes(kw)) score += w;
+    // v20: LLM 판정 우선 (30분 캐시로 이미 호출 빈도 제한됨), 실패 시 키워드 폴백
+    const llmScore = await classifyHeadlinesLLM(titles, 10, 'market_sentiment');
+    let clamped: number;
+    if (llmScore !== null) {
+      clamped = llmScore;
+    } else {
+      let score = 0;
+      const MARKET_POS: [string, number][] = [
+        ['상승', 2],
+        ['반등', 2],
+        ['랠리', 3],
+        ['외국인 매수', 2],
+        ['최고치', 2],
+        ['호조', 1],
+      ];
+      const MARKET_NEG: [string, number][] = [
+        ['하락', 2],
+        ['폭락', 3],
+        ['급락', 3],
+        ['외국인 매도', 2],
+        ['경기침체', 3],
+        ['금리', 1],
+        ['공포', 2],
+      ];
+      for (const title of titles) {
+        for (const [kw, w] of MARKET_POS) {
+          if (title.includes(kw)) score += w;
+        }
+        for (const [kw, w] of MARKET_NEG) {
+          if (title.includes(kw)) score -= w;
+        }
       }
-      for (const [kw, w] of MARKET_NEG) {
-        if (title.includes(kw)) score -= w;
-      }
+      clamped = Math.max(-10, Math.min(10, score));
     }
-    const clamped = Math.max(-10, Math.min(10, score));
     _marketSentimentCache = { score: clamped, fetchedAt: Date.now() };
     return clamped;
   } catch {
@@ -437,6 +525,19 @@ export async function runRSSScoring(
   // 시장 전체 감성 (30분 캐시) + 유튜브 인플루언서 감성
   const [marketSentiment, ytSentiment] = await Promise.all([getMarketSentiment(), getYouTubeSentiment()]);
 
+  // v18: 종목별 커뮤니티 버즈(네이버 토론방) — 기존엔 하루 4번 도는 느린 GPT 앙상블에만 연결돼 있어
+  // 실제 급등 포착에 못 쓰였음. 빠른 RSS 엔진(1~5분 주기)에도 붙여서 실시간 반영.
+  const { getCommunitysentiment } = await import('../../market/community-sentiment.js');
+  const communityScores = new Map<string, number>();
+  try {
+    const communityResults = await getCommunitysentiment(
+      watchlist.map((w) => ({ stockCode: w.stock_code, companyName: w.stock_name })),
+    );
+    for (const r of communityResults) communityScores.set(r.stockCode, r.score);
+  } catch (err) {
+    logger.debug(`커뮤니티 버즈 조회 실패 (스킵): ${err}`, { component: COMP });
+  }
+
   // 종목별 뉴스 스코어 — 전종목 배치 처리 (Google RSS rate limit 대응: 30개씩, 300ms 간격)
   const newsScores = new Map<string, { score: number; headlines: string[] }>();
   for (let i = 0; i < watchlist.length; i += NEWS_BATCH_SIZE) {
@@ -479,10 +580,13 @@ export async function runRSSScoring(
     const marketBonus = Math.round(marketSentiment * 0.5);
     // 유튜브 인플루언서 감성 (±5, 시장 레짐 보정)
     const ytBonus = ytSentiment.score;
+    // v18: 종목별 커뮤니티 버즈 (네이버 토론방, -100~100 → ±8점 스케일)
+    const communityRaw = communityScores.get(w.stock_code) ?? 0;
+    const communityBonus = Math.round((communityRaw / 100) * 8);
 
     const composite = Math.min(
       100,
-      baseScore + newsBonus + momentumBonus + flowBonus + pullbackBonus + overextendedPenalty + marketBonus + ytBonus,
+      baseScore + newsBonus + momentumBonus + flowBonus + pullbackBonus + overextendedPenalty + marketBonus + ytBonus + communityBonus,
     );
 
     // 신호 결정 + 눌림목 확인 시 confidence 상향
@@ -516,6 +620,7 @@ export async function runRSSScoring(
       marketBonus !== 0 ? `mkt${marketBonus > 0 ? '+' : ''}${marketBonus}` : '',
       momentumBonus > 0 ? `momentum+${momentumBonus}` : '',
       ytBonus !== 0 ? `yt${ytBonus > 0 ? '+' : ''}${ytBonus}` : '',
+      communityBonus !== 0 ? `community${communityBonus > 0 ? '+' : ''}${communityBonus}` : '',
       flowBonus !== 0 ? `flow${flowBonus > 0 ? '+' : ''}${flowBonus}` : '',
       overextendedPenalty < 0 ? `overextended${overextendedPenalty}` : '',
       `RSI=${tech.rsi14.toFixed(0)} vol=${tech.volumeRatio.toFixed(1)}x`,

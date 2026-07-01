@@ -268,7 +268,10 @@ export async function analyzeCapitalFlow(): Promise<void> {
       if (pnlPct >= 5 && momentum === 'FALLING') {
         recommendation = 'REDUCE';
         exitReason = `[자금흐름] 수익 ${pnlPct.toFixed(1)}%이나 모멘텀 하락 → 50% 정리`;
-      } else if (opportunityCost >= 60 && pnlPct < 2) {
+      } else if (opportunityCost >= 75 && pnlPct >= 0 && pnlPct < 2) {
+        // v20: 기존 조건(pnlPct < 2, 손실 포함)은 30일 데이터 9건 중 승률 43%/평균 -0.40%로 순손실.
+        // 손실 중인 포지션은 SL이 관리하도록 놔두고, 이 로직은 "플랫~소폭이익" 구간에서만
+        // (음수 손익 제외) 더 확실한 신호(기회비용 60→75)일 때만 자금 재배치.
         recommendation = 'EXIT';
         exitReason = `[자금흐름] 기회비용 ${opportunityCost}점 (${costReasons.slice(0, 2).join(', ')}) → 자금 해방`;
       } else if (mode === 'DEFENSE' && pnlPct < 0 && holdingDays >= 2) {

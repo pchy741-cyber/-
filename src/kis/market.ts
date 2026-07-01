@@ -31,6 +31,7 @@ export interface CurrentPrice {
   mangIssuClsCode: string; // 관리종목구분코드 (0: 정상, 1+: 관리)
   mrktWarnClsCode: string; // 시장경보구분코드 (00: 정상, 01: 주의, 02+: 경고)
   invtCafulYn: string; // 투자주의환기종목여부 (Y: 해당)
+  sectorCode: string; // 업종 코드 (bstp_cls_code) — hot-sector-watchlist SECTOR_NAMES와 매칭
 }
 
 export async function getCurrentPrice(stockCode: string): Promise<CurrentPrice> {
@@ -67,6 +68,7 @@ export async function getCurrentPrice(stockCode: string): Promise<CurrentPrice> 
     mangIssuClsCode: String(o.mang_issu_cls_code ?? '0'),
     mrktWarnClsCode: String(o.mrkt_warn_cls_code ?? '00'),
     invtCafulYn: String(o.invt_caful_yn ?? ''),
+    sectorCode: String(o.bstp_cls_code ?? ''),
   };
 }
 
@@ -324,14 +326,18 @@ export interface RankingStock {
   stock_name: string;
 }
 
-export async function getVolumeRankingStocks(market: 'J' | 'Q' = 'J', limit = 30): Promise<RankingStock[]> {
+export async function getVolumeRankingStocks(market: 'J' | 'Q' | 'UN' = 'J', limit = 30): Promise<RankingStock[]> {
+  // v20: 이 TR(FHPST01710000)은 KIS 공식 검증상 FID_COND_MRKT_DIV_CODE로 J/NX/UN/W만 허용 —
+  // 'Q'(코스닥)는 원래 무효값이라 매 호출 OPSQ2001 에러로 조용히 실패(catch → 빈 배열)해왔음.
+  // 코스닥 전용 코드가 없어 통합(UN)으로 대체 — 완전 실패보다 통합 순위라도 받는 게 나음.
+  const effectiveMarket = market === 'Q' ? 'UN' : market;
   try {
     const res = await kisRequest({
       path: '/uapi/domestic-stock/v1/quotations/volume-rank',
       trId: 'FHPST01710000',
       useRealUrl: true,
       params: {
-        FID_COND_MRKT_DIV_CODE: market,
+        FID_COND_MRKT_DIV_CODE: effectiveMarket,
         FID_COND_SCR_DIV_CODE: '20171',
         FID_INPUT_ISCD: '0001',
         FID_DIV_CLS_CODE: '0',

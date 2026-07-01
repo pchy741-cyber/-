@@ -96,26 +96,32 @@ export async function runTrackBJob(): Promise<void> {
     const rawDecisions = await runTrackBPipeline();
     reportNoBuyCandidates(!rawDecisions.some((d) => d.action === 'BUY' || d.action === 'AVERAGE_DOWN'));
 
-    // v17: Track B 매수 재활성화 — 골든타임(09:13~10:20, 13:00~15:00)에만 매수 허용
-    // v16.2.3에서 매수 완전 차단 → 09:12 이후 15:10까지 6시간 매수 공백 발생
-    // 근거: LuxAlgo 연구 — 장중 모멘텀 기회를 6시간 놓치면 승률 높은 엔트리 포인트 상실
+    // v18: 매수 허용 구간 확대 — pipeline.ts v13 시간 가드와 일치시킴
+    // v17에서 GOLDEN_AM/GOLDEN_PM만 허용 → pipeline.ts가 이미 isLunchBlock(11:30~13:00)으로 제어하는데
+    // track-b-job이 CURSED(10:20~13:00) 전체 차단 → 10:20~11:30 매수 공백 + SWING EOD(15:00~15:20) 차단 버그
+    // 수정: pipeline.ts의 blockNewBuys/isSwingEodBetting이 세밀하게 제어하도록 위임
+    // OPENING_BELL(09:00~09:30)은 아래 개장벨 양보 로직(blockBuyUntil)이 처리하므로 여기서 허용
     const phase = getKrMarketPhase();
-    const isBuyAllowedPhase = phase === 'GOLDEN_AM' || phase === 'GOLDEN_PM';
+    const isBuyAllowedPhase =
+      phase === 'GOLDEN_AM' ||
+      phase === 'GOLDEN_PM' ||
+      phase === 'CURSED' || // 10:20~11:30은 허용 (11:30~13:00 점심차단은 pipeline.ts isLunchBlock이 처리)
+      phase === 'CLOSING_BELL'; // SWING EOD 15:00~15:20은 pipeline.ts isSwingEodBetting이 처리
     const buyActions = rawDecisions.filter((d) => d.action === 'BUY' || d.action === 'AVERAGE_DOWN');
     const sellActions = rawDecisions.filter((d) => d.action !== 'BUY' && d.action !== 'AVERAGE_DOWN');
 
     let decisions: typeof rawDecisions;
     if (isBuyAllowedPhase) {
-      // 골든타임: 매수 허용 (Track B 분석 품질 그대로 활용)
+      // 매수 허용 구간: pipeline.ts 세밀 가드에 위임
       decisions = rawDecisions;
       if (buyActions.length > 0) {
         logger.info(
-          `🟢 Track B 골든타임 매수 허용 (${phase}): ${buyActions.length}건 [${buyActions.map((d) => d.stock_code).join(',')}]`,
+          `🟢 Track B 매수 허용 (${phase}): ${buyActions.length}건 [${buyActions.map((d) => d.stock_code).join(',')}]`,
           { component: 'SCHEDULER' },
         );
       }
     } else {
-      // 비골든타임 (OPENING_BELL, CURSED, CLOSING_BELL): 매수 차단, 매도만
+      // OPENING_BELL(09:00~09:30): 개장벨 양보 로직이 처리, 여기선 매도만
       decisions = sellActions;
       if (buyActions.length > 0) {
         logger.info(

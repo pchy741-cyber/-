@@ -90,7 +90,7 @@ function KrHoldingsTab({ chains, dash, busyAction, guard, getStockName, onRefres
               <button disabled={!!busyAction} onClick={guard(`sell-park-${ch.stock_code}`, async () => {
                 const lwP = livePrefix(viewMode);
                 if (!await confirm({ title: `${lwP}${displayName} ${qty}주 전량 매도하시겠습니까?`, description: '파킹 해제', confirmLabel: '매도', confirmVariant: 'danger' })) return;
-                try { const r = await api(`/sell-stock/${ch.stock_code}`, { method: 'POST', body: JSON.stringify({ is_paper: viewMode === 'paper' }), timeout: 40000 }); toast(r.message || '매도 완료', 'ok'); onRefresh(); }
+                try { const r = await api(`/sell-stock/${ch.stock_code}?viewMode=${viewMode}`, { method: 'POST', body: JSON.stringify({ is_paper: viewMode === 'paper' }), timeout: 40000 }); toast(r.message || '매도 완료', 'ok'); onRefresh(); }
                 catch (err: unknown) { toast('매도 실패: ' + (err as Error).message, 'err'); }
               })} className="text-xs px-3 py-1.5 rounded-lg bg-white/[0.04] hover:bg-rose-500/10 hover:text-rose-400 text-slate-500 transition-colors border border-white/[0.05] disabled:opacity-40">
                 파킹 해제
@@ -122,7 +122,7 @@ function KrHoldingsTab({ chains, dash, busyAction, guard, getStockName, onRefres
                     const warn = slDist <= 3;
                     return (
                       <span className={`text-[8px] px-1 py-px rounded font-bold shrink-0 tabular-nums ${urgent ? 'bg-rose-500/30 text-rose-300 border border-rose-500/40 animate-pulse' : warn ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30' : 'bg-slate-500/15 text-slate-400'}`}>
-                        SL {slDist > 0 ? slDist.toFixed(1) : '0'}%p
+                        SL까지 {slDist > 0 ? slDist.toFixed(1) : '0'}%p 남음
                       </span>
                     );
                   })()}
@@ -181,7 +181,7 @@ function KrHoldingsTab({ chains, dash, busyAction, guard, getStockName, onRefres
                 ))}
               </div>
               <div className="ml-auto flex items-center gap-1">
-                {ch.escape_target_price ? (
+                {String(ch.id).startsWith('KIS_SYNC_') ? null : ch.escape_target_price ? (
                   <button disabled={!!busyAction} onClick={guard(`esc-del-${ch.id}`, async () => {
                     try { await api(`/escape/${ch.id}?viewMode=${viewMode}`, { method: 'DELETE' }); onRefresh(); }
                     catch (err: unknown) { toast('취소 실패: ' + (err as Error).message, 'err'); }
@@ -203,7 +203,7 @@ function KrHoldingsTab({ chains, dash, busyAction, guard, getStockName, onRefres
                 <button disabled={!!busyAction} onClick={guard(`sell-${ch.stock_code}`, async () => {
                   const liveW = livePrefix(viewMode);
                   if (!await confirm({ title: `${liveW}${displayName} ${qty}주 전량 시장가 매도하시겠습니까?`, confirmLabel: '매도', confirmVariant: 'danger' })) return;
-                  try { const r = await api(`/sell-stock/${ch.stock_code}`, { method: 'POST', body: JSON.stringify({ is_paper: viewMode === 'paper' }), timeout: 40000 }); toast(r.message || '매도 완료', 'ok'); onRefresh(); }
+                  try { const r = await api(`/sell-stock/${ch.stock_code}?viewMode=${viewMode}`, { method: 'POST', body: JSON.stringify({ is_paper: viewMode === 'paper' }), timeout: 40000 }); toast(r.message || '매도 완료', 'ok'); onRefresh(); }
                   catch (err: unknown) { toast('매도 실패: ' + (err as Error).message, 'err'); }
                 })} className="text-xs px-2.5 py-1.5 rounded-xl bg-white/[0.04] hover:bg-rose-500/10 hover:text-rose-400 text-slate-500 font-medium border border-white/[0.04] whitespace-nowrap disabled:opacity-40">
                   전량 매도

@@ -208,7 +208,11 @@ async function checkBalanceIntegrity(issues: QAIssue[]): Promise<void> {
       });
 
       const snapTotal = Number(snap.total_value ?? 0);
-      const liveTotal = balance.orderableCash + balance.totalEvalAmount;
+      // snapshot-job.ts의 total_value는 국내+해외 합산이므로, 비교 대상도 해외분을 포함해야 함
+      // (해외분 누락 시 정상 잔고인데도 CRITICAL 괴리로 오탐됨)
+      const { getOverseasValueKrw } = await import('../scheduler/snapshot-job.js');
+      const overseasKrw = await getOverseasValueKrw(isPaper).catch(() => ({ totalKrw: 0, unrealizedPnlKrw: 0 }));
+      const liveTotal = balance.orderableCash + balance.totalEvalAmount + overseasKrw.totalKrw;
 
       if (snapTotal > 0) {
         const diffPct = Math.abs((liveTotal - snapTotal) / snapTotal) * 100;
@@ -458,17 +462,17 @@ async function checkOrderChainConsistency(issues: QAIssue[]): Promise<void> {
     });
   }
 
-  // 체인의 total_invested와 실제 BUY 주문 합산 비교 (10% 이상 차이)
+  // v20: 기존엔 total_invested(부분매도 반영 후 "현재 순보유가치")를 BUY 주문 총합(부분매도
+  // 무관 "누적 매수 총액")과 비교해서, 부분매도 이력이 있는 모든 정상 체인이 오탐(false positive)
+  // 처리되던 버그였음 — 실제 DB 조사 결과 total_invested는 avg_buy_price × total_quantity와
+  // 정확히 일치(정상)했는데도 "불일치"로 잘못 잡혔음. 자기정합성(total_invested ≈ 평단가×수량)으로 교체.
   const { rows: investMismatch } = await pool.query(`
-    SELECT tc.stock_code, tc.is_paper, tc.total_invested,
-           COALESCE(SUM(o.filled_price * o.filled_quantity), 0) as order_invested
-    FROM transaction_chains tc
-    JOIN orders o ON o.chain_id = tc.id AND o.status = 'FILLED' AND o.side = 'BUY'
-    WHERE tc.status IN ('OPEN','AVERAGING','PROFIT_TAKING')
-      AND tc.total_invested > 0
-    GROUP BY tc.id, tc.stock_code, tc.is_paper, tc.total_invested
-    HAVING ABS(tc.total_invested - COALESCE(SUM(o.filled_price * o.filled_quantity), 0))
-           > tc.total_invested * 0.1
+    SELECT stock_code, is_paper, total_invested, avg_buy_price, total_quantity,
+           (avg_buy_price * total_quantity) AS expected_invested
+    FROM transaction_chains
+    WHERE status IN ('OPEN','AVERAGING','PROFIT_TAKING')
+      AND total_invested > 0
+      AND ABS(total_invested - (avg_buy_price * total_quantity)) > total_invested * 0.1
   `);
 
   for (const r of investMismatch) {
@@ -477,7 +481,7 @@ async function checkOrderChainConsistency(issues: QAIssue[]): Promise<void> {
       severity: 'WARNING',
       category: '정합성',
       title: `[${mode}] 투자금 불일치: ${r.stock_code}`,
-      detail: `체인: ${Number(r.total_invested).toLocaleString()}원 vs 주문합산: ${Number(r.order_invested).toLocaleString()}원`,
+      detail: `체인 total_invested: ${Number(r.total_invested).toLocaleString()}원 vs 평단가×수량: ${Number(r.expected_invested).toLocaleString()}원`,
     });
   }
 }
@@ -552,13 +556,14 @@ async function checkTradeLatency(issues: QAIssue[]): Promise<void> {
   const pool = getPool();
 
   // 체결 지연: updated_at - created_at 기준 (orders에 filled_at 없음 → updated_at 대체)
+  // v20: 기존엔 is_paper=false로 LIVE만 검사 — PAPER도 KIS 모의투자 서버를 실제로 거치는
+  // 주문이라 지연 감지가 똑같이 의미있는데 통째로 안 보고 있었음(QA 사각지대) → 양쪽 다 검사.
   const { rows } = await pool.query(`
     SELECT stock_code, side, is_paper,
            EXTRACT(EPOCH FROM (updated_at - created_at)) AS latency_sec,
            created_at, updated_at
     FROM orders
     WHERE status = 'FILLED' AND updated_at IS NOT NULL
-      AND is_paper = false
       AND created_at >= NOW() - INTERVAL '4 hours'
     ORDER BY latency_sec DESC
     LIMIT 5

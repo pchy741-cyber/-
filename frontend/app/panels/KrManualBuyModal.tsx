@@ -102,7 +102,7 @@ export default function KrManualBuyModal({
         reasoning: `Manual buy (modal): ${multiplier.toFixed(1)}x 권장${ceoOverride ? ` [CEO: ${overrideReason}]` : ''}`,
         ceo_override: ceoOverride, override_reason: ceoOverride ? overrideReason : undefined,
       };
-      const r = (await api('/manual-buy', { method: 'POST', body: JSON.stringify(body) })) as { quantity?: number; price?: number };
+      const r = (await api(`/manual-buy?viewMode=${viewMode}`, { method: 'POST', body: JSON.stringify(body) })) as { quantity?: number; price?: number };
       toast?.(`${stockName} ${r.quantity ?? actualQty}주 매수 완료`, 'ok');
       onSuccess();
       onClose();

@@ -32,7 +32,10 @@ class DbTransport extends Transport {
           for (let i = 0; i < entries.length - 200; i++) this._recent.delete(entries[i][0]);
         }
       }
-      logFn(level, component, String(info.message).slice(0, 500)).catch(() => {});
+      // level/message/component/timestamp 등 winston 표준 필드를 뺀 나머지가 실제 메타데이터(stack 등)
+      const { level: _l, message: _m, component: _c, timestamp: _t, service: _s, ...meta } = info;
+      const details = Object.keys(meta).length > 0 ? meta : undefined;
+      logFn(level, component, String(info.message).slice(0, 500), details).catch(() => {});
     }
     callback();
   }

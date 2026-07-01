@@ -288,20 +288,22 @@ export function getTimeWeightedStop(params: {
         holdingHours,
       };
     }
-    // v10: Phase1 SL 한계 1.5x→1.2x (AI 없이 과도한 손실 방지: -4.5%×1.2=-5.4%)
-    if (pnlPct <= -absBase * 1.2) {
+    // v20: Phase1 SL 한계 1.2x→1.0x (CEO 방침: 손실은 크게 불려서 버티기보다 빨리 끊기 —
+    // "6% 기다리다 -30% 받음"과 같은 패턴을 만든 게 바로 이 유예 배율이었음. 휩소 방어 목적이
+    // 기본 SL보다 더 큰 손실까지 허용할 근거는 아니므로 배율 제거, 기본 SL 그대로 적용)
+    if (pnlPct <= -absBase) {
       return {
         action: 'EXECUTE_SL',
-        effectiveSlPct: -absBase * 1.2,
-        reason: `대손절: PnL ${pnlPct.toFixed(1)}% <= ${(-absBase * 1.2).toFixed(1)}% (Phase1 한계)`,
+        effectiveSlPct: -absBase,
+        reason: `대손절: PnL ${pnlPct.toFixed(1)}% <= ${(-absBase).toFixed(1)}% (Phase1 한계)`,
         holdingHours,
       };
     }
     // 작은 손실 보류: 초기 휩소로 판단
     return {
       action: 'HOLD',
-      effectiveSlPct: -absBase * 1.2, // v10: 실제 작동 SL은 -1.2x
-      reason: `🛡️ 초기 48h 버퍼: PnL ${pnlPct.toFixed(1)}% — 구조적 SL만 허용 (휩소 방어)`,
+      effectiveSlPct: -absBase, // v20: 실제 작동 SL은 기본 SL 그대로 (유예배율 제거)
+      reason: `🛡️ 초기 24h 버퍼: PnL ${pnlPct.toFixed(1)}% — 구조적 SL만 허용 (휩소 방어)`,
       holdingHours,
     };
   }

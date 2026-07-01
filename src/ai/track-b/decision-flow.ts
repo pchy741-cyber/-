@@ -195,6 +195,38 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
   // ── 3. 섹터 집중 매수 차단 ──────────────────────────────────────────
   decisions = filterSectorConcentration(decisions, openChains, params.isPaper ?? false);
 
+  // ── 3a. 섹터 역풍 차단 ──────────────────────────────────────────────
+  // CEO 지적(2026-07-01): 종목 개별 점수가 좋아도 업종 지수가 하락 중이면 결국 마이너스.
+  // 기존엔 "핫 업종" 발굴(hot-sector-watchlist.ts)만 있고, 매수 시점에 업종 역풍을 걸러내는
+  // 게이트가 없었음 — 업종 지수가 뚜렷하게 하락 중인 신규 매수만 차단 (기존 보유 물타기는 제외,
+  // 리스크관리는 별도 하드룰이 처리).
+  const SECTOR_HEADWIND_THRESHOLD = -1.0; // 업종 지수 등락률 -1.0% 이하 → 역풍
+  try {
+    const { getCachedSectorChangeMap } = await import('../../automation/hot-sector-watchlist.js');
+    const sectorChangeMap = await getCachedSectorChangeMap();
+    if (sectorChangeMap.size > 0) {
+      const blockedBySector: string[] = [];
+      decisions = decisions.filter((d) => {
+        if (d.action !== 'BUY') return true;
+        const sectorCode = livePrices.get(d.stock_code)?.sectorCode;
+        if (!sectorCode) return true;
+        const sectorChangePct = sectorChangeMap.get(sectorCode);
+        if (sectorChangePct != null && sectorChangePct <= SECTOR_HEADWIND_THRESHOLD) {
+          blockedBySector.push(`${d.stock_code}(업종${sectorChangePct.toFixed(1)}%)`);
+          return false;
+        }
+        return true;
+      });
+      if (blockedBySector.length > 0) {
+        logger.info(`🌡️ 섹터 역풍 신규매수 ${blockedBySector.length}건 차단: ${blockedBySector.join(', ')}`, {
+          component: 'DECISION_FLOW',
+        });
+      }
+    }
+  } catch (e) {
+    logger.debug(`섹터 역풍 체크 실패 (스킵): ${e}`, { component: 'DECISION_FLOW' });
+  }
+
   // ── 3.5. 크로스마켓 테크 비중 관리 (KR+US 합산 테크 50% 캡) ──────
   if (!params.isPaper && (params.overseasValueKrw ?? 0) > 0) {
     try {
@@ -353,6 +385,7 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
           price_type: 'MARKET',
           reasoning: `분할TP ${ptp.stage}단계: +${pnlPct.toFixed(1)}% (임계 ${ptp.triggerPct}%)`,
           confidence: 0.95,
+          partial_tp_stage: ptp.stage,
         });
       }
     }

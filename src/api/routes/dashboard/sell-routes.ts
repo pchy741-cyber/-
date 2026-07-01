@@ -46,6 +46,15 @@ registerOverseasSellRoutes(sellRoutes);
 sellRoutes.post('/escape/:chainId', async (c) => {
   const chainId = c.req.param('chainId');
   const isPaper = resolveRequestMode(c);
+  // v20: 대시보드가 봇 미추적 KIS 실보유분을 `KIS_SYNC_{stockCode}` 가짜 id로 표시하는데,
+  // 실제 UUID가 아니라서 DB 쿼리가 "invalid input syntax for type uuid"로 죽어 500 에러가 났음.
+  // 이런 포지션은 transaction_chains 행이 없어 탈출모드(체인 필드 갱신)를 걸 수 없으므로 명확히 안내.
+  if (chainId.startsWith('KIS_SYNC_')) {
+    return c.json(
+      { error: '봇이 추적하지 않는 수동 보유분입니다 (체인 없음) — 탈출모드 대신 전량매도를 이용하세요' },
+      400,
+    );
+  }
   try {
     const { rows } = await getPool().query('SELECT * FROM transaction_chains WHERE id = $1 AND is_paper = $2', [
       chainId,
@@ -83,6 +92,9 @@ sellRoutes.post('/escape/:chainId', async (c) => {
 sellRoutes.delete('/escape/:chainId', async (c) => {
   const chainId = c.req.param('chainId');
   const isPaper = resolveRequestMode(c);
+  if (chainId.startsWith('KIS_SYNC_')) {
+    return c.json({ error: '봇이 추적하지 않는 수동 보유분입니다 (체인 없음)' }, 400);
+  }
   try {
     await getPool().query('UPDATE transaction_chains SET escape_target_price = NULL WHERE id = $1 AND is_paper = $2', [
       chainId,

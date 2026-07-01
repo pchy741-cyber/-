@@ -117,6 +117,10 @@ export function registerManualBuyRoutes(app: Hono) {
     const { reasoning } = body;
     const aiScore = body.ai_score ?? 0;
     // 서버 세션에서 모드 결정 (클라이언트 is_paper는 힌트, resolveRequestMode가 최종 권한)
+    // 주의: 이 함수는 쿼리스트링(viewMode/mode)만 읽는다 — 호출 프론트엔드가 POST body에만
+    // is_paper를 담아 보내면 쿼리스트링이 비어 매번 서버 기본값(baseIsPaper)으로 고정되는
+    // 크로스오염 버그가 재발한다. 프론트엔드는 반드시 `?viewMode=` 쿼리를 붙여 호출할 것
+    // (다른 매수/매도 라우트와 동일한 컨벤션 — overseas ManualBuyModal.tsx 참고)
     const isPaper: boolean = resolveRequestMode(c);
     const tradingMode = isPaper ? 'paper' : 'live';
     if (!stock_code || stock_code.length !== 6) {

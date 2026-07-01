@@ -985,7 +985,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     const isNewsStale =
       !ctxIsPaper &&
       kstH >= 9 && kstH < 15 && // 장중에만
-      (newsLastAt === 0 || Date.now() - newsLastAt > 90 * 60 * 1000); // 0=미수집 or 90분 초과
+      (newsLastAt === 0 || Date.now() - newsLastAt > 150 * 60 * 1000); // 0=미수집 or 150분 초과 (90→150: 뉴스 수집 주기 고려)
     if (isNewsStale) {
       logger.warn(`📰 뉴스 수집 끊김 (마지막: ${newsLastAt ? Math.round((Date.now() - newsLastAt) / 60000) + '분 전' : '오늘 없음'}) — Live 신규매수 차단`, { component: 'TRACK_B' });
     }
@@ -1297,8 +1297,12 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     if (winFeedback.thresholdBonus > 0 || winFeedback.requirePullback || winFeedback.minVolumeRatio > 1.0) {
       logger.info(`🎯 승률피드백 적용: ${winFeedback.summary}`, { component: 'TRACK_B' });
     }
-    // 복리 포지션 사이징: 총자산 20% 기반 (고정 캡 → 동적 스케일링)
-    const assetBasedMax = Math.round(totalAssets * 0.2);
+    // 복리 포지션 사이징: 총자산 8% 기반 (v20: 20%→8%)
+    // 근거: 30일 실거래 데이터 분석 — 상위 10% 대형 포지션(평균 2,252만원, 자산의 ~20%)이
+    // 나머지 90%의 흑자(+246만원)를 다 깎아먹고 전체 손익을 -591만원 적자로 만듦.
+    // 승률은 오히려 비슷한데(47% vs 44%) 포지션이 크다는 이유만으로 손익 기여가 반전됨.
+    // perfMult(성과배수, 최대 1.2x)까지 곱해도 상한 ~9.6%로, 연승 후 몰빵되는 걸 방지.
+    const assetBasedMax = Math.round(totalAssets * 0.08);
     const baseMaxPos = dailyLoss.earlyWarning ? Math.round(assetBasedMax * 0.5) : assetBasedMax;
     // 스트레스 레벨 1 → 포지션 추가 10% 축소
     const stressMult = portfolioStress >= 1 ? 0.9 : 1.0;
@@ -1539,13 +1543,19 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
             (s) =>
               !openCodes.has(s.stock_code) &&
               !decidedBuyCodes.has(s.stock_code) &&
-              !recentlySoldCodes.has(s.stock_code),
+              !recentlySoldCodes.has(s.stock_code) &&
+              // v20: 초대형주(삼성전자/SK하이닉스 등) 제외 — 주당가가 높아 최소 매수단위(1주)만으로도
+              // 포지션이 과대해짐 + ScaleIn 3분할까지 겹치면 자산의 20% 근접까지 쏠려서
+              // 자금흐름 재배치 청산 시 소폭 등락(-2%대)도 큰 원화손실로 찍힘 (다른 소형주 익절 다 까먹음)
+              !MEGA_CAP_PRIORITY_CODES.has(s.stock_code),
           );
         if (topPick) {
           const priceInfo = livePrices.get(topPick.stock_code);
           const curPrice = priceInfo?.currentPrice ?? 0;
           if (curPrice > 0) {
-            const buyAmount = Math.max(Math.min(orderableCash * 0.05, adjMaxPositionKrw), 50000);
+            // v20: 5%→2% — 실험용 "AI 상위픽" 단일 매수가 ScaleIn 3분할까지 겹쳐도
+            // 자산 대비 과도하게 쏠리지 않도록 사이징 축소 (포지션 사이징 비대칭 손실 방지)
+            const buyAmount = Math.max(Math.min(orderableCash * 0.02, adjMaxPositionKrw * 0.5), 50000);
             const quantity = Math.floor(buyAmount / curPrice);
             if (quantity >= 1) {
               decisions.push({

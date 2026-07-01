@@ -36,12 +36,11 @@ interface InverseETFConfig {
   alloc: { CAUTION: number; CRASH: number; PANIC: number }; // 총자산 대비 배분 비율
 }
 
-// 황금비율 배분 (주문가능현금 기준, 2x:1x ≈ φ=1.618)
-// CAUTION: 현금57%, CRASH: 현금89%, PANIC: 현금~98% (순차매수+90%캡 적용)
+// v18: 파킹 단순화 — 2x 레버리지(252670)는 며칠 이상 보유 시 변동성 감가(decay) 누적,
+// 코스닥 인버스(251340)는 배분 0~8%로 사실상 미미한 보조 역할 → 여러 갈래 로직이 버그 표면적만 키움 판단.
+// KODEX 인버스(114800, 1x) 단일 종목으로 통합. 기존 "보조" 배분율 그대로 유지 (과도한 노출 확대 방지).
 export const INVERSE_ETFS: InverseETFConfig[] = [
-  { code: '252670', name: 'KODEX 200선물인버스2X', leverage: 2, alloc: { CAUTION: 0.35, CRASH: 0.52, PANIC: 0.62 } }, // KOSPI200 -2x 주력 (거래대금1위)
-  { code: '114800', name: 'KODEX 인버스', leverage: 1, alloc: { CAUTION: 0.22, CRASH: 0.32, PANIC: 0.38 } }, // KOSPI200 -1x 보조
-  { code: '251340', name: 'KODEX 코스닥150인버스', leverage: 1, alloc: { CAUTION: 0.0, CRASH: 0.05, PANIC: 0.08 } }, // KOSDAQ -1x (PANIC+)
+  { code: '114800', name: 'KODEX 인버스', leverage: 1, alloc: { CAUTION: 0.22, CRASH: 0.32, PANIC: 0.38 } }, // KOSPI200 -1x 단일 파킹
 ];
 
 export const INVERSE_ETF_CODES = new Set(INVERSE_ETFS.map((e) => e.code));

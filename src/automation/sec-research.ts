@@ -253,6 +253,10 @@ async function analyzeWithGemini(
 
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
+      // v20: grounded:true 유지 — "GenAI App Builder Trial Credit"(₩1,434,325, 2027-01-26 만료,
+      // 사용률 0%)가 이 Vertex Search Grounding 경로 비용을 충당하도록 설계된 것으로 확인됨.
+      // 무료 AI Studio 경로(별도의 일 250콜 한도)로 옮기면 그라운딩이 실제로 필요한
+      // 매크로이벤트/보유종목뉴스 작업과 한도를 나눠 써야 해서 오히려 손해 — 그대로 둠.
       const text = await callVertexGemini(ANALYSIS_SYSTEM, userMsg, {
         label: `sec-research:${financial.ticker}`,
         grounded: true,

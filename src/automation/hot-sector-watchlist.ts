@@ -78,6 +78,26 @@ interface SectorStock {
   stock_name: string;
 }
 
+// v20: 매수 시점 섹터 모멘텀 체크(decision-flow.ts)용 캐시 — 업종 지수는 분단위로 안 바뀌므로
+// 매 후보마다 재조회할 필요 없음 (23개 업종 × 매수후보 수만큼 API 호출 낭비 방지)
+const SECTOR_INDEX_CACHE_MS = 15 * 60_000;
+let _sectorIndexCache: { data: SectorInfo[]; fetchedAt: number } | null = null;
+
+/** 매수 결정 단계에서 쓰는 캐시된 업종별 등락률 조회 (15분 캐시, 네트워크 재사용) */
+export async function getCachedSectorChangeMap(): Promise<Map<string, number>> {
+  const now = Date.now();
+  if (!_sectorIndexCache || now - _sectorIndexCache.fetchedAt > SECTOR_INDEX_CACHE_MS) {
+    try {
+      const data = await fetchSectorIndices();
+      _sectorIndexCache = { data, fetchedAt: now };
+    } catch (err) {
+      logger.debug(`업종 지수 캐시 갱신 실패 (기존 캐시 유지): ${err}`, { component: COMPONENT });
+      if (!_sectorIndexCache) return new Map();
+    }
+  }
+  return new Map(_sectorIndexCache.data.map((s) => [s.code, s.changePct]));
+}
+
 /**
  * KIS 업종별 지수 조회 (FHKUP03500100)
  */
