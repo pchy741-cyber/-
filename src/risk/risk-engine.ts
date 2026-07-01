@@ -503,12 +503,10 @@ export class RiskEngine {
       };
     }
 
-    // 국내 배분 비중 체크 — kr_pct 목표 준수 (Live 전용)
+    // 국내 배분 비중 체크 — kr_pct 목표 준수 (Live + Paper 모두 적용)
     // ⚠️ 통합증거금: 현금(KRW) 단일 풀 → 배분 비중은 "투자중 금액"(보유액)만 기준
-    // v10.9.8: 소자산 면제 제거 + 해외 0포지션 사각지대 제거
-    //   기존: totalPortfolio<200만 OR osInvested=0 → 체크 스킵 → 국내가 현금 전부 점유
-    //   수정: 해외 보유 없어도 목표비중 기반 현금 예약으로 국내 매수 제한
-    if (!isPaper) {
+    // v16.4: Paper에도 적용 — 국내 풀이 해외 예산을 침범하지 않도록
+    {
       try {
         const { rows: allocRows } = await getPool().query(
           'SELECT kr_pct, us_pct FROM portfolio_allocation_config WHERE is_paper = $1 LIMIT 1',
@@ -518,14 +516,19 @@ export class RiskEngine {
         const targetUsPct = Number(allocRows[0]?.us_pct ?? 70);
 
         if (targetUsPct > 0) {
-          // 국내 투자가 totalPortfolio 기준 kr_pct 몫(+15% 여유)을 초과하면 차단
-          // totalPortfolio = KR잔고+보유 + OS잔고+보유(원화환산) → 해외 포지션 유무 무관
+          // Paper: 통합증거금 시뮬레이션 — 시드풀(90M) 기준 kr_pct 적용
+          // Live: totalPortfolio(계좌잔고) 기준
+          const { PAPER_INITIAL_CAPITAL } = await import('./paper-balance.js');
+          const PAPER_OVERSEAS_SEED = Number(process.env.PAPER_OVERSEAS_SEED_KRW) || 30_000_000;
+          const budgetBase = isPaper ? (PAPER_INITIAL_CAPITAL + PAPER_OVERSEAS_SEED) : totalPortfolio;
           const domesticInvested = balance.totalEvalAmount;
-          const domesticBudgetCeil = totalPortfolio * (targetKrPct / 100);
-          if (domesticInvested + orderValue > domesticBudgetCeil * 1.15) {
+          const domesticBudgetCeil = budgetBase * (targetKrPct / 100);
+          // Paper: +30% 여유 (학습 데이터 확보), Live: +15% 여유
+          const margin = isPaper ? 1.30 : 1.15;
+          if (domesticInvested + orderValue > domesticBudgetCeil * margin) {
             return {
               approved: false,
-              reason: `국내 예산 한도: 투자 ${Math.round(domesticInvested / 10000)}만 + 주문 ${Math.round(orderValue / 10000)}만 > 한도 ${Math.round(domesticBudgetCeil / 10000)}만 (kr${targetKrPct}%)`,
+              reason: `국내 예산 한도: 투자 ${Math.round(domesticInvested / 10000)}만 + 주문 ${Math.round(orderValue / 10000)}만 > 한도 ${Math.round(domesticBudgetCeil / 10000)}만 (kr${targetKrPct}%${isPaper ? ' paper' : ''})`,
             };
           }
         }

@@ -107,7 +107,8 @@ export default function StrategyLabView({ toast, viewMode, confirm }: Props) {
 
   const agg = useMemo(() =>
     activeStrategies.reduce((a, s) => {
-      const p = (viewMode === 'live' ? s.live : s.paper)!;
+      const p = viewMode === 'live' ? s.live : s.paper;
+      if (!p) return a;
       a.trades += p.totalTrades;
       a.wins += p.wins;
       a.pnlKrw += p.totalPnlKrw;

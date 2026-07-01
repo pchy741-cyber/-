@@ -43,6 +43,7 @@ export interface Chain {
   weight?: number;
   trigger_source?: string;
   escape_target_price?: number;
+  peak_price_since_open?: number;
   chainIds?: string[];
   _mergedCount?: number;
 }

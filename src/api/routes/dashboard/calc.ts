@@ -151,9 +151,16 @@ export function calcTotalAssets(i: TotalAssetInputs): TotalAssetOutputs {
       logger.warn('⚠️ Live 총자산 0원 — KIS API 실패 또는 미연결', { component: 'CALC' });
     }
   } else {
-    // Paper: 국내현금 + 국내증권 + 해외현금 + 해외증권
+    // Paper: 통합증거금 시뮬레이션 — 시드풀(국내+해외) 기준 총자산
+    // 별도 풀 합산(60M+63M=123M) → 시드풀(90M)+PnL로 정정
     freeDomesticCash = rawCashSafe;
-    grandTotalValue = freeDomesticCash + safeDomestic + safeOverseasMV + safeOverseasCashKrw;
+    const rawGrandTotal = freeDomesticCash + safeDomestic + safeOverseasMV + safeOverseasCashKrw;
+    const PAPER_OVERSEAS_SEED = Number(process.env.PAPER_OVERSEAS_SEED_KRW) || 30_000_000;
+    const unifiedPool = i.paperInitialCapital + PAPER_OVERSEAS_SEED; // 90M
+    // 시드풀 초과 시 (getEffectivePaperSeedKrw 인플레이션) 캡 적용
+    grandTotalValue = rawGrandTotal > unifiedPool * 1.1
+      ? unifiedPool + (safeDomestic - safe(i.totalChainInvested)) + (overseasMarketValueKrw - overseasInvestedKrw)
+      : rawGrandTotal;
     calcMethod = 'paper_cash';
   }
 
