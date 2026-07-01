@@ -62,6 +62,7 @@ import {
   PARK_STOCK_CODE,
   PARK_STOCK_NAME,
 } from './defense-park.js';
+import { getAdaptiveBuyThreshold } from './adaptive-threshold.js';
 import { checkDailyLoss, fetchKospiRegime } from './market-regime.js';
 import { generatePartialTpDecisions } from './sell-signals.js';
 import { technicalFallbackDecisions } from './technical-fallback.js';
@@ -1257,10 +1258,20 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     } catch {
       /* 인사이트 로드 실패 시 무시 */
     }
-    const feedbackThreshold = Math.max(
-      thresholdFloor,
-      resolvedThreshold + thresholdBonus + paperOffset + insightThresholdAdj,
-    );
+    // Innovation #1: Adaptive Buy Threshold — 레짐/변동성/성과/포트폴리오 상태 반영
+    const portfolioUtil = totalAssets > 0 ? currentStockValue / totalAssets : 0;
+    const adaptiveBase = resolvedThreshold + thresholdBonus + paperOffset + insightThresholdAdj;
+    const adaptiveThresholdResult = getAdaptiveBuyThreshold({
+      base: adaptiveBase,
+      regime: kospiRegime.adamKhoo?.bullish ? 'TREND_BULL'
+        : kospiRegime.penalty >= 2 ? 'TREND_BEAR'
+        : kospiRegime.penalty >= 1 ? 'RANGE_HIGH_VOL'
+        : undefined,
+      atrPct: kospiRegime.atrPct,
+      dailyPnlPct: dailyLoss.dailyPnlPct,
+      portfolioUtil,
+    });
+    const feedbackThreshold = Math.max(thresholdFloor, adaptiveThresholdResult);
     if (winFeedback.thresholdBonus > 0 || winFeedback.requirePullback || winFeedback.minVolumeRatio > 1.0) {
       logger.info(`🎯 승률피드백 적용: ${winFeedback.summary}`, { component: 'TRACK_B' });
     }
