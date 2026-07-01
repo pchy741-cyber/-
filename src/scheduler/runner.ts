@@ -846,6 +846,19 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
+  // 🌍 해외장 Track A — 미국장 시간대 AI 분석 (paper 백데이터 축적 + 실전 신호 강화)
+  // 개장 직후(22:45/23:45 DST/표준) + 핵심시간(01:00) + 파워아워(05:00)
+  for (const usCron of ['45 22 * * 1-5', '45 23 * * 1-5', '0 1 * * 2-6', '0 5 * * 2-6']) {
+    cron.schedule(
+      usCron,
+      () => {
+        logger.info(`🌍 해외장 Track A (${usCron})`, { component: 'SCHEDULER' });
+        runTrackAJob().catch((e) => logger.error(`해외 Track A 실패: ${e}`, { component: 'SCHEDULER' }));
+      },
+      { timezone: MARKET.TIMEZONE },
+    );
+  }
+
   // 🔍 QA Watchdog + 📊 운영 브리핑 — 08:00 해외장 마감 후, 17:00 국내장 마감 후
   cron.schedule(
     '0 8 * * 1-5',

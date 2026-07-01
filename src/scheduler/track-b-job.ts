@@ -13,6 +13,7 @@ import { logger } from '../utils/logger.js';
 import { getKSTNow } from '../utils/time.js';
 import { reportNoBuyCandidates } from './loop-mode.js';
 import { isOpeningBellCompleted } from './opening-bell-job.js';
+import { getOverride } from '../ai/ai-overrides.js';
 
 const isRunningMap = new Map<'paper' | 'live', boolean>([
   ['paper', false],
@@ -94,15 +95,34 @@ export async function runTrackBJob(): Promise<void> {
     const rawDecisions = await runTrackBPipeline();
     reportNoBuyCandidates(!rawDecisions.some((d) => d.action === 'BUY' || d.action === 'AVERAGE_DOWN'));
 
-    // v16.2.3: Track B 역할 전환 — 매수 제거, 손익관리 전담
-    // Pipeline은 분석 데이터 수집용으로 유지하되 BUY/AVERAGE_DOWN은 실행하지 않음
-    const buyBlocked = rawDecisions.filter((d) => d.action === 'BUY' || d.action === 'AVERAGE_DOWN');
-    const decisions = rawDecisions.filter((d) => d.action !== 'BUY' && d.action !== 'AVERAGE_DOWN');
-    if (buyBlocked.length > 0) {
-      logger.info(
-        `🔇 Track B 매수 차단 (손익관리 전담): ${buyBlocked.length}건 BUY/AVG_DOWN 스킵 [${buyBlocked.map((d) => d.stock_code).join(',')}]`,
-        { component: 'SCHEDULER' },
-      );
+    // v17: 고확신 매수 게이트 — AI 오버라이드(loopBuyGate)로 매수 허용 가능
+    // 루프 모드가 시장 레짐 분석 후 minBuyScore 오버라이드를 함께 설정
+    // → 파이프라인이 이미 고임계값으로 필터링 → 통과한 건만 실행
+    const loopBuyGateActive = getOverride<boolean>('loopBuyGate') ?? false;
+    let buyBlocked: typeof rawDecisions;
+    let decisions: typeof rawDecisions;
+
+    if (loopBuyGateActive) {
+      // 매수 게이트 활성: 파이프라인 통과한 매수만 실행 (minBuyScore 오버라이드 적용됨)
+      buyBlocked = [];
+      decisions = rawDecisions;
+      const buys = rawDecisions.filter((d) => d.action === 'BUY' || d.action === 'AVERAGE_DOWN');
+      if (buys.length > 0) {
+        logger.info(
+          `🎯 Loop Buy Gate ON: ${buys.length}건 매수 통과 [${buys.map((d) => d.stock_code).join(',')}]`,
+          { component: 'SCHEDULER' },
+        );
+      }
+    } else {
+      // 기본: 전체 매수 차단 (손익관리 전담)
+      buyBlocked = rawDecisions.filter((d) => d.action === 'BUY' || d.action === 'AVERAGE_DOWN');
+      decisions = rawDecisions.filter((d) => d.action !== 'BUY' && d.action !== 'AVERAGE_DOWN');
+      if (buyBlocked.length > 0) {
+        logger.info(
+          `🔇 Track B 매수 차단: ${buyBlocked.length}건 스킵 [${buyBlocked.map((d) => d.stock_code).join(',')}]`,
+          { component: 'SCHEDULER' },
+        );
+      }
     }
 
     // Kill Switch 활성 시 매수 차단, 매도(탈출)만 실행

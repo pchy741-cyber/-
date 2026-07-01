@@ -1,23 +1,20 @@
 'use client';
 
-import React, { useState, useCallback, useRef, useEffect } from 'react';
-import { flushSync } from 'react-dom';
+import React, { useState, useCallback, useEffect } from 'react';
 import { api } from '../lib/utils';
-import type { ScreenshotProps, Tab, CopilotData, XrayData } from './screenshot/screenshot-types';
-import { CaptureOverlay } from './screenshot/CaptureOverlay';
+import type { ScreenshotProps, CopilotData, XrayData } from './screenshot/screenshot-types';
 import { CopilotResultPanel } from './screenshot/CopilotResultPanel';
 import { AutoPilotButton } from './screenshot/AutoPilotButton';
-import { waitForStable, captureTab, downloadPng, timeAgo } from './screenshot/screenshot-utils';
+import { timeAgo } from './screenshot/screenshot-utils';
 
-// sessionStorage 키 — 캡쳐 결과 영속화 (페이지 이탈 후 복귀 시 유지)
+// sessionStorage 키 — 결과 영속화 (페이지 이탈 후 복귀 시 유지)
 const SS_KEY = 'aab_capture_result';
 
-function loadCaptureCache(): { copilot: CopilotData | null; xray: XrayData | null; time: string | null } {
+function loadCache(): { copilot: CopilotData | null; xray: XrayData | null; time: string | null } {
   try {
     const raw = sessionStorage.getItem(SS_KEY);
     if (!raw) return { copilot: null, xray: null, time: null };
     const parsed = JSON.parse(raw);
-    // 30분 이상 된 캐시는 폐기
     if (parsed.time && Date.now() - new Date(parsed.time).getTime() > 30 * 60_000) {
       sessionStorage.removeItem(SS_KEY);
       return { copilot: null, xray: null, time: null };
@@ -26,177 +23,135 @@ function loadCaptureCache(): { copilot: CopilotData | null; xray: XrayData | nul
   } catch { return { copilot: null, xray: null, time: null }; }
 }
 
-function saveCaptureCache(copilot: CopilotData | null, xray: XrayData | null, time: string | null) {
-  try {
-    sessionStorage.setItem(SS_KEY, JSON.stringify({ copilot, xray, time }));
-  } catch { /* quota 초과 무시 */ }
+function saveCache(copilot: CopilotData | null, xray: XrayData | null, time: string | null) {
+  try { sessionStorage.setItem(SS_KEY, JSON.stringify({ copilot, xray, time })); } catch {}
 }
 
-const CORE_TABS: { id: Tab; label: string }[] = [
-  { id: 'home', label: '대시보드' },
-  { id: 'trades', label: '매매내역' },
-  { id: 'journal', label: '매매일지' },
-  { id: 'watchlist', label: '감시목록' },
-  { id: 'strategy-lab', label: '전략실험실' },
-  { id: 'news', label: '뉴스' },
-  { id: 'settings', label: '설정' },
-  { id: 'dividend', label: '배당' },
-];
-const OPTIONAL_TABS: { id: Tab; label: string }[] = [];
-const DUAL_MODE_TABS: Tab[] = ['home', 'trades', 'journal', 'watchlist'];
+// copilot-lite → CopilotData 변환
+const RISK_META: Record<string, { max: number; unit: string }> = {
+  mdd: { max: 10, unit: '%' },
+  loss_streak: { max: 10, unit: '연패' },
+  kill_switch: { max: 1, unit: '' },
+  old_holdings: { max: 5, unit: '종목' },
+  concentration: { max: 100, unit: '%' },
+  no_trades: { max: 7, unit: '일' },
+  high_volatility: { max: 5, unit: '%' },
+};
+
+function buildCopilotFromLite(lite: any, mode: string): CopilotData {
+  return {
+    timestamp: lite.timestamp || new Date().toISOString(),
+    mode,
+    integrity: [],
+    risk: (lite.issues || []).map((issue: any) => {
+      const num = Number((issue.label.match(/[\d.]+/) ?? ['0'])[0]) || 0;
+      const meta = RISK_META[issue.id] ?? { max: 100, unit: '' };
+      return {
+        id: issue.id,
+        label: issue.label,
+        value: issue.id === 'kill_switch' ? 1 : issue.id === 'no_trades' ? 7 : num,
+        max: meta.max,
+        unit: meta.unit,
+        level: issue.level as 'ok' | 'warn' | 'danger',
+      };
+    }),
+    actions: (lite.actions || []).map((a: any) => {
+      const parts = (a.action || '').split('—');
+      return {
+        type: a.level === 'danger' ? 'cut_loss' : a.level === 'warn' ? 'anomaly' : 'rebalance',
+        icon: a.level === 'danger' ? '!' : '?',
+        title: parts[0]?.trim() || a.action,
+        detail: a.apiHint ? `${a.action}\n힌트: ${a.apiHint}` : a.action,
+        urgency: (a.level === 'danger' ? 'high' : 'mid') as 'high' | 'mid' | 'low',
+      };
+    }),
+  };
+}
+
+// QA Report → XrayData 변환
+function buildXrayFromQA(qa: any): XrayData | null {
+  if (!qa) return null;
+  const issues = qa.issues ?? [];
+  if (issues.length === 0 && !qa.score) return null;
+  const sev = (s: string) => s === 'CRITICAL' ? 'danger' : s === 'WARNING' ? 'warn' : 'ok';
+  return {
+    ts: qa.runAt || new Date().toISOString(),
+    mode: 'QA Watchdog',
+    summary: {
+      danger: qa.critical || 0,
+      warn: qa.warning || 0,
+      ok: Math.max(0, issues.length - (qa.critical || 0) - (qa.warning || 0)),
+      total: issues.length,
+    },
+    checks: issues.map((issue: any, i: number) => ({
+      id: `qa_${i}`,
+      status: sev(issue.severity) as 'ok' | 'warn' | 'danger',
+      label: `[${issue.category}] ${issue.title}`,
+      detail: issue.detail,
+    })),
+  };
+}
 
 export default function ScreenshotReview(props: ScreenshotProps) {
-  const { currentTab, setTab, viewMode, switchViewMode } = props;
-  const [capturing, setCapturing] = useState(false);
-  const [progress, setProgress] = useState('');
-  const [step, setStep] = useState(0);
-  const [total, setTotal] = useState(0);
+  const { viewMode } = props;
+  const [checking, setChecking] = useState(false);
   const [copilot, setCopilot] = useState<CopilotData | null>(null);
   const [xray, setXray] = useState<XrayData | null>(null);
   const [showPanel, setShowPanel] = useState(false);
-  const [lastCaptureTime, setLastCaptureTime] = useState<string | null>(null);
-  const capturedScreenshots = useRef<{ tab: string; base64: string }[]>([]);
+  const [lastCheckTime, setLastCheckTime] = useState<string | null>(null);
 
-  // 마운트 시 sessionStorage에서 캡쳐 결과 복원
+  // 캐시 복원
   useEffect(() => {
-    const cached = loadCaptureCache();
+    const cached = loadCache();
     if (cached.copilot || cached.xray) {
       setCopilot(cached.copilot);
       setXray(cached.xray);
-      setLastCaptureTime(cached.time);
+      setLastCheckTime(cached.time);
     }
   }, []);
 
-  const captureAllTabs = useCallback(async () => {
-    if (capturing) return;
-    setCapturing(true);
-    setCopilot(null);
-    setXray(null);
-    setShowPanel(false);
-
-    const originalTab = currentTab;
-    const originalMode = viewMode;
-    const otherMode = viewMode === 'live' ? 'paper' : 'live';
-    // PAPER_ONLY 서버: live 캡쳐 스킵 (live 잔고 14만원 수준 — 혼동 방지)
-    const serverIsPaper = props.health?.tradingMode === 'paper';
-    const skipDualCapture = serverIsPaper && otherMode === 'live';
-    const screenshots: { tab: string; base64: string }[] = [];
-
-    const TAB_LIST = [...CORE_TABS];
-
-    const dualCount = skipDualCapture ? 0 : DUAL_MODE_TABS.length;
-    const totalSteps = TAB_LIST.length + dualCount + 1;
-    setTotal(totalSteps);
-
-    let failedTabs: string[] = [];
+  // 경량 건강도 검사 — copilot-lite(~200ms) + QA 최신 리포트
+  const runHealthCheck = useCallback(async () => {
+    if (checking) return;
+    setChecking(true);
     try {
-      for (let i = 0; i < TAB_LIST.length; i++) {
-        const { id, label } = TAB_LIST[i];
-        setStep(i + 1);
-        setProgress(`[${originalMode.toUpperCase()}] ${label}`);
-        flushSync(() => setTab(id));
-        const mainEl = document.querySelector('main');
-        if (mainEl) await waitForStable(mainEl, 300, 3000);
-        try {
-          const base64 = await captureTab(label, props, originalMode);
-          if (base64) screenshots.push({ tab: `${label} [${originalMode.toUpperCase()}]`, base64 });
-          else failedTabs.push(label);
-        } catch {
-          failedTabs.push(label);
-          props.toast?.(`캡쳐 실패: ${label}`, 'err');
-          document.getElementById('__diag_banner__')?.remove();
-        }
-      }
-
-      if (!skipDualCapture) {
-        setProgress(`${otherMode.toUpperCase()} 전환`);
-        switchViewMode(otherMode);
-        await new Promise((r) => setTimeout(r, 3000));
-
-        for (let i = 0; i < DUAL_MODE_TABS.length; i++) {
-          const tabId = DUAL_MODE_TABS[i];
-          const tabInfo = TAB_LIST.find((t) => t.id === tabId)!;
-          setStep(TAB_LIST.length + i + 1);
-          setProgress(`[${otherMode.toUpperCase()}] ${tabInfo.label}`);
-          flushSync(() => setTab(tabId));
-          const mainEl = document.querySelector('main');
-          if (mainEl) await waitForStable(mainEl, 300, 3000);
-          try {
-            const base64 = await captureTab(tabInfo.label, props, otherMode);
-            if (base64) screenshots.push({ tab: `${tabInfo.label} [${otherMode.toUpperCase()}]`, base64 });
-            else failedTabs.push(`${tabInfo.label}[${otherMode}]`);
-          } catch {
-            failedTabs.push(`${tabInfo.label}[${otherMode}]`);
-            props.toast?.(`캡쳐 실패: ${tabInfo.label} [${otherMode}]`, 'err');
-            document.getElementById('__diag_banner__')?.remove();
-          }
-        }
-
-        switchViewMode(originalMode);
-        await new Promise((r) => setTimeout(r, 500));
-      }
-
-      setTab(originalTab);
-
-      setStep(totalSteps);
-      setProgress('캡처 업로드 중...');
-      // 이미지 여러 장 POST → 타임아웃 60초; copilot/xray는 capture 완료 후 병렬 호출
-      await api('/review/capture', { method: 'POST', body: JSON.stringify({ screenshots }), timeout: 60_000 });
-
-      setProgress('AI Copilot + X-Ray 분석');
-      const [copilotRes, xrayRes] = await Promise.all([
-        api(`/review/copilot?viewMode=${viewMode}`, { timeout: 40_000 }).catch(() => null),
-        api(`/review/xray?viewMode=${viewMode}`, { timeout: 20_000 }).catch(() => null),
+      const [liteRes, qaRes] = await Promise.all([
+        api(`/review/copilot-lite?viewMode=${viewMode}`, { timeout: 10_000 }).catch(() => null),
+        api('/qa/latest', { timeout: 5_000 }).catch(() => null),
       ]);
 
-      capturedScreenshots.current = screenshots;
-      const newCopilot = copilotRes as CopilotData | null;
-      const newXray = xrayRes as XrayData | null;
+      const newCopilot = liteRes ? buildCopilotFromLite(liteRes, viewMode) : null;
+      const newXray = qaRes ? buildXrayFromQA(qaRes) : null;
       const newTime = new Date().toISOString();
+
       if (newCopilot) setCopilot(newCopilot);
       if (newXray) setXray(newXray);
       setShowPanel(true);
-      setLastCaptureTime(newTime);
-      // sessionStorage에 결과 저장 (페이지 이탈 후 복귀 시 유지)
-      saveCaptureCache(newCopilot, newXray, newTime);
-      if (failedTabs.length > 0) {
-        props.toast?.(`${screenshots.length}/${screenshots.length + failedTabs.length} 탭 캡쳐 완료, ${failedTabs.length}개 실패`, 'info');
-      }
-      setProgress('');
-    } catch (err) {
-      console.error('캡처 실패:', err);
-      document.getElementById('__diag_banner__')?.remove();
-      switchViewMode(originalMode);
-      setTab(originalTab);
-      setProgress('');
+      setLastCheckTime(newTime);
+      saveCache(newCopilot ?? copilot, newXray ?? xray, newTime);
+    } catch {
+      props.toast?.('건강도 검사 실패', 'err');
     } finally {
-      setCapturing(false);
-      setStep(0);
+      setChecking(false);
     }
-  }, [capturing, currentTab, setTab, props, viewMode, switchViewMode]);
-
-  const downloadAll = useCallback(() => {
-    const ts = new Date().toISOString().slice(0, 16).replace(/[T:]/g, '-');
-    capturedScreenshots.current.forEach((s, i) => {
-      const safeName = s.tab.replace(/[\s[\]]/g, '_');
-      downloadPng(s.base64, `aab_${ts}_${i}_${safeName}.png`);
-    });
-  }, []);
+  }, [checking, viewMode, copilot, xray, props]);
 
   const copyDiag = useCallback(() => {
     if (!copilot && !xray) return;
     const lines: string[] = [];
     if (copilot) {
-      lines.push(`AI Bot Copilot ${copilot.timestamp}`, `Mode: ${copilot.mode}`, '');
-      lines.push('=== INTEGRITY ===');
-      lines.push(...copilot.integrity.map(i => `[${i.status.toUpperCase()}] ${i.label}: ${i.detail}`));
-      lines.push('', '=== RISK ===');
-      lines.push(...copilot.risk.map(r => `${r.label}: ${r.value}${r.unit} / ${r.max}${r.unit} [${r.level}]`));
-      lines.push('', '=== ACTIONS ===');
-      lines.push(...copilot.actions.map(a => `[${a.urgency}] ${a.title} — ${a.detail}`));
+      lines.push(`Health Check ${copilot.timestamp}`, `Mode: ${copilot.mode}`, '');
+      if (copilot.risk.length > 0) {
+        lines.push('=== RISK ===');
+        lines.push(...copilot.risk.map(r => `${r.label}: ${r.value}${r.unit} / ${r.max}${r.unit} [${r.level}]`));
+      }
+      if (copilot.actions.length > 0) {
+        lines.push('', '=== ACTIONS ===');
+        lines.push(...copilot.actions.map(a => `[${a.urgency}] ${a.title} — ${a.detail}`));
+      }
     }
     if (xray) {
-      lines.push('', `=== X-RAY (${xray.mode.toUpperCase()}) ===`);
+      lines.push('', '=== QA Watchdog ===');
       lines.push(`danger:${xray.summary.danger} warn:${xray.summary.warn} ok:${xray.summary.ok}`);
       lines.push(...xray.checks.map(c => `[${c.status.toUpperCase()}] ${c.label}: ${c.detail}`));
     }
@@ -207,7 +162,6 @@ export default function ScreenshotReview(props: ScreenshotProps) {
   const healthScore = (copilot || xray) ? (() => {
     let s = 100;
     if (copilot) {
-      for (const i of copilot.integrity) { if (i.status === 'danger') s -= 25; else if (i.status === 'warn') s -= 10; }
       for (const r of copilot.risk) { if (r.level === 'danger') s -= 15; else if (r.level === 'warn') s -= 5; }
       for (const a of copilot.actions) { if (a.urgency === 'high') s -= 10; else if (a.urgency === 'mid') s -= 3; }
     }
@@ -221,22 +175,20 @@ export default function ScreenshotReview(props: ScreenshotProps) {
   const scoreBg = (s: number) => s >= 80 ? 'from-emerald-500/20 to-emerald-700/10 border-emerald-500/30' : s >= 50 ? 'from-amber-500/20 to-amber-700/10 border-amber-500/30' : 'from-red-500/20 to-red-700/10 border-red-500/30';
 
   const sseScore = props.sseHealthScore ?? 0;
-
-  const dangerCount = (copilot ? copilot.integrity.filter(i => i.status === 'danger').length + copilot.risk.filter(r => r.level === 'danger').length : 0)
-    + (xray?.summary.danger ?? 0);
+  const dangerCount = (copilot ? copilot.risk.filter(r => r.level === 'danger').length : 0) + (xray?.summary.danger ?? 0);
   const highActions = copilot?.actions.filter(a => a.urgency === 'high').length ?? 0;
 
   return (
     <>
-      <AutoPilotButton loopStatusProp={props.loopStatus ?? null} capturing={capturing} toast={props.toast} />
+      <AutoPilotButton loopStatusProp={props.loopStatus ?? null} capturing={checking} toast={props.toast} />
 
-      {/* 플로팅 버튼 */}
+      {/* 플로팅 헬스 버튼 */}
       <button
         data-html2canvas-ignore="true"
-        onClick={captureAllTabs}
-        disabled={capturing}
+        onClick={runHealthCheck}
+        disabled={checking}
         className={`fixed bottom-6 right-6 z-50 w-14 h-14 rounded-full shadow-lg shadow-black/50 flex items-center justify-center transition-all duration-300 group ${
-          capturing
+          checking
             ? 'bg-blue-600 animate-pulse cursor-wait ring-2 ring-blue-400/50'
             : copilot
               ? `bg-gradient-to-br ${scoreBg(healthScore)} backdrop-blur-sm border`
@@ -244,18 +196,17 @@ export default function ScreenshotReview(props: ScreenshotProps) {
                 ? `bg-gradient-to-br ${scoreBg(sseScore)} backdrop-blur-sm border`
                 : 'bg-slate-800/90 hover:bg-slate-700 hover:scale-110 hover:shadow-xl hover:shadow-blue-500/20 border border-white/10'
         }`}
-        title={`Copilot — 전체 캡처 + AI 진단${lastCaptureTime ? ` (${timeAgo(lastCaptureTime)})` : ''}`}
+        title={`Health Check — QA + 리스크 진단${lastCheckTime ? ` (${timeAgo(lastCheckTime)})` : ''}`}
       >
-        {capturing ? (
+        {checking ? (
           <div className="relative">
             <div className="w-6 h-6 border-2 border-white border-t-transparent rounded-full animate-spin" />
-            <div className="absolute -top-1 -right-1 w-3 h-3 bg-blue-400 rounded-full animate-ping" />
           </div>
         ) : (copilot || xray) ? (
           <div className="flex flex-col items-center leading-none">
             <span className={`text-[11px] font-black ${scoreColor(healthScore)}`}>{healthScore}</span>
             <span className="text-[9px] text-slate-400 mt-0.5">SCORE</span>
-            {lastCaptureTime && <span className="text-[8px] text-slate-500">{timeAgo(lastCaptureTime)}</span>}
+            {lastCheckTime && <span className="text-[8px] text-slate-500">{timeAgo(lastCheckTime)}</span>}
           </div>
         ) : sseScore > 0 ? (
           <div className="flex flex-col items-center leading-none">
@@ -295,14 +246,12 @@ export default function ScreenshotReview(props: ScreenshotProps) {
           copilot={copilot}
           xray={xray}
           healthScore={healthScore}
-          screenshotCount={capturedScreenshots.current.length}
-          onDownload={downloadAll}
+          screenshotCount={0}
+          onDownload={() => {}}
           onCopy={copyDiag}
           onClose={() => setShowPanel(false)}
         />
       )}
-
-      {capturing && <CaptureOverlay step={step} total={total} progress={progress} />}
     </>
   );
 }

@@ -51,8 +51,8 @@ export function CopilotResultPanel({ copilot, xray, healthScore, screenshotCount
         <div className={`bg-gradient-to-b ${scoreBg(healthScore)} px-5 pt-5 pb-4 shrink-0`}>
           <div className="flex items-center justify-between">
             <div>
-              <h3 className="text-base font-bold text-white tracking-tight">Copilot</h3>
-              <p className="text-[10px] text-slate-400 mt-0.5">{copilot?.mode.toUpperCase() ?? xray?.mode.toUpperCase()} | {screenshotCount}장 캡처{xray ? ` | X-Ray ${xray.summary.danger}D/${xray.summary.warn}W` : ''}</p>
+              <h3 className="text-base font-bold text-white tracking-tight">{screenshotCount > 0 ? 'Copilot' : 'Health Check'}</h3>
+              <p className="text-[10px] text-slate-400 mt-0.5">{copilot?.mode.toUpperCase() ?? xray?.mode.toUpperCase()}{screenshotCount > 0 ? ` | ${screenshotCount}장 캡처` : ' | QA + 리스크 분석'}{xray ? ` | ${xray.mode === 'QA Watchdog' ? 'QA' : 'X-Ray'} ${xray.summary.danger}D/${xray.summary.warn}W` : ''}</p>
             </div>
             <div className="text-center">
               <div className={`text-3xl font-black tracking-tighter ${scoreColor(healthScore)}`}>{healthScore}</div>
@@ -117,7 +117,7 @@ export function CopilotResultPanel({ copilot, xray, healthScore, screenshotCount
                   'text-emerald-400'
                 }`}>{item.label}</div>
                 <div className="flex items-center gap-1.5 mt-0.5">
-                  {item._xray && <span className="text-[10px] bg-violet-500/20 text-violet-300 border border-violet-500/30 rounded px-1 font-bold">X-RAY</span>}
+                  {item._xray && <span className="text-[10px] bg-violet-500/20 text-violet-300 border border-violet-500/30 rounded px-1 font-bold">{xray?.mode === 'QA Watchdog' ? 'QA' : 'X-RAY'}</span>}
                   <span className="text-slate-500 text-[10px] break-all">{item.detail}</span>
                 </div>
               </div>
@@ -168,10 +168,12 @@ export function CopilotResultPanel({ copilot, xray, healthScore, screenshotCount
 
         {/* 하단 액션 바 */}
         <div className="flex gap-2 px-4 py-3 border-t border-white/5 shrink-0 bg-[#0a0e1a]">
-          <Button variant="secondary" size="sm" className="flex-1 flex items-center justify-center gap-1 text-[11px] border border-white/10" onClick={onDownload}>
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-            {screenshotCount}장
-          </Button>
+          {screenshotCount > 0 && (
+            <Button variant="secondary" size="sm" className="flex-1 flex items-center justify-center gap-1 text-[11px] border border-white/10" onClick={onDownload}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              {screenshotCount}장
+            </Button>
+          )}
           <Button variant="secondary" size="sm" className="flex-1 flex items-center justify-center gap-1 text-[11px] border border-white/10" onClick={onCopy}>
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
             복사
