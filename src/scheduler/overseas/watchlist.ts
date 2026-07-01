@@ -77,8 +77,10 @@ const EXTENDED_WATCHLIST = [
   { code: 'COST', name: 'Costco', exchange: 'NASDAQ', region: 'US', sector: 'CONSUMER' },
   // ⚡ 유틸리티 (클린에너지 — AI 데이터센터 전력 수혜)
   { code: 'NEE', name: 'NextEra Energy', exchange: 'NYSE', region: 'US', sector: 'UTILITY' },
-  // 🧬 바이오텍 (mRNA 플랫폼 — 고변동 고수익)
+  // 🧬 바이오텍/항노화 (mRNA, 유전자편집, 장수약 — 고변동 고수익)
   { code: 'MRNA', name: 'Moderna', exchange: 'NASDAQ', region: 'US', sector: 'BIOTECH' },
+  { code: 'VRTX', name: 'Vertex Pharma', exchange: 'NASDAQ', region: 'US', sector: 'BIOTECH' },
+  { code: 'CRSP', name: 'CRISPR Therapeutics', exchange: 'NASDAQ', region: 'US', sector: 'BIOTECH' },
   // 🪙 크립토 (암호화폐 시장 프록시)
   { code: 'COIN', name: 'Coinbase', exchange: 'NASDAQ', region: 'US', sector: 'CRYPTO' },
   // 💳 핀테크 (디지털 결제 성장)

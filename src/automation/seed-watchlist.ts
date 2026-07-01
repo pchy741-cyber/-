@@ -61,13 +61,15 @@ const SEED_STOCKS: Array<{ code: string; name: string; theme: string }> = [
   { code: '316140', name: '우리금융지주', theme: '금융' },
   { code: '032830', name: '삼성생명', theme: '금융' },
 
-  // 통신/플랫폼
+  // 통신/플랫폼/IT서비스
   { code: '017670', name: 'SK텔레콤', theme: '통신' },
   { code: '030200', name: 'KT', theme: '통신' },
   { code: '035720', name: '카카오', theme: '플랫폼' },
   { code: '035420', name: 'NAVER', theme: '플랫폼' },
+  { code: '181710', name: 'NHN', theme: '플랫폼' },
+  { code: '064400', name: 'LG씨엔에스', theme: 'IT서비스' },
 
-  // 바이오
+  // 바이오 (제약주 제외 — CEO 지시)
   { code: '207940', name: '삼성바이오로직스', theme: '바이오' },
   { code: '068270', name: '셀트리온', theme: '바이오' },
 

@@ -33,13 +33,18 @@ export async function runWatchlistRotation(): Promise<void> {
     const addCutoff = new Date();
     addCutoff.setDate(addCutoff.getDate() - ADD_EVAL_DAYS);
 
-    // 현재 보유 중인 종목 코드 목록 (절대 제거 금지)
-    // Both paper AND live holdings must be checked to prevent deactivating
-    // a stock held in the other mode
+    // 보호 종목: 보유 중 + SEED/MANUAL 소스 (절대 자동 제거 금지)
     const { rows: holdingRows } = await pool.query(
       `SELECT DISTINCT stock_code FROM transaction_chains WHERE status = 'OPEN' AND total_quantity > 0`,
     );
     const holdingCodes = new Set(holdingRows.map((r: Record<string, unknown>) => String(r.stock_code)));
+    const { rows: protectedRows } = await pool.query(
+      `SELECT stock_code FROM watchlist WHERE source IN ('SEED', 'MANUAL') AND is_active = true`,
+    );
+    const protectedCodes = new Set([
+      ...holdingCodes,
+      ...protectedRows.map((r: Record<string, unknown>) => String(r.stock_code)),
+    ]);
 
     // 현재 워치리스트 전체 (활성/비활성 모두)
     const { rows: watchlistRows } = await pool.query(`SELECT stock_code FROM watchlist`);
@@ -69,8 +74,8 @@ export async function runWatchlistRotation(): Promise<void> {
       if (recordCount < MIN_SCORE_RECORDS) continue;
       if (avgScore >= MIN_SCORE_THRESHOLD) continue;
 
-      if (holdingCodes.has(code)) {
-        skipped.push(`${code}(보유중, ${avgScore.toFixed(0)}점)`);
+      if (protectedCodes.has(code)) {
+        skipped.push(`${code}(보호, ${avgScore.toFixed(0)}점)`);
         continue;
       }
 
@@ -193,12 +198,19 @@ export async function runDailyMarketScan(): Promise<void> {
   try {
     const pool = getPool();
 
-    // ── 0. 현재 보유 중인 종목 (절대 비활성화 금지) ──────────────────────
+    // ── 0. 보호 종목: 보유 중 + SEED/MANUAL 소스 ──────────────────────
     const { rows: holdingRows } = await pool.query(
       `SELECT DISTINCT stock_code FROM transaction_chains WHERE status = 'OPEN' AND total_quantity > 0 AND is_paper = $1`,
       [getCtxIsPaper()],
     );
     const holdingCodes = new Set(holdingRows.map((r: Record<string, unknown>) => String(r.stock_code)));
+    const { rows: protectedRows } = await pool.query(
+      `SELECT stock_code FROM watchlist WHERE source IN ('SEED', 'MANUAL') AND is_active = true`,
+    );
+    const protectedCodes = new Set([
+      ...holdingCodes,
+      ...protectedRows.map((r: Record<string, unknown>) => String(r.stock_code)),
+    ]);
 
     // ── 1. 일일 정리 — 상태 나쁜 종목 즉시 비활성화 ─────────────────────
     //   조건 A: 최근 3일 AI 평균 점수 < 35 (심각 저조)
@@ -222,7 +234,7 @@ export async function runDailyMarketScan(): Promise<void> {
 
     for (const row of activeRows) {
       const code = String(row.stock_code);
-      if (holdingCodes.has(code)) continue; // 보유 중 → 스킵
+      if (protectedCodes.has(code)) continue; // 보유 중 / SEED / MANUAL → 스킵
 
       const recordCount = Number(row.record_count ?? 0);
       const avgScore = Number(row.avg_score ?? 50);
@@ -306,6 +318,11 @@ export async function runDailyMarketScan(): Promise<void> {
 
           // 주가 범위 필터 (저가주·초고가주 제외)
           if (!price || price.currentPrice < 1000 || price.currentPrice > 600000) return;
+
+          // 국내 제약주 자동편입 차단 (CEO 지시 — 제약은 해외만)
+          const sName = (s.stock_name || price.stockName || '').toLowerCase();
+          const PHARMA_KEYWORDS = ['제약', '약품', '바이오', '셀', '젠', '팜', '메디', '헬스케어', 'pharm', 'bio'];
+          if (PHARMA_KEYWORDS.some(kw => sName.includes(kw))) return;
 
           let supplyScore = 0;
           const reasons: string[] = [];
