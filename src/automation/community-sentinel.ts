@@ -350,7 +350,7 @@ export function getCommunityScoreAdjustment(stockCode: string): number {
     if (!cached || Date.now() - cached.fetchedAt > CACHE_TTL_MS) return 0;
     const adj = cached.scoreAdj;
     if (!Number.isFinite(adj)) return 0;
-    return Math.max(-20, Math.min(8, adj));
+    return Math.max(-20, Math.min(10, adj));
   } catch (err) {
     logger.debug(`커뮤니티 스코어 조회 실패 (${stockCode}): ${err}`, { component: 'COMMUNITY' });
     return 0;
