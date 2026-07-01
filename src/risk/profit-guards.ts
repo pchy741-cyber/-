@@ -232,7 +232,7 @@ const SIZING_NORMAL = 1.0;
 const SIZING_BOOSTED = 1.2;
 
 // ── 가드 #3: 일일 손실 정지 ─────────────────────────
-const DAILY_LOSS_LIMIT_PCT = 99.0; // v16: OFF (손절만 유발, 회복 차단 — 킬스위치가 최후방어선)
+const DAILY_LOSS_LIMIT_PCT = 5.0; // v17: 복원 (live -5% 매수 정지, 킬스위치와 이중 방어)
 
 export interface DailyLossStatus {
   shouldStop: boolean;
@@ -276,8 +276,8 @@ export async function checkDailyLossStop(isPaper = false): Promise<DailyLossStat
       reason: `일일 PnL ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}% (${closedCount}건)`,
     };
   } catch (e) {
-    logger.warn(`일일 손실 체크 실패: ${(e as Error).message}`, { component: COMP });
-    return { shouldStop: false, todayPnlPct: 0, closedCount: 0, reason: '체크 실패' };
+    logger.warn(`일일 손실 체크 실패 → fail-closed (매수 정지): ${(e as Error).message}`, { component: COMP });
+    return { shouldStop: true, todayPnlPct: 0, closedCount: 0, reason: '체크 실패 → fail-closed' };
   }
 }
 
@@ -318,13 +318,29 @@ export async function checkBuyGate(params: {
     isUs: params.isUs,
   });
 
-  // v16: 일일 손실 → 소프트 (30% 축소, 완전 차단 제거)
+  // v17: 일일 손실 → live hard block 복원, paper soft(30% 축소)
   let dailyLossMult = 1.0;
   if (dailyLoss.shouldStop) {
+    if (!isPaper) {
+      return {
+        allowed: false,
+        amountMultiplier: 0,
+        reason: `🛑 일일 손실 한도 → 매수 차단: ${dailyLoss.reason}`,
+        details: { ev, sizing, dailyLoss, diversification },
+      };
+    }
     dailyLossMult = 0.3;
-    logger.warn(`📊 일일 손실 소프트: ${dailyLoss.reason} → 30% 축소`, { component: 'PROFIT_GUARD' });
+    logger.warn(`📊 일일 손실 소프트 (Paper): ${dailyLoss.reason} → 30% 축소`, { component: 'PROFIT_GUARD' });
   }
-  // v16: 다양화 → 소프트 (sizeMultiplier 반영, 하드블록 제거)
+  // v17: 다양화 → live hard block 복원 (checkDiversification에서 allowed=false 반환)
+  if (!diversification.allowed) {
+    return {
+      allowed: false,
+      amountMultiplier: 0,
+      reason: `🚫 다양화 가드: ${diversification.reason}`,
+      details: { ev, sizing, dailyLoss, diversification },
+    };
+  }
   let divMultiplier = 1.0;
   if (diversification.sizeMultiplier && diversification.sizeMultiplier < 1.0) {
     divMultiplier = diversification.sizeMultiplier;

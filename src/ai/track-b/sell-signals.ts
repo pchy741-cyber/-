@@ -236,7 +236,7 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
     ) {
       try {
         const { rowCount } = await getPool().query(
-          `UPDATE transaction_chains SET stop_loss_pct = 0, updated_at = NOW() WHERE id = $1 AND stop_loss_pct < 0`,
+          `UPDATE transaction_chains SET stop_loss_pct = 0 WHERE id = $1 AND stop_loss_pct < 0`,
           [chain.id],
         );
         if (rowCount && rowCount > 0) {

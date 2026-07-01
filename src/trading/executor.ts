@@ -70,7 +70,7 @@ export class TradeExecutor {
    * @returns true = 서킷브레이커 발동 (매수 차단)
    */
   private async _checkDailyCircuitBreaker(): Promise<boolean> {
-    const DAILY_LOSS_LIMIT = -99.0; // v16: 서킷브레이커 OFF (손절만 유발, 회복 차단)
+    const DAILY_LOSS_LIMIT = getCtxIsPaper() ? -10.0 : -5.0; // v17: 서킷브레이커 복원 (live -5%, paper -10%)
     try {
       const isPaper = getCtxIsPaper();
       const latest = await getLatestSnapshot(isPaper);
@@ -92,11 +92,12 @@ export class TradeExecutor {
       }
       return false;
     } catch (e) {
-      // fail-open: 서킷브레이커 조회 실패 시 매수 허용 (스냅샷 DB 장애가 매매를 막으면 안 됨)
-      logger.warn(`서킷브레이커 체크 실패 → 매수 허용 (fail-open): ${(e as Error).message}`, {
+      // v17: live=fail-closed (안전), paper=fail-open (가용성)
+      const failClosed = !getCtxIsPaper();
+      logger.warn(`서킷브레이커 체크 실패 → ${failClosed ? '매수 차단 (fail-closed)' : '매수 허용 (fail-open)'}: ${(e as Error).message}`, {
         component: 'CIRCUIT_BREAKER',
       });
-      return false;
+      return failClosed;
     }
   }
 
@@ -300,12 +301,13 @@ export class TradeExecutor {
       return;
     }
 
-    // v9: 동시 포지션 한도 확인 — _pendingBuyCount 포함하여 race condition 방지
-    // 이전: DB 체인만 세면 동시 매수 시 8/8→9/8 초과 발생
-    const allOpenChains = await getOpenChains(getCtxIsPaper());
+    // v17: 원자적 포지션 한도 체크 — DB 조회 전 slot 선점(optimistic lock)으로 race condition 제거
     const pk = this._getPendingKey();
+    this._pendingBuyCount[pk]++; // 먼저 슬롯 선점
+    const allOpenChains = await getOpenChains(getCtxIsPaper());
     const effectiveCount = allOpenChains.length + this._pendingBuyCount[pk];
-    if (effectiveCount >= config.risk.maxConcurrentPositions) {
+    if (effectiveCount > config.risk.maxConcurrentPositions) {
+      this._pendingBuyCount[pk]--; // 슬롯 반환
       releaseBuyIntent(stockCode);
       logger.warn(
         `⛔ 동시 포지션 한도 초과 (${effectiveCount}/${config.risk.maxConcurrentPositions}, pending=${this._pendingBuyCount[pk]}) → 신규 매수 차단: ${stockCode}`,
@@ -318,7 +320,6 @@ export class TradeExecutor {
       );
       return;
     }
-    this._pendingBuyCount[pk]++; // 예약 슬롯 확보
     try {
       // v9: 모든 exit path에서 _pendingBuyCount 감소 보장
 
@@ -775,6 +776,18 @@ export class TradeExecutor {
     if (!chain) {
       logger.warn(`물타기 실패: ${stockCode} 열린 체인 없음`, { component: 'EXECUTOR' });
       return;
+    }
+
+    // v17: ScaleIn 분할 진입도 Kill Switch + 서킷브레이커 재검증 (gate 우회 방지)
+    if (isScaleIn) {
+      if (isKillSwitchActiveForMode('KR', isPaperSnapshot)) {
+        logger.warn(`🛑 ScaleIn 차단: ${stockCode} Kill Switch 활성`, { component: 'EXECUTOR' });
+        return;
+      }
+      if (await this._checkDailyCircuitBreaker()) {
+        logger.warn(`🛑 ScaleIn 차단: ${stockCode} 서킷브레이커 발동`, { component: 'EXECUTOR' });
+        return;
+      }
     }
 
     // ScaleIn 분할 진입은 물타기 횟수 한도 적용 안 함 (계획된 분할이므로)

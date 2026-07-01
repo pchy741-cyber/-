@@ -1,35 +1,34 @@
 /**
  * 동시호가 선제 주문 (08:57 KST 실행)
  *
+ * v17: TradeExecutor.processDecisions() 경유 — 쿨다운/분산/손실 가드 적용
+ *
  * 흐름:
  *   1. AI 점수 DB에서 오늘 고점수(85+) 종목 조회
  *   2. 이미 보유 중인 종목 제외
- *   3. 전일 종가 + 2% 상한 지정가로 동시호가 매수 주문
+ *   3. TradeDecision[] 생성 → TradeExecutor 경유 (모든 가드 적용)
  *   4. 09:00 시초가 결정 시 체결 (지정가 이하면 체결, 초과면 미체결)
  *   5. 체결 확인은 09:01 Track B의 fill-reconciler가 처리
- *
- * KIS API: 동시호가 주문 = 일반 지정가 주문 (ORD_DVSN='00')을 08:30~09:00에 전송
  */
 
 import { getAllRecentScores } from '../db/repo/ai-scores.js';
 import { getCtxIsPaper } from '../config/context.js';
-import { getActiveStrategy, getOpenChains, getPool, insertOrder } from '../db/client.js';
-import { STRATEGY_PARAMS, OrderType, type StrategyMode } from '../config/constants.js';
+import { getActiveStrategy, getOpenChains } from '../db/client.js';
+import { STRATEGY_PARAMS, type StrategyMode } from '../config/constants.js';
 import { getAccountBalance, invalidateBalanceCache } from '../kis/account.js';
 import { getCurrentPrice } from '../kis/market.js';
-import { placeOrder } from '../kis/order.js';
 import { getAllocRisk } from '../db/alloc-risk-cache.js';
 import { isKillSwitchActive } from '../risk/kill-switch.js';
-import { paperTradeOrder } from '../risk/paper.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
 import { adjustToTickSize } from '../utils/money.js';
 import { logger } from '../utils/logger.js';
-import { getKSTNow } from '../utils/time.js';
+import { tradeExecutor } from '../trading/executor.js';
+import type { TradeDecision } from '../db/models.js';
 
 // ── 설정 ──
 const MIN_SCORE = 85; // 동시호가 진입 최소 AI 점수
 const MAX_PREMARKET_ORDERS = 2; // 동시호가 최대 주문 종목 수
-const PRICE_PREMIUM_PCT = 2.0; // 전일 종가 대비 +2% 상한 지정가 (시초가 > 102%면 미체결 → 안전)
+const PRICE_PREMIUM_PCT = 2.0; // 전일 종가 대비 +2% 상한 지정가
 const MIN_ORDER_KRW = 100_000; // 최소 주문금액 (10만원)
 
 /** 동시호가 주문 결과 */
@@ -98,13 +97,13 @@ export async function runPreMarketOrders(): Promise<PreMarketResult> {
   // 5. 전략 파라미터
   const strategy = await getActiveStrategy();
   const mode = (strategy?.mode ?? 'SWING') as StrategyMode;
-  const params = STRATEGY_PARAMS[mode] ?? STRATEGY_PARAMS.SWING;
 
   // 포지션 사이즈: 포트폴리오의 positionCapPct% (최대)
   const netAsset = balance.netAsset || orderableCash;
   const maxPositionKrw = netAsset * (allocRisk.positionCapPct / 100);
 
-  // 6. 상위 N종목 순회하며 주문
+  // 6. TradeDecision 배열 생성 → TradeExecutor 경유 (v17: 모든 가드 적용)
+  const decisions: TradeDecision[] = [];
   const orderCount = Math.min(candidates.length, MAX_PREMARKET_ORDERS, availableSlots);
   let remainingCash = orderableCash;
 
@@ -147,80 +146,21 @@ export async function runPreMarketOrders(): Promise<PreMarketResult> {
         { component: 'PRE_MARKET_ORDER' },
       );
 
-      // Paper 모드: 가상 체결
-      if (isPaper) {
-        await paperTradeOrder({
-          stockCode,
-          side: 'BUY',
-          quantity: tranche1,
-          price: limitPrice,
-        });
-        await insertOrder({
-          chain_id: null,
-          stock_code: stockCode,
-          side: 'BUY',
-          order_type: OrderType.LIMIT,
-          quantity: tranche1,
-          price: limitPrice,
-          kis_order_no: `PMO_P_${Date.now().toString(36)}`,
-          kis_status: 'PAPER_FILLED',
-          filled_quantity: tranche1,
-          filled_price: prevClose, // Paper: 전일종가로 체결 가정
-          status: 'FILLED',
-          trading_mode: 'paper',
-          trigger_source: 'PRE_MARKET_ORDER',
-          ai_reasoning: `[동시호가][AI:${score.composite_score}] ${score.reasoning?.slice(0, 100) ?? ''}`,
-        });
-        result.ordered++;
-        remainingCash -= orderAmount;
-        result.details.push(`✅ ${stockCode} ${tranche1}주 @${limitPrice.toLocaleString()} (Paper)`);
-        continue;
-      }
-
-      // Live 모드: KIS 동시호가 주문 (지정가)
-      const orderResult = await placeOrder({
-        stockCode,
-        side: 'BUY',
-        quantity: tranche1,
-        price: limitPrice,
-        orderType: OrderType.LIMIT,
-      });
-
-      if (!orderResult.success) {
-        logger.error(`[동시호가] ${stockCode} 주문 실패: ${orderResult.message}`, { component: 'PRE_MARKET_ORDER' });
-        result.skipped++;
-        result.details.push(`❌ ${stockCode} 주문 실패: ${orderResult.message}`);
-        continue;
-      }
-
-      // DB 기록 — PENDING 상태 (09:00 시초가 결정 후 체결 확인)
-      await insertOrder({
-        chain_id: null,
+      decisions.push({
+        action: 'BUY',
         stock_code: stockCode,
-        side: 'BUY',
-        order_type: OrderType.LIMIT,
         quantity: tranche1,
-        price: limitPrice,
-        kis_order_no: orderResult.orderNo,
-        kis_status: 'PENDING',
-        filled_quantity: 0,
-        filled_price: 0,
-        status: 'PENDING',
-        trading_mode: 'live',
+        price_type: 'LIMIT',
+        limit_price: limitPrice,
+        reasoning: `[동시호가][AI:${score.composite_score}] ${score.reasoning?.slice(0, 100) ?? ''}`,
+        confidence: (score.confidence ?? 50) / 100,
+        ai_score: score.composite_score ?? 0,
         trigger_source: 'PRE_MARKET_ORDER',
-        ai_reasoning: `[동시호가][AI:${score.composite_score}] ${score.reasoning?.slice(0, 100) ?? ''}`,
       });
 
-      result.ordered++;
       remainingCash -= orderAmount;
-      result.details.push(
-        `✅ ${stockCode} ${tranche1}주 @${limitPrice.toLocaleString()} (주문번호: ${orderResult.orderNo})`,
-      );
-
-      logger.info(
-        `✅ [동시호가][LIVE] ${stockCode} 주문 완료: ${tranche1}주 @${limitPrice.toLocaleString()} (KIS: ${orderResult.orderNo})`,
-        { component: 'PRE_MARKET_ORDER' },
-      );
+      result.ordered++;
+      result.details.push(`📋 ${stockCode} ${tranche1}주 @${limitPrice.toLocaleString()} → TradeExecutor 전달`);
     } catch (err: any) {
       logger.error(`[동시호가] ${stockCode} 예외: ${err.message}`, { component: 'PRE_MARKET_ORDER' });
       result.skipped++;
@@ -228,11 +168,17 @@ export async function runPreMarketOrders(): Promise<PreMarketResult> {
     }
   }
 
-  // 7. 텔레그램 알림
+  // 7. TradeExecutor 경유 — 쿨다운/분산/손실/킬스위치/EV 가드 모두 적용
+  if (decisions.length > 0) {
+    logger.info(`[동시호가][${modeLabel}] TradeExecutor에 ${decisions.length}건 전달`, { component: 'PRE_MARKET_ORDER' });
+    await tradeExecutor.processDecisions(decisions, mode, 'PRE_MARKET_ORDER');
+  }
+
+  // 8. 텔레그램 알림
   if (result.ordered > 0) {
     const msg =
       `📋 동시호가 선제주문 [${modeLabel}]\n` +
-      `주문 ${result.ordered}건 / 스킵 ${result.skipped}건\n` +
+      `전달 ${result.ordered}건 / 스킵 ${result.skipped}건\n` +
       result.details.join('\n');
     sendTelegramMessage(msg).catch(() => {});
   }
@@ -241,7 +187,7 @@ export async function runPreMarketOrders(): Promise<PreMarketResult> {
   invalidateBalanceCache();
 
   logger.info(
-    `[동시호가][${modeLabel}] 완료: ${result.ordered}건 주문, ${result.skipped}건 스킵`,
+    `[동시호가][${modeLabel}] 완료: ${result.ordered}건 전달, ${result.skipped}건 스킵`,
     { component: 'PRE_MARKET_ORDER' },
   );
   return result;

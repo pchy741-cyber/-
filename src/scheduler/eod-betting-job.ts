@@ -45,7 +45,7 @@ const PHI_TOTAL_STRESS = 0.146; // 14.6% — 스트레스 장세 최소
 // ── 하락장 방어 ──
 const KOSPI_DROP_BLOCK_PCT = -2.0; // KOSPI -2% 이상 하락 → 종가베팅 차단
 const KOSPI_DROP_REDUCE_PCT = -1.0; // KOSPI -1% 이상 → 종목수 축소
-const DAILY_LOSS_BLOCK_PCT = -99.0; // v16: OFF (손절만 유발, 종가베팅 기회 차단 방지)
+const DAILY_LOSS_BLOCK_PCT = -5.0; // v17: 복원 (-5% 이상 손실 시 종가베팅도 차단)
 
 // 중복 매수 방지 — paper/live 분리 (크로스오염 방지)
 const _eodBoughtToday = new Map<string, Set<string>>(); // key: 'paper'|'live'
