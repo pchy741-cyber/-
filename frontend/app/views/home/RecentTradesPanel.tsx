@@ -15,7 +15,7 @@ interface RecentTradesPanelProps {
   getStockName: (code: string) => string;
 }
 
-export default function RecentTradesPanel({
+function RecentTradesPanel({
   filled, holdingsTab, expandedTradeIdx, setExpandedTradeIdx, getStockName,
 }: RecentTradesPanelProps) {
   const isUsTab = holdingsTab === 'US';
@@ -65,3 +65,5 @@ export default function RecentTradesPanel({
     </Panel>
   );
 }
+
+export default React.memo(RecentTradesPanel);

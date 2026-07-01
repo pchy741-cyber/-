@@ -124,9 +124,9 @@ export function classifyStock(candles: DailyCandle[], tradingValue: number): Sig
   if (isScalpTarget(candles, tradingValue)) {
     return {
       class: 'SCALP_TARGET',
-      reason: '박스권 순환+거래대금1000억+ — 1% 단기익절 + 꺾인포인트 재진입',
-      suggestedTp: 1.0,
-      suggestedSl: -0.5,
+      reason: '박스권 순환+거래대금1000억+ — 1.5% 단기익절 + 꺾인포인트 재진입',
+      suggestedTp: 1.5, // v17: 1.0→1.5 (수수료0.26% 반영 순R:R 1.29:1, 기존 0.97:1은 손익분기)
+      suggestedSl: -0.7, // v17: -0.5→-0.7 (R:R 개선하면서 슬리피지 여유 확보)
     };
   }
 

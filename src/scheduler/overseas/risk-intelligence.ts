@@ -283,16 +283,17 @@ export function getPartialTpStages(sector: string, bucket?: string, momentum?: M
 
   if (isHighBeta) {
     return [
-      { stage: 1, triggerPct: accel ? 3.0 : 1.2, sellRatio: 0.25 }, // v15: 수수료0.7% 감안, 1.2% = 순이익 0.5%
+      // v17.1: 1.5→2.0% (연구: RT 0.70% 감안 순이익 최소 1.3% 필요, 1.5%→순0.8%는 슬리피지에 취약)
+      { stage: 1, triggerPct: accel ? 3.5 : 2.0, sellRatio: 0.20 },
       { stage: 2, triggerPct: 4.0, sellRatio: 0.20 },
       { stage: 3, triggerPct: 7.0, sellRatio: 0.20 },
       { stage: 4, triggerPct: 11.0, sellRatio: 0.20 },
-      { stage: 5, triggerPct: 16.0, sellRatio: 0.15 },
+      { stage: 5, triggerPct: 16.0, sellRatio: 0.20 }, // 15→20% (마지막 스테이지 비중 증가)
     ];
   }
   if (isDefense) {
     return [
-      { stage: 1, triggerPct: accel ? 2.0 : 1.0, sellRatio: 0.25 }, // v15: 방어 1.0%
+      { stage: 1, triggerPct: accel ? 3.0 : 2.0, sellRatio: 0.25 }, // v17.1: 1.2→2.0% (RT 0.70% 감안 순이익 1.3% 확보, 근거: 최소 TP>2×fee)
       { stage: 2, triggerPct: 3.5, sellRatio: 0.25 },
       { stage: 3, triggerPct: 5.5, sellRatio: 0.25 },
       { stage: 4, triggerPct: 8.0, sellRatio: 0.25 },
@@ -300,11 +301,12 @@ export function getPartialTpStages(sector: string, bucket?: string, momentum?: M
   }
   // 일반 종목
   return [
-    { stage: 1, triggerPct: accel ? 2.5 : 1.2, sellRatio: 0.25 }, // v15: 1.5→1.2% (수수료 감안 합리적 수준)
+    // v17.1: 1.5→2.0% (연구: RT 0.70% 감안 순이익 최소 1.3%, Stage 1은 수수료 2배 이상이 안전)
+    { stage: 1, triggerPct: accel ? 3.0 : 2.0, sellRatio: 0.20 },
     { stage: 2, triggerPct: 4.0, sellRatio: 0.20 },
     { stage: 3, triggerPct: 6.0, sellRatio: 0.20 },
     { stage: 4, triggerPct: 9.0, sellRatio: 0.20 },
-    { stage: 5, triggerPct: 14.0, sellRatio: 0.15 },
+    { stage: 5, triggerPct: 14.0, sellRatio: 0.20 }, // 15→20%
   ];
 }
 
@@ -391,9 +393,14 @@ export function calcDynamicTpSl(params: {
   // 3.5/2.5/2.0% 기본 → 승자 빈도 ↑, 자본 회전 ↑
   const tunerTpAdj = tunerOverrides?.tp_base_pct;
   const tunerSlAdj = tunerOverrides?.sl_base_pct;
-  // v14: HIGH_BETA TP 4.5→5.5, SL 4.0→3.5 (기존 R:R=1.125 → 1.57, R:R 보정 불필요)
-  const baseTp = tunerTpAdj != null ? tunerTpAdj : isHighBeta ? 5.5 : isMediumBeta ? 2.5 : isDefense ? 2.0 : 2.5;
-  const baseSl = tunerSlAdj != null ? tunerSlAdj : isHighBeta ? 3.5 : isMediumBeta ? 2.5 : isDefense ? 2.0 : 2.5;
+  // v17 근거 기반 TP/SL 조정 — 수수료 0.70% RT 반영 실효 R:R 기준
+  // 연구: 최소 실효 R:R 1.3:1 (BEP WR 43%) 이상 필요 (LuxAlgo/QuantifiedStrategies)
+  // HIGH_BETA 7.0/3.5: 실효 (7.7-0.7)/(3.5+0.7) = 7.0/4.2 = 1.67:1 ✅
+  // MEDIUM_BETA 4.5/2.0: 실효 (5.2-0.7)/(2.0+0.7) = 4.5/2.7 = 1.67:1 ✅ (기존 3.5→1.30:1⚠️)
+  // DEFENSE 3.5/2.0: 실효 (4.2-0.7)/(2.0+0.7) = 3.5/2.7 = 1.30:1 ✅ (기존 2.0→0.74:1❌)
+  // OTHER 3.5/2.0: 실효 (4.2-0.7)/(2.0+0.7) = 3.5/2.7 = 1.30:1 ✅ (기존 2.5/2.5→0.78:1❌)
+  const baseTp = tunerTpAdj != null ? tunerTpAdj : isHighBeta ? 7.0 : isMediumBeta ? 4.5 : isDefense ? 3.5 : 3.5;
+  const baseSl = tunerSlAdj != null ? tunerSlAdj : isHighBeta ? 3.5 : isMediumBeta ? 2.0 : isDefense ? 2.0 : 2.0;
 
   const momentumExt =
     adx >= 35 && rsi >= 45 && rsi <= 68 ? 5.0 : adx >= 28 && rsi >= 45 && rsi <= 70 ? 2.0 : isMomentum ? 1.0 : 0;
@@ -445,21 +452,32 @@ export function calcDynamicTpSl(params: {
     }
   }
 
-  // ── R:R 비율 검증 — v10.9.4: R:R < minRR 시 SL 축소 우선 (기존: TP 확대 → 도달 불가능한 TP) ──
+  // ── R:R 비율 검증 — v17: 수수료 반영 실효 R:R 기준 (근거: 수수료 0.7%가 R:R 크게 왜곡) ──
+  // 연구: LuxAlgo 시뮬레이션 — R:R 1:1 이하는 수수료 후 음의 기대값
   const minRR = tunerOverrides?.risk_reward_ratio ?? 1.5;
-  const rr = tpPct / slPct;
-  if (rr > 4.0) {
+  const netTpPct = tpPct - roundTripFeePct; // 실효 순이익 (수수료 차감)
+  const netSlPct = slPct + roundTripFeePct; // 실효 순손실 (수수료 가산)
+  const rr = netTpPct / netSlPct; // v17: 수수료 반영 실효 R:R
+  const rawRR = tpPct / slPct; // 로깅용 raw R:R
+  if (rawRR > 4.0) {
     tpPct = Math.round(slPct * 4.0 * 10) / 10;
   } else if (rr < minRR) {
-    // TP를 올리는 대신 SL을 줄여서 R:R 보정 (단, SL 하한 유지)
-    const adjustedSl = Math.round((tpPct / minRR) * 10) / 10;
+    // v17: 수수료 반영 R:R 보정 — 실효 R:R ≥ minRR 되도록 TP 상향 또는 SL 하향
+    // 필요 TP = minRR × (SL + fee) + fee
+    const requiredTp = Math.round((minRR * (slPct + roundTripFeePct) + roundTripFeePct) * 10) / 10;
     const slFloor = isHighBeta ? 3.0 : 2.0;
-    if (adjustedSl >= slFloor) {
-      slPct = adjustedSl;
+    if (requiredTp <= tpCeil) {
+      tpPct = requiredTp; // TP 상향으로 R:R 충족
     } else {
-      // SL이 하한에 걸리면 TP 보정 (기존 방식 폴백)
-      slPct = slFloor;
-      tpPct = Math.round(slFloor * minRR * 10) / 10;
+      // TP 천장에 걸리면 SL 하향 (단, SL 하한 유지)
+      // 필요 SL = (TP - fee) / minRR - fee
+      const adjustedSl = Math.round(((tpPct - roundTripFeePct) / minRR - roundTripFeePct) * 10) / 10;
+      if (adjustedSl >= slFloor) {
+        slPct = adjustedSl;
+      } else {
+        slPct = slFloor;
+        tpPct = Math.round((minRR * (slFloor + roundTripFeePct) + roundTripFeePct) * 10) / 10;
+      }
     }
   }
 
@@ -470,8 +488,8 @@ export function calcDynamicTpSl(params: {
   if (scoreTpBonus) parts.push(`s${aiScore}+${scoreTpBonus}`);
   if (vixTpAdj) parts.push(`VIX${vixTpAdj > 0 ? '+' : ''}${vixTpAdj}`);
   if (atrPct && atrPct > 0) parts.push(`ATR${atrPct.toFixed(1)}`);
-  if (rr > 4.0) parts.push('RR>4→TP축소');
-  else if (rr < minRR) parts.push(`RR<${minRR}→조정`);
+  if (rawRR > 4.0) parts.push('RR>4→TP축소');
+  else if (rr < minRR) parts.push(`effRR${rr.toFixed(1)}<${minRR}→조정`);
 
   return { tpPct, slPct, tpLabel: parts.join('/') };
 }

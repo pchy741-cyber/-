@@ -190,12 +190,44 @@ export async function runQuickRescore(): Promise<{ scored: number; errors: numbe
     );
 
     // ai_scores UPSERT + history INSERT (시계열 추적)
+    // v17: 앙상블 점수 덮어쓰기 방지 — Gemini 앙상블 결과가 있으면 RSS만으로 덮어쓰지 않음
+    const existingScoresMap = new Map<string, { composite_score: number; hasEnsemble: boolean }>();
+    try {
+      const { rows: existingRows } = await getPool().query(
+        `SELECT stock_code, composite_score, gemini_summary IS NOT NULL AS has_ensemble
+         FROM ai_scores WHERE score_date = $1 AND stock_code = ANY($2)`,
+        [new Date(Date.now() + KST_OFFSET_MS).toISOString().slice(0, 10), codes],
+      );
+      for (const row of existingRows) {
+        existingScoresMap.set(String(row.stock_code), {
+          composite_score: Number(row.composite_score),
+          hasEnsemble: row.has_ensemble === true,
+        });
+      }
+    } catch { /* 조회 실패 시 보호 없이 진행 */ }
+
     let scored = 0;
     let errors = 0;
+    let skippedEnsemble = 0;
     const today = new Date(Date.now() + KST_OFFSET_MS).toISOString().slice(0, 10); // KST
     for (const r of results) {
       const enh = enhanced.get(r.stock_code);
       const finalScore = enh ? enh.finalScore : r.composite_score;
+
+      // v17: 앙상블 보호 — Gemini 분석 있는 점수는 RSS로 덮어쓰기 방지 (delta 15점+ 시만 갱신)
+      const existing = existingScoresMap.get(r.stock_code);
+      if (existing?.hasEnsemble) {
+        const delta = Math.abs(finalScore - existing.composite_score);
+        if (delta < 15) {
+          skippedEnsemble++;
+          continue; // 앙상블 점수 보호 — 소폭 변동은 무시
+        }
+        logger.info(
+          `⚡ ${r.stock_code}: 앙상블 점수 갱신 허용 (Δ${delta.toFixed(0)}점 ≥ 15)`,
+          { component: COMP },
+        );
+      }
+
       try {
         await upsertAIScore({
           stock_code: r.stock_code,
@@ -267,7 +299,7 @@ export async function runQuickRescore(): Promise<{ scored: number; errors: numbe
     );
 
     const elapsed = ((Date.now() - start) / 1000).toFixed(1);
-    logger.info(`⚡ Quick Re-Score 완료: ${scored}건 갱신, ${errors}건 에러 (${elapsed}초)`, { component: COMP });
+    logger.info(`⚡ Quick Re-Score 완료: ${scored}건 갱신, ${errors}건 에러, ${skippedEnsemble}건 앙상블보호 (${elapsed}초)`, { component: COMP });
     // 마지막 실행 시각 system_state에 기록
     try {
       await getPool().query(

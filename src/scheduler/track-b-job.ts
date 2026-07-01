@@ -10,9 +10,10 @@ import { isMarketOpen } from '../kis/market.js';
 import { sendByPaperFlag } from '../notifications/mode-message.js';
 import { isKillSwitchActive, reportError, reportSuccess } from '../risk/kill-switch.js';
 import { tradeExecutor } from '../trading/executor.js';
+import { managePendingOrders } from '../trading/pending-order-manager.js';
 import { logger } from '../utils/logger.js';
 import { getKSTNow } from '../utils/time.js';
-import { reportNoBuyCandidates } from './loop-mode.js';
+import { getKrMarketPhase, reportNoBuyCandidates } from './loop-mode.js';
 import { isOpeningBellCompleted } from './opening-bell-job.js';
 
 const isRunningMap = new Map<'paper' | 'live', boolean>([
@@ -95,15 +96,33 @@ export async function runTrackBJob(): Promise<void> {
     const rawDecisions = await runTrackBPipeline();
     reportNoBuyCandidates(!rawDecisions.some((d) => d.action === 'BUY' || d.action === 'AVERAGE_DOWN'));
 
-    // v16.2.3: Track B 역할 전환 — 매수 제거, 손익관리 전담
-    // Pipeline은 분석 데이터 수집용으로 유지하되 BUY/AVERAGE_DOWN은 실행하지 않음
-    const buyBlocked = rawDecisions.filter((d) => d.action === 'BUY' || d.action === 'AVERAGE_DOWN');
-    const decisions = rawDecisions.filter((d) => d.action !== 'BUY' && d.action !== 'AVERAGE_DOWN');
-    if (buyBlocked.length > 0) {
-      logger.info(
-        `🔇 Track B 매수 차단 (손익관리 전담): ${buyBlocked.length}건 BUY/AVG_DOWN 스킵 [${buyBlocked.map((d) => d.stock_code).join(',')}]`,
-        { component: 'SCHEDULER' },
-      );
+    // v17: Track B 매수 재활성화 — 골든타임(09:13~10:20, 13:00~15:00)에만 매수 허용
+    // v16.2.3에서 매수 완전 차단 → 09:12 이후 15:10까지 6시간 매수 공백 발생
+    // 근거: LuxAlgo 연구 — 장중 모멘텀 기회를 6시간 놓치면 승률 높은 엔트리 포인트 상실
+    const phase = getKrMarketPhase();
+    const isBuyAllowedPhase = phase === 'GOLDEN_AM' || phase === 'GOLDEN_PM';
+    const buyActions = rawDecisions.filter((d) => d.action === 'BUY' || d.action === 'AVERAGE_DOWN');
+    const sellActions = rawDecisions.filter((d) => d.action !== 'BUY' && d.action !== 'AVERAGE_DOWN');
+
+    let decisions: typeof rawDecisions;
+    if (isBuyAllowedPhase) {
+      // 골든타임: 매수 허용 (Track B 분석 품질 그대로 활용)
+      decisions = rawDecisions;
+      if (buyActions.length > 0) {
+        logger.info(
+          `🟢 Track B 골든타임 매수 허용 (${phase}): ${buyActions.length}건 [${buyActions.map((d) => d.stock_code).join(',')}]`,
+          { component: 'SCHEDULER' },
+        );
+      }
+    } else {
+      // 비골든타임 (OPENING_BELL, CURSED, CLOSING_BELL): 매수 차단, 매도만
+      decisions = sellActions;
+      if (buyActions.length > 0) {
+        logger.info(
+          `🔇 Track B 매수 차단 (${phase}): ${buyActions.length}건 스킵 [${buyActions.map((d) => d.stock_code).join(',')}]`,
+          { component: 'SCHEDULER' },
+        );
+      }
     }
 
     // Kill Switch 활성 시 매수 차단, 매도(탈출)만 실행
@@ -198,7 +217,12 @@ export async function runTrackBJob(): Promise<void> {
       await sendByPaperFlag(getCtxIsPaper(), `🤖 Track B 실행:\n${summary}`);
     }
 
-    // 5. 매도 체결 후 60초 뒤 재스캔 — 모드별 타이머 분리 (paper/live 상호 취소 방지)
+    // 5. 예약주문(미체결 지정가) 관리 — 체결 확인, 재배치, 포기
+    await managePendingOrders().catch((e) =>
+      logger.warn(`📋 예약주문 관리 실패: ${(e as Error).message}`, { component: 'SCHEDULER' }),
+    );
+
+    // 6. 매도 체결 후 60초 뒤 재스캔 — 모드별 타이머 분리 (paper/live 상호 취소 방지)
     const hasSell = decisions.some((d) => d.action === 'SELL');
     if (hasSell) {
       const rescanMode: 'paper' | 'live' = getCtxIsPaper() ? 'paper' : 'live';

@@ -7,7 +7,7 @@
  * 왕복 수수료: 0.21% (매수 0.015% + 매도 0.015% + 거래세 0.18%)
  */
 
-import { SECTOR_MAP_KR } from '../../config/constants.js';
+import { BEAR_ADAPTIVE, SECTOR_MAP_KR } from '../../config/constants.js';
 import { safeQuery } from '../../db/pool.js';
 import { logger } from '../../utils/logger.js';
 
@@ -24,61 +24,72 @@ export interface PartialTpStage {
  * v15 Ultra Quick Win: Stage 1을 대폭 낮춰서 빠른 수익 확정 → 승률↑
  * 모멘텀(ADX≥28) 감지 시 기존 트리거 유지 → 위너 라이딩
  */
-export function getKrPartialTpStages(stockCode: string, adx?: number): PartialTpStage[] {
+export function getKrPartialTpStages(stockCode: string, adx?: number, bearMode?: boolean): PartialTpStage[] {
+  // 하락장 모드: 부분익절 비활성화 → TP 도달 시 전량 청산 (수수료 절감)
+  if (bearMode) {
+    return [];
+  }
+
   const sector = SECTOR_MAP_KR[stockCode] ?? '';
   // v15: ADX≥28이면 모멘텀 → 기존 높은 트리거로 위너 라이딩
   const accel = (adx ?? 0) >= 28;
 
+  // v11: 최소 트리거 1.0% 강제 (수수료 0.21% + 슬리피지 0.05% = 0.26% → 순익 0.74% 보장)
+  // 기존 0.6~0.7% 트리거는 수수료 감안 시 순익 0.39~0.49% → 슬리피지 포함 시 사실상 손실
+  const MIN_TRIGGER = 1.0;
+
+  let stages: PartialTpStage[];
+
   // 반도체/IT — 변동성 높은 대형주
   if (['반도체', 'IT', '전기전자'].includes(sector)) {
-    return [
-      { stage: 1, triggerPct: accel ? 2.0 : 0.7, sellRatio: 0.30 },  // v15 Hyper: 1.0→0.7% (수수료0.21% → 순이익0.49%)
+    stages = [
+      { stage: 1, triggerPct: accel ? 2.0 : 1.0, sellRatio: 0.30 },
       { stage: 2, triggerPct: 3.0, sellRatio: 0.25 },
       { stage: 3, triggerPct: 5.5, sellRatio: 0.20 },
       { stage: 4, triggerPct: 9.0, sellRatio: 0.15 },
       { stage: 5, triggerPct: 14.0, sellRatio: 0.10 },
     ];
-  }
-
-  // 방산/조선/에너지 — 중간 변동성
-  if (['방산', '조선', '에너지', '화학', '철강'].includes(sector)) {
-    return [
-      { stage: 1, triggerPct: accel ? 2.5 : 1.0, sellRatio: 0.30 }, // v15 Hyper: 1.5→1.0%
+  } else if (['방산', '조선', '에너지', '화학', '철강'].includes(sector)) {
+    // 방산/조선/에너지 — 중간 변동성
+    stages = [
+      { stage: 1, triggerPct: accel ? 2.5 : 1.2, sellRatio: 0.30 },
       { stage: 2, triggerPct: 3.5, sellRatio: 0.25 },
       { stage: 3, triggerPct: 6.0, sellRatio: 0.25 },
       { stage: 4, triggerPct: 10.0, sellRatio: 0.20 },
     ];
-  }
-
-  // 바이오 — 고변동성
-  if (['바이오', '제약'].includes(sector)) {
-    return [
-      { stage: 1, triggerPct: accel ? 3.0 : 1.2, sellRatio: 0.25 }, // v15 Hyper: 1.8→1.2%
+  } else if (['바이오', '제약'].includes(sector)) {
+    // 바이오 — 고변동성
+    stages = [
+      { stage: 1, triggerPct: accel ? 3.0 : 1.5, sellRatio: 0.25 },
       { stage: 2, triggerPct: 4.5, sellRatio: 0.20 },
       { stage: 3, triggerPct: 8.0, sellRatio: 0.20 },
       { stage: 4, triggerPct: 13.0, sellRatio: 0.20 },
       { stage: 5, triggerPct: 20.0, sellRatio: 0.15 },
     ];
-  }
-
-  // 금융/유틸리티 — 저변동성, 빠른 확정
-  if (['금융', '은행', '보험', '유틸리티', '통신'].includes(sector)) {
-    return [
-      { stage: 1, triggerPct: accel ? 1.5 : 0.6, sellRatio: 0.35 }, // v15 Hyper: 0.8→0.6% (수수료0.21% → 순이익0.39%, 슬리피지 감안)
+  } else if (['금융', '은행', '보험', '유틸리티', '통신'].includes(sector)) {
+    // 금융/유틸리티 — 저변동성
+    stages = [
+      { stage: 1, triggerPct: accel ? 1.5 : 1.0, sellRatio: 0.30 },
       { stage: 2, triggerPct: 2.0, sellRatio: 0.25 },
       { stage: 3, triggerPct: 4.0, sellRatio: 0.25 },
       { stage: 4, triggerPct: 7.0, sellRatio: 0.15 },
     ];
+  } else {
+    // 기본 (자동차, 건설 등)
+    stages = [
+      { stage: 1, triggerPct: accel ? 2.0 : 1.0, sellRatio: 0.30 },
+      { stage: 2, triggerPct: 3.0, sellRatio: 0.25 },
+      { stage: 3, triggerPct: 5.5, sellRatio: 0.20 },
+      { stage: 4, triggerPct: 8.5, sellRatio: 0.15 },
+      { stage: 5, triggerPct: 12.0, sellRatio: 0.10 },
+    ];
   }
 
-  // 기본 (자동차, 건설 등)
-  return [
-    { stage: 1, triggerPct: accel ? 2.0 : 0.7, sellRatio: 0.30 }, // v15 Hyper: 1.0→0.7% (빠른 수익확정)
-    { stage: 2, triggerPct: 3.0, sellRatio: 0.25 },
-    { stage: 3, triggerPct: 5.5, sellRatio: 0.20 },
-    { stage: 4, triggerPct: 8.5, sellRatio: 0.15 },
-    { stage: 5, triggerPct: 12.0, sellRatio: 0.10 },
-  ];
+  // 최소 트리거 강제 클램핑 (수수료+슬리피지 보장)
+  return stages.map((s) => ({
+    ...s,
+    triggerPct: Math.max(s.triggerPct, MIN_TRIGGER),
+  }));
 }
 
 // ── DB 기반 스테이지 추적 (transaction_chains.metadata JSON) ──
@@ -116,8 +127,9 @@ export async function evaluateKrPartialTp(params: {
   pnlPct: number;
   totalQty: number;
   adx?: number; // ADX ≥35 추세 강하면 분할TP 지연
+  bearMode?: boolean; // 하락장 적응형 모드
 }): Promise<Array<{ action: 'PARTIAL_SELL'; quantity: number; stage: number; triggerPct: number }>> {
-  const { chainId, stockCode, pnlPct, totalQty, adx } = params;
+  const { chainId, stockCode, pnlPct, totalQty, adx, bearMode } = params;
 
   // 최소 2주 이상 보유해야 분할 의미 있음
   if (totalQty < 2) return [];
@@ -125,7 +137,7 @@ export async function evaluateKrPartialTp(params: {
   // 강한 추세(ADX ≥ 35)에서는 분할TP 임계값 +1.5% 상향 (추세 더 태우기)
   const trendBonus = (adx ?? 0) >= 35 ? 1.5 : 0;
 
-  const stages = getKrPartialTpStages(stockCode, adx);
+  const stages = getKrPartialTpStages(stockCode, adx, bearMode);
   const currentStage = await getKrPartialTpStageNum(chainId);
 
   const nextStage = stages.find(

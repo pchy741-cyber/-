@@ -3,6 +3,7 @@ import { getInvestorFlow } from '../../../automation/investor-flow.js';
 import { fetchShortSellingData } from '../../../automation/short-selling.js';
 import { getActiveWatchlist, getOpenChains, getPool } from '../../../db/client.js';
 import { getDailyChart } from '../../../kis/market.js';
+import { getFearGreedIndex } from '../../../market/external-signals.js';
 import { resolveRequestMode } from '../../guards/live-pin.js';
 
 export const marketDataRoutes = new Hono();
@@ -229,6 +230,30 @@ marketDataRoutes.get('/market/investor-flow', async (c) => {
     _flowCache = { data: items, fetchedAt: Date.now() };
     return c.json({ items, cached: false });
   } catch (err: any) {
+    return c.json({ error: 'Internal server error' }, 500);
+  }
+});
+
+// ── 시장 심리 (Fear & Greed + VIX) ──
+let _sentimentCache: { data: any; fetchedAt: number } = { data: null, fetchedAt: 0 };
+marketDataRoutes.get('/market/sentiment', async (c) => {
+  try {
+    // 60분 캐시 (getFearGreedIndex 내부도 60분 캐시)
+    if (_sentimentCache.data && Date.now() - _sentimentCache.fetchedAt < 60 * 60 * 1000) {
+      return c.json(_sentimentCache.data);
+    }
+    const sentiment = await getFearGreedIndex();
+    if (!sentiment) return c.json({ error: 'Sentiment data unavailable' }, 503);
+    const result = {
+      fearGreedScore: sentiment.fearGreedScore,
+      fearGreedLabel: sentiment.fearGreedLabel,
+      vix: sentiment.vix,
+      greedyStreak: sentiment.greedyStreak,
+      updatedAt: sentiment.updatedAt,
+    };
+    _sentimentCache = { data: result, fetchedAt: Date.now() };
+    return c.json(result);
+  } catch {
     return c.json({ error: 'Internal server error' }, 500);
   }
 });

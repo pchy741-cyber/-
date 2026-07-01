@@ -40,6 +40,12 @@ export interface PreTradeCheckResult {
   sizeMultiplier?: number;
 }
 
+/** 마지막 preTradeCheck 결과 (프론트 투명화용) */
+let _lastRiskSizing: { multiplier: number; factors: string[]; updatedAt: number } = {
+  multiplier: 1.0, factors: [], updatedAt: 0,
+};
+export function getLastRiskSizing() { return _lastRiskSizing; }
+
 // per-mode mutex: 동시 주문의 TOCTOU 방지
 const _validateLock = { paper: Promise.resolve(), live: Promise.resolve() };
 
@@ -173,6 +179,9 @@ export class RiskEngine {
     const adjustedOrderValue = Math.round(orderValue * sizeMult);
     const cashCheck = await this.checkCash(adjustedOrderValue, isPaper);
     if (!cashCheck.approved) return cashCheck;
+
+    // 프론트 투명화용 저장
+    _lastRiskSizing = { multiplier: sizeMult, factors: [...adj], updatedAt: Date.now() };
 
     if (sizeMult < 1.0) {
       logger.info(`📊 리스크 소프트 조정: ${(sizeMult * 100).toFixed(0)}% — ${adj.join(' | ')}`, { component: 'RISK' });

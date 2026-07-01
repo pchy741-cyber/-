@@ -138,6 +138,16 @@ export function startScheduler(): void {
     .then((m) => m.warmDartCacheFromDb())
     .catch((e) => logger.warn(`📊 DART 캐시 워밍 실패: ${e}`, { component: 'SCHEDULER' }));
 
+  // 워치독 복구 — 서버 재시작 시 진행 중이던 체결 후 보호 재개
+  import('../trading/post-fill-watchdog.js')
+    .then((m) => m.recoverWatchdogs())
+    .catch((e) => logger.warn(`🛡️ 워치독 복구 실패: ${e}`, { component: 'SCHEDULER' }));
+
+  // 예약주문 복구 — 서버 재시작 시 미체결 지정가 주문 재관리
+  import('../trading/pending-order-manager.js')
+    .then((m) => m.recoverPendingOrders())
+    .catch((e) => logger.warn(`📋 예약주문 복구 실패: ${e}`, { component: 'SCHEDULER' }));
+
   // v16.2: 서버 시작 직후 감시종목 뉴스 수집 (배포 후 뉴스 공백 방지)
   import('../automation/news-collector.js')
     .then((m) => m.collectWatchlistNews())
@@ -428,9 +438,10 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 08:40 — 장전 모닝브리프: 뉴스+매크로 → Gemini 합산 (비거래일 스킵 — AI 토큰 절약)
+  // 08:10 — 장전 모닝브리프: 뉴스+매크로 → Gemini 합산 (비거래일 스킵 — AI 토큰 절약)
+  // v17: 08:40→08:10 조기화 (07:30 Track A 완료 후 즉시, 08:55 장전스코어에 반영 시간 확보)
   cron.schedule(
-    '40 8 * * 1-5',
+    '10 8 * * 1-5',
     async () => {
       const { isTradingDay } = await import('../utils/holidays.js');
       if (!isTradingDay()) return;
@@ -728,9 +739,9 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 보유일 손절 체크 — 장중 10분 간격 (paper → live 이중 실행)
+  // 보유일 손절 체크 — 장중 5분 간격 (v11: 10분→5분, 손절 감지 지연 단축)
   cron.schedule(
-    '*/10 9-15 * * 1-5',
+    '*/5 9-15 * * 1-5',
     () => {
       runDomesticDual('보유체크', runHoldingCheckJob).catch((e) =>
         logger.error(`보유일 체크 실패: ${e}`, { component: 'SCHEDULER' }),
@@ -1264,6 +1275,35 @@ export function startScheduler(): void {
         }
       } catch (e) {
         logger.warn(`프리마켓 리서치 프리로드 실패: ${e}`, { component: 'SCHEDULER' });
+      }
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // v17: 미장 개장 시 뉴스 테마 재갱신 — 21:00 프리페치 TTL(2h) 만료 대응
+  // 23:00 KST (서머타임 개장 30분전) + 01:00 KST (미드세션) 프리페치
+  cron.schedule(
+    '0 23 * * 1-5',
+    async () => {
+      try {
+        const { prefetchAllNews } = await import('../api/routes/dashboard-news.js');
+        await prefetchAllNews();
+        logger.info('📰 미장 개장 뉴스 프리페치 완료 (23:00)', { component: 'SCHEDULER' });
+      } catch (e) {
+        logger.warn(`미장 개장 뉴스 프리페치 실패: ${e}`, { component: 'SCHEDULER' });
+      }
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+  cron.schedule(
+    '0 1 * * 2-6',
+    async () => {
+      try {
+        const { prefetchAllNews } = await import('../api/routes/dashboard-news.js');
+        await prefetchAllNews();
+        logger.info('📰 미장 미드세션 뉴스 프리페치 완료 (01:00)', { component: 'SCHEDULER' });
+      } catch (e) {
+        logger.warn(`미장 미드세션 뉴스 프리페치 실패: ${e}`, { component: 'SCHEDULER' });
       }
     },
     { timezone: MARKET.TIMEZONE },

@@ -563,19 +563,48 @@ export async function runDartResearch(
   return base;
 }
 
-// ── 배치: 다수 종목 순차 분석 ──
+// ── 배치: 캐시 즉시반환 + 미캐시 병렬 분석 ──
 
 export async function runDartResearchBatch(
   stockCodes: string[],
   options?: { year?: string; quarter?: 'annual' | 'h1' | 'q1' | 'q3' },
 ): Promise<DartResearchResult[]> {
-  const results: DartResearchResult[] = [];
+  const { year, quarter } = options?.year
+    ? { year: options.year, quarter: options.quarter ?? 'annual' }
+    : getCurrentQuarter();
+
+  // 1단계: 캐시 히트 즉시 수집 + 미캐시 분리
+  const cached: DartResearchResult[] = [];
+  const uncachedCodes: string[] = [];
   for (const code of stockCodes) {
-    const result = await runDartResearch(code, options);
-    results.push(result);
-    await sleep(800); // DART API rate limit 대응
+    const cacheKey = `${code}-${year}-${quarter}`;
+    const entry = _resultCache.get(cacheKey);
+    if (entry && Date.now() - entry.fetchedAt < RESULT_CACHE_TTL_MS) {
+      cached.push(entry.result);
+    } else {
+      uncachedCodes.push(code);
+    }
   }
-  return results;
+
+  if (uncachedCodes.length === 0) return cached; // 전부 캐시 히트 → 즉시 반환
+
+  // 2단계: 미캐시 종목 3개씩 병렬 처리 (DART API rate limit 감안)
+  // v17: 순차 800ms → 병렬 3개씩 1초 간격 (20종목: 기존 160초 → ~40초)
+  const PARALLEL_SIZE = 3;
+  const freshResults: DartResearchResult[] = [];
+  for (let i = 0; i < uncachedCodes.length; i += PARALLEL_SIZE) {
+    const batch = uncachedCodes.slice(i, i + PARALLEL_SIZE);
+    const batchResults = await Promise.allSettled(
+      batch.map((code) => runDartResearch(code, options)),
+    );
+    for (const r of batchResults) {
+      if (r.status === 'fulfilled') freshResults.push(r.value);
+    }
+    if (i + PARALLEL_SIZE < uncachedCodes.length) await sleep(1000); // DART rate limit
+  }
+
+  logger.info(`📊 DART 배치: 캐시 ${cached.length}건 즉시 + 신규 ${freshResults.length}건 분석`, { component: COMP });
+  return [...cached, ...freshResults];
 }
 
 /**

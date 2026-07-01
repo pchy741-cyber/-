@@ -131,10 +131,6 @@ import { GLOBAL_WATCHLIST, WATCHLIST_BY_CODE } from './overseas/watchlist.js';
  * AI(Claude) + 기술적 지표 복합 판단
  * 최대 5종목 동시 보유, 종목당 $1,500 / 20% 중 작은 값
  */
-// v12.1: LUNCH throttle 제거 — 점심 시간은 반전 확률 최고, gap-fill 패턴 다수 (기존: 30분 간격)
-// const _lastLunchRunAt = new Map<string, number>();
-// const LUNCH_THROTTLE_MS = 30 * 60 * 1000;
-
 export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boolean }): Promise<void> {
   // isPaper는 runWithMode(ctx)로 주입 — getCtxIsPaper()로 읽음
   const s = overseasState; // shorthand
@@ -146,8 +142,6 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
     return;
   }
 
-  // v12.1: LUNCH throttle 제거 — 정상 3분 간격 실행 (점심 반전 알파 포착)
-
   // Kill Switch: 매도(탈출)는 항상 허용, 매수만 차단 (아래에서 분기)
   const killSwitchBuyBlock = isKillSwitchActive(SCOPE);
   if (killSwitchBuyBlock) {
@@ -156,7 +150,7 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
 
   // DB Advisory Lock — Cloud Run 롤링 배포 시 동시 실행 방지
   const LOCK_ID = 0x4f564553 + (isPaper() ? 1 : 0); // 'OVES' + paper/live 분리
-  let lockClient: any = null;
+  let lockClient: import('pg').PoolClient | null = null;
   try {
     lockClient = await getPool().connect();
     const { rows } = await lockClient.query('SELECT pg_try_advisory_lock($1) AS locked', [LOCK_ID]);
@@ -687,18 +681,24 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
       isPaper(),
     );
 
-    // ── 1.5 커뮤니티 감성 수집 (StockTwits, fire-and-forget) ──
+    // ── 1.5 커뮤니티 감성 수집 (StockTwits) ──
+    // v17: fire-and-forget → await (기존: 캐시 비어있는 상태로 buy-filter 실행 → 커뮤니티 데이터 무효)
     // buy-filter 정렬에 -15~+5점 반영, 펌프 감지 시 매수 차단
-    fetchOverseasCommunity(techResults.map((t) => t.code))
-      .then((results) => {
-        if (results.size > 0) {
-          const blocked = [...results.values()].filter((r) => r.blockEntry);
-          if (blocked.length > 0) {
-            logger.warn(`🌐🚫 커뮤니티 펌프 감지: ${blocked.map((b) => b.symbol).join(',')}`, { component: SCOPE });
-          }
+    try {
+      const communityResults = await fetchOverseasCommunity(techResults.map((t) => t.code));
+      if (communityResults.size > 0) {
+        const blocked = [...communityResults.values()].filter((r) => r.blockEntry);
+        if (blocked.length > 0) {
+          logger.warn(`🌐🚫 커뮤니티 펌프 감지: ${blocked.map((b) => b.symbol).join(',')}`, { component: SCOPE });
         }
-      })
-      .catch(() => {});
+        const significant = [...communityResults.values()].filter((r) => r.scoreAdj !== 0);
+        logger.info(`🌐 커뮤니티 수집: ${communityResults.size}종목, 유의미 ${significant.length}건, 펌프 ${blocked.length}건`, { component: SCOPE });
+      } else {
+        logger.info(`🌐 커뮤니티 수집: 데이터 없음 (API 응답 0건)`, { component: SCOPE });
+      }
+    } catch (communityErr) {
+      logger.warn(`🌐 커뮤니티 감성 수집 실패: ${(communityErr as Error).message}`, { component: SCOPE });
+    }
 
     // ── 2. AI(Claude) 판단 ──
     // 최근 손절 종목 조기 조회 — AI에 recentlySold 마커 전달 (RECOVERY_BUY 판단용)
@@ -810,6 +810,57 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
 
     let aiDecisions: Awaited<ReturnType<typeof analyzeOverseasWithAI>> = [];
     let _hoistedSentimentScore: number | undefined; // v12.3: 감성 점수를 매수 필터까지 전달
+
+    // v17: 뉴스/감성 분석을 shouldCallAI 밖으로 추출 (기존: AI 쿨다운 시 뉴스 데이터 전부 스킵)
+    // mktCtx는 shouldCallAI 블록 안에서 생성되므로 별도 변수에 저장 → 나중에 주입
+    let _preNewsHeadlines: string[] = [];
+    let _preNewsTheme: { theme: string; reason: string; stocks: { code: string }[] } | null = null;
+    let _preNewsSummary: string | null = null;
+
+    // 뉴스 헤드라인 수집
+    try {
+      const { getMacroHeadlines } = await import('../automation/news-collector.js');
+      const headlines = await getMacroHeadlines().catch(() => []);
+      if (headlines.length > 0) {
+        _preNewsHeadlines = headlines.slice(0, 5).map((h: { title: string }) => h.title);
+      }
+    } catch { /* 뉴스 실패 시 헤드라인 없이 진행 */ }
+
+    // 뉴스 테마 + 요약 캐시 조회
+    try {
+      const { getCachedNewsTheme, getCachedNewsSummary, prefetchOverseasTheme } = await import('../api/routes/dashboard-news.js');
+      _preNewsTheme = getCachedNewsTheme();
+      if (!_preNewsTheme && isUSSession) {
+        logger.info('📰 뉴스 테마 캐시 만료 → US 장중 리프레시', { component: SCOPE });
+        try {
+          await prefetchOverseasTheme();
+          _preNewsTheme = getCachedNewsTheme();
+        } catch (refreshErr) {
+          logger.warn(`📰 뉴스 테마 리프레시 실패: ${(refreshErr as Error).message}`, { component: SCOPE });
+        }
+      }
+      _preNewsSummary = getCachedNewsSummary();
+    } catch { /* 뉴스 테마 실패 무시 */ }
+
+    // 매크로 뉴스 감성 분석 (Google NL API — AI 쿨다운과 무관하게 매 사이클 실행)
+    try {
+      if (_preNewsHeadlines.length >= 3) {
+        const { analyzeNewsSentiment } = await import('../automation/sentiment-analyzer.js');
+        const sentiment = await Promise.race([
+          analyzeNewsSentiment(_preNewsHeadlines),
+          new Promise<null>((r) => setTimeout(() => r(null), 12000)), // v17: 8s→12s
+        ]);
+        if (sentiment) {
+          _hoistedSentimentScore = sentiment.average.score;
+          logger.info(`📰 뉴스 감성: ${sentiment.average.label} (${sentiment.average.score.toFixed(2)})`, { component: SCOPE });
+        } else {
+          logger.warn('📰 뉴스 감성 분석 타임아웃 (12s 초과)', { component: SCOPE });
+        }
+      }
+    } catch (e) {
+      logger.warn(`📰 뉴스 감성 분석 실패: ${(e as Error).message}`, { component: SCOPE });
+    }
+
     if (shouldCallAI) {
       const fgEarly = _fgShared;
       const earningsEarly = _earningsShared;
@@ -852,47 +903,17 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
         }
       } catch { /* FRED 실패 시 매크로 없이 진행 */ }
 
-      // 뉴스 헤드라인 주입 (최근 매크로 뉴스 5건)
-      try {
-        const { getMacroHeadlines } = await import('../automation/news-collector.js');
-        const headlines = await getMacroHeadlines().catch(() => []);
-        if (headlines.length > 0) {
-          mktCtx.topHeadlines = headlines.slice(0, 5).map((h: { title: string }) => h.title);
-        }
-      } catch { /* 뉴스 실패 시 헤드라인 없이 진행 */ }
-
-      // v12.3: 뉴스 테마 + 감성 분석 → AI 프롬프트 & 매수 필터에 주입
-      try {
-        const { getCachedNewsTheme, getCachedNewsSummary } = await import('../api/routes/dashboard-news.js');
-        const theme = getCachedNewsTheme();
-        if (theme) {
-          mktCtx.newsTheme = theme.theme;
-          mktCtx.newsThemeReason = theme.reason;
-          // 테마 관련 종목 코드 (해외 watchlist 매칭용)
-          mktCtx.newsThemeStocks = theme.stocks.map((s: { code: string }) => s.code);
-        }
-        const summary = getCachedNewsSummary();
-        if (summary) {
-          mktCtx.newsSummary = summary;
-        }
-      } catch { /* 뉴스 테마 실패 무시 */ }
-
-      // 매크로 뉴스 감성 분석 (헤드라인 기반)
-      try {
-        const headlines = (mktCtx.topHeadlines as string[]) ?? [];
-        if (headlines.length >= 3) {
-          const { analyzeNewsSentiment } = await import('../automation/sentiment-analyzer.js');
-          const sentiment = await Promise.race([
-            analyzeNewsSentiment(headlines),
-            new Promise<null>((r) => setTimeout(() => r(null), 8000)),
-          ]);
-          if (sentiment) {
-            mktCtx.newsSentiment = sentiment.average.label;
-            mktCtx.newsSentimentScore = sentiment.average.score;
-            _hoistedSentimentScore = sentiment.average.score; // v12.3: 매수 필터에 전달
-          }
-        }
-      } catch { /* 감성 분석 실패 무시 */ }
+      // v17: 뉴스/감성은 shouldCallAI 밖으로 이동 — 프리페치 결과를 mktCtx에 주입
+      if (_preNewsHeadlines.length > 0) mktCtx.topHeadlines = _preNewsHeadlines;
+      if (_preNewsTheme) {
+        mktCtx.newsTheme = _preNewsTheme.theme;
+        mktCtx.newsThemeReason = _preNewsTheme.reason;
+        mktCtx.newsThemeStocks = _preNewsTheme.stocks.map((s) => s.code);
+      }
+      if (_preNewsSummary) mktCtx.newsSummary = _preNewsSummary;
+      if (_hoistedSentimentScore != null) {
+        mktCtx.newsSentimentScore = _hoistedSentimentScore;
+      }
 
       // Gemini 활성 → AI 분석, 비활성 → 규칙기반 ($0)
       const { config: appConfig } = await import('../config/index.js');
@@ -960,8 +981,8 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
         .slice(0, 10);
       if (uncachedTickers.length > 0) {
         logger.info(`SEC 리서치 자동 실행: ${uncachedTickers.join(', ')}`, { component: 'OVERSEAS' });
-        await runSecResearchBatch(uncachedTickers).catch((e: any) =>
-          logger.warn(`SEC 리서치 실패 (스킵): ${e.message}`, { component: 'OVERSEAS' }),
+        await runSecResearchBatch(uncachedTickers).catch((e) =>
+          logger.warn(`SEC 리서치 실패 (스킵): ${(e as Error).message}`, { component: 'OVERSEAS' }),
         );
       }
     } catch { /* SEC 모듈 로드 실패 무시 */ }
@@ -1266,7 +1287,8 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
       }
     }
 
-    const minCashForBuy = portfolioValue * (isPaper() ? 0.15 : 0.05); // Live 5%, Paper 15% — 통합증거금 적극 활용
+    // v17: Paper 15→10% (매수 기회 확보, 학습용이므로 증거금 여유 불필요)
+    const minCashForBuy = portfolioValue * (isPaper() ? 0.10 : 0.05);
     if (riskBlocked || allocBlocked || currentHoldingCount >= MAX_POSITIONS || cash < minCashForBuy) {
       const reasons: string[] = [];
       if (riskBlocked) reasons.push(`리스크차단(-${lossPctOfPortfolio.toFixed(1)}%)`);
@@ -1448,6 +1470,7 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
         newsThemeSectors,
         newsSentimentScore,
         allocRiskData: allocRisk,
+        nasdaqChange1d,
       });
 
       // ── Paper→Live 브릿지: paper 매수 후보를 live에 전달 ──

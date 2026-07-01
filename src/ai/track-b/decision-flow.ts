@@ -343,6 +343,7 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
         pnlPct,
         totalQty: chain.total_quantity,
         adx,
+        bearMode: kospiRegime.penalty >= 1 || params.macroRiskOff,
       });
       for (const ptp of ptpResults) {
         decisions.push({

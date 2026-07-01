@@ -22,7 +22,7 @@ const STRATEGY_TP_SL: Record<string, [number, number]> = {
   SWING: [5.5, -3.0], DEFENSE: [5.0, -2.0], SCALPING: [0.8, -0.8], DIVIDEND: [3.0, -1.5], SNIPER: [8.0, -4.0], EOD_BETTING: [5.0, -3.0],
 };
 
-export default function KrHoldingsTab({ chains, dash, busyAction, guard, getStockName, onRefresh, viewMode = 'live', toast, confirm }: KrHoldingsTabProps) {
+function KrHoldingsTab({ chains, dash, busyAction, guard, getStockName, onRefresh, viewMode = 'live', toast, confirm }: KrHoldingsTabProps) {
   const priceMap = useMemo(() => {
     const m: Record<string, number> = {};
     chains.forEach(ch => { if ((ch.currentPrice ?? 0) > 0) m[ch.stock_code] = ch.currentPrice!; });
@@ -114,6 +114,18 @@ export default function KrHoldingsTab({ chains, dash, busyAction, guard, getStoc
                     ? <span className="text-[8px] bg-amber-500/20 text-amber-300 border border-amber-500/40 px-1 py-px rounded font-bold shrink-0">🎰종가</span>
                     : <span className="text-[8px] bg-blue-500/10 text-blue-400 px-1 py-px rounded font-medium shrink-0">{ch.strategy_mode}</span>}
                   {ch.status === 'PROFIT_TAKING' && <span className="text-[8px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-1 py-px rounded font-bold shrink-0">2단계↑</span>}
+                  {/* SL 거리 긴급도 배지 */}
+                  {(ch.currentPrice ?? 0) > 0 && (() => {
+                    const slDist = pnlPct - stopPct; // SL까지 남은 %p
+                    if (slDist > 5) return null; // 여유 있음 — 표시 불필요
+                    const urgent = slDist <= 1.5;
+                    const warn = slDist <= 3;
+                    return (
+                      <span className={`text-[8px] px-1 py-px rounded font-bold shrink-0 tabular-nums ${urgent ? 'bg-rose-500/30 text-rose-300 border border-rose-500/40 animate-pulse' : warn ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30' : 'bg-slate-500/15 text-slate-400'}`}>
+                        SL {slDist > 0 ? slDist.toFixed(1) : '0'}%p
+                      </span>
+                    );
+                  })()}
                 </div>
                 <div className="text-[11px] text-slate-500 mt-0.5">평단 {fmtWon(avgPrice)} · {fmt(qty)}주{weight !== null ? ` · 비중 ${weight}%` : ''}</div>
               </div>
@@ -204,3 +216,5 @@ export default function KrHoldingsTab({ chains, dash, busyAction, guard, getStoc
     </div>
   );
 }
+
+export default React.memo(KrHoldingsTab);

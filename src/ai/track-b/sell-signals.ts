@@ -1,5 +1,5 @@
 import { analyzeTechnicals } from '../../analysis/indicators.js';
-import { getDynamicDomesticTpSl, STRATEGY_PARAMS, type StrategyMode } from '../../config/constants.js';
+import { BEAR_ADAPTIVE, getDynamicDomesticTpSl, STRATEGY_PARAMS, type StrategyMode } from '../../config/constants.js';
 import { getLearnedParameters } from '../../automation/self-learning/index.js';
 import { getCtxIsPaper } from '../../config/context.js';
 import { getPool } from '../../db/client.js';
@@ -204,6 +204,30 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
     // 이미 이 체인에 대해 결정이 내려졌으면 스킵
     if (processedSellChains.has(chain.id)) continue;
 
+    // ── 시간손절: maxHoldingDays 초과 시 강제 청산 (v11: 전수조사 — 미구현 버그 수정) ──
+    {
+      const modeParams = STRATEGY_PARAMS[chain.strategy_mode as StrategyMode];
+      const maxDays = modeParams?.maxHoldingDays ?? 15;
+      const openedMs = chain.opened_at ? new Date(chain.opened_at).getTime() : 0;
+      const holdingDays = openedMs > 0 ? (Date.now() - openedMs) / 86_400_000 : 0;
+      if (holdingDays > maxDays && chain.total_quantity > 0) {
+        logger.info(
+          `⏰ 시간손절: ${chain.stock_code} ${holdingDays.toFixed(1)}일 > ${maxDays}일 pnl=${pnlPct.toFixed(1)}%`,
+          { component: 'SELL_SIGNALS' },
+        );
+        decisions.push({
+          action: 'SELL',
+          stock_code: chain.stock_code,
+          quantity: chain.total_quantity,
+          price_type: 'MARKET',
+          reasoning: `시간손절(${holdingDays.toFixed(0)}d>${maxDays}d): pnl=${pnlPct.toFixed(1)}%`,
+          confidence: 0.85,
+        });
+        processedSellChains.add(chain.id);
+        continue;
+      }
+    }
+
     // ── v16.1 러너 모멘텀 감지 (강화: 거래량+ADX+RSI+정배열+MACD 복합) ──
     const _rTech = getCachedTech(chain.stock_code);
     const isRunner = (() => {
@@ -224,28 +248,31 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
       );
     }
 
-    // ── BreakEvenGuard: +1.5% 도달 시 SL → 본절(0%)로 자동 상향 ────────────
-    // pnl +1.5% 도달 순간 기존 SL(예: -3%)을 0%로 이동 → 원금 손실 방지
-    // WHERE stop_loss_pct < 0: 낙관적 잠금 — 동시 사이클 중복 업데이트 방지 (이미 0이면 rowCount=0)
+    // ── BreakEvenGuard: +2.0% 도달 시 SL 상향 ────────────
+    // 근거: "인트라데이 BE 스탑은 장기 수익성 크게 저하" (tradingheroes.com, easylanguagemastery.com)
+    // - SWING(장기): SL → 0% (4H+ 타임프레임에서 BE 유효)
+    // - 기타: SL → -0.3% (수수료 버퍼 유지, 조기 청산 방지)
+    // - 활성화 임계: 1.5% → 2.0% (인트라데이 노이즈 필터)
+    const beTargetSl = chain.strategy_mode === 'SWING' ? 0 : -0.3;
     if (
       chain.strategy_mode !== 'SCALPING' &&
       chain.status !== 'PROFIT_TAKING' &&
-      pnlPct >= 1.5 &&
+      pnlPct >= 2.0 &&
       chain.stop_loss_pct != null &&
-      Number(chain.stop_loss_pct) < 0
+      Number(chain.stop_loss_pct) < beTargetSl
     ) {
       try {
         const { rowCount } = await getPool().query(
-          `UPDATE transaction_chains SET stop_loss_pct = 0, updated_at = NOW() WHERE id = $1 AND stop_loss_pct < 0`,
-          [chain.id],
+          `UPDATE transaction_chains SET stop_loss_pct = $2, updated_at = NOW() WHERE id = $1 AND stop_loss_pct < $2`,
+          [chain.id, beTargetSl],
         );
         if (rowCount && rowCount > 0) {
-          (chain as Record<string, unknown>).stop_loss_pct = 0;
-          logger.info(`🛡️ BreakEvenGuard: ${chain.stock_code} SL → 0%(본절) [pnl +${pnlPct.toFixed(1)}%]`, {
-            component: 'TRACK_B',
-          });
+          (chain as Record<string, unknown>).stop_loss_pct = beTargetSl;
+          logger.info(
+            `🛡️ BreakEvenGuard: ${chain.stock_code} SL → ${beTargetSl}% [pnl +${pnlPct.toFixed(1)}%, ${chain.strategy_mode}]`,
+            { component: 'TRACK_B' },
+          );
         }
-        // rowCount=0: 다른 사이클이 이미 업데이트 → 무시 (정상)
       } catch (e) {
         logger.warn(`BreakEvenGuard DB 실패 (${chain.stock_code}): ${(e as Error).message}`, { component: 'TRACK_B' });
       }
@@ -354,9 +381,27 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
         const sniperTypeMatch = triggerSrcForTrail?.match(/SNIPER[_\s]?(\w+)/);
         const chainSniperType = sniperTypeMatch?.[1] ?? null;
         const learnedMult = chainSniperType ? learnedParams.trailingStopMultipliers[chainSniperType] : undefined;
-        // 안전 범위 확장: 0.5%~5.0% (기존 2.5% 상한 → 상한가 모멘텀 종목 조기 청산 방지)
-        const baseTrailDrop = learnedMult != null ? -Math.max(0.5, Math.min(5.0, learnedMult)) : isRunner ? -3.0 : -2.0; // v12.1: -1.5→-2.0 (일반 리트레이스먼트 휩소 방지)
-        // 고점 수익률 비례 숨고르기 허용폭 확장 (부국철강 +30% 상한가 조기 매도 재발 방지)
+        // v11: -2.5→-1.8 (전수조사: -2.5% 너무 느슨 → 0.2-0.4%/거래 수익 유실)
+        // 러너(폭발 모멘텀)만 -3.0으로 넓게 유지 (56,555건 연구 — 러너는 더 넓은 트레일이 수익)
+        let baseTrailDrop = learnedMult != null ? -Math.max(0.5, Math.min(5.0, learnedMult)) : isRunner ? -3.0 : -1.8;
+
+        // 캔들+볼륨 보정 (근거: VWAP 연구 Sharpe 3.99, 캔들 종가 기준)
+        const _trailChartData = chartData?.get(chain.stock_code);
+        if (_trailChartData && _trailChartData.length >= 3) {
+          const _trailPatterns = (await import('../../analysis/patterns.js')).detectCandlePatterns(_trailChartData);
+          const hasBearish = _trailPatterns.some((p: { bullish: boolean; strength: string }) => !p.bullish && p.strength !== 'WEAK');
+          const hasBullish = _trailPatterns.some((p: { bullish: boolean; strength: string }) => p.bullish && p.strength !== 'WEAK');
+          if (hasBearish) baseTrailDrop *= 0.6; // 약세 캔들 → 40% 타이트
+          else if (hasBullish) baseTrailDrop *= 1.2; // 강세 캔들 → 20% 완화
+          const _trailTech = getCachedTech(chain.stock_code);
+          if (_trailTech) {
+            if (_trailTech.volumeRatio < 0.5) baseTrailDrop *= 0.7; // 볼륨 소진
+            else if (_trailTech.volumeRatio >= 3.0) baseTrailDrop *= 0.75; // 클라이맥스
+            if (_trailTech.rsi14 < 40) baseTrailDrop *= 0.85; // RSI 약세
+          }
+        }
+
+        // 고점 수익률 비례 숨고르기 허용폭 확장
         const momentumBonus = curPeak >= 15 ? 4.5 : curPeak >= 10 ? 3.0 : curPeak >= 5 ? 1.5 : 0;
         const trailingDrop = Math.max(baseTrailDrop - momentumBonus, -10.0);
 
@@ -677,6 +722,12 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
     const chainSl = chain.stop_loss_pct ?? STRATEGY_PARAMS[chain.strategy_mode as StrategyMode]?.stopLossPct ?? -3;
     effectiveTp = Math.min(Number(chainTp), dyn.takeProfitPct); // chain TP 상한 — 설정값 초과 방지
     effectiveSl = Math.max(Number(chainSl), dyn.stopLossPct); // 더 타이트한 SL (음수이므로 max = 덜 부정적 = 타이트)
+
+    // 하락장 적응형 모드: TP/SL 축소 (근거: R:R 1.5:1, 승률 45%+ 양의 기대값)
+    if (isDowntrendMode && chain.strategy_mode !== 'DIVIDEND') {
+      effectiveTp = Math.min(effectiveTp, BEAR_ADAPTIVE.TAKE_PROFIT_PCT);
+      effectiveSl = Math.max(effectiveSl, BEAR_ADAPTIVE.STOP_LOSS_PCT);
+    }
 
     // AI 약세 전환 + 수익 구간 → 빠른 수익 확정
     if (realtimeAiScore > 0 && realtimeAiScore < 55 && pnlPct > 1.0 && !isRunner) {

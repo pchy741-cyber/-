@@ -42,7 +42,7 @@ interface PortfolioSectionProps {
   viewMode?: 'paper' | 'live';
 }
 
-export default function PortfolioSection(props: PortfolioSectionProps) {
+function PortfolioSectionInner(props: PortfolioSectionProps) {
   const {
     allocConfig, setAllocConfig, onGoToSettings, dash, chains, usHoldings, usW,
     totalValue, totalInvested, domesticInvested, domesticEval, domesticCash, domesticOrderable,
@@ -266,3 +266,6 @@ export default function PortfolioSection(props: PortfolioSectionProps) {
     </div>
   );
 }
+
+const PortfolioSection = React.memo(PortfolioSectionInner);
+export default PortfolioSection;

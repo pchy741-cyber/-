@@ -294,6 +294,17 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
     const trailActivatePct = partialTpDone >= 1 ? 0 : (tunerOverrides.trail_activate_pct ?? baseTrailActivate) + (_isAccel ? 2.0 : 0);
     const minAiSellConf = isHighBeta ? MIN_AI_SELL_CONF_HIGH_BETA : MIN_AI_SELL_CONF_DEFAULT;
     const holdingDays = (Date.now() - new Date(holding.boughtAt).getTime()) / MS_PER_DAY;
+
+    // ── v17: 정체 포지션 SL 타이트닝 (Barber&Odean 2000: 비활성 포지션 장기 보유 = 수익 감소) ──
+    // 5일+ 보유 + 수익 1% 미만 + 추세 없음(ADX<18) → SL -2.0%로 타이트닝 (자본 효율)
+    if (holdingDays >= 5 && pnlPct < 1.0 && pnlPct > stopLossPct && tech.adx < 18 && !tech.isMomentum) {
+      const staleSl = -2.0;
+      if (staleSl > stopLossPct) {
+        logger.debug(`📉 정체SL타이트닝: ${code} ${holdingDays.toFixed(0)}일 PnL${pnlPct.toFixed(1)}% ADX${tech.adx.toFixed(0)} → SL ${stopLossPct.toFixed(1)}→${staleSl}%`, { component: 'OVERSEAS' });
+        stopLossPct = staleSl;
+      }
+    }
+
     // 🔧 강한 매도 신호(score≤-30 + 과매수) → minHold 완화 (HIGH_BETA 3→1일)
     const strongSellSignal = tech.score <= -30 && (tech.signal === 'SELL' || tech.signal === 'STRONG_SELL');
     const minHoldForSell = strongSellSignal ? 1 : isHighBeta ? 3 : 2;
@@ -445,8 +456,19 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
     } else if (pnlPct >= hardTpPct) {
       sellReason = `익절(${hardTpPct}%): +${pnlPct.toFixed(1)}%`;
 
-      // ── 4. 시간 기반 익절 — 8일+ 보유 & +3.0% 이상인데 모멘텀 없음 → 수익 확정 ──
-      // v12.1: 5일→8일, 1.5%→3.0% (기존: 5일에 수수료 수준 +1.5%로 조기 청산 → 80% 연속 기회 상실)
+      // ── 4. 시간 기반 익절 — 2단계 ──
+      // v17 Phase A: 3일+ 보유 & +2%+ 수익 & RSI 하락 중(65→50) & 모멘텀 없음 → 빠른 수익 확정
+      // 근거: Bulkowski — 수익 주고 돌아오는 시나리오에서 일찍 확정이 유리 (3/5)
+    } else if (
+      holdingDays >= 3 &&
+      pnlPct >= 2.0 &&
+      !tech.isMomentum &&
+      tech.rsi < 55 && tech.rsi > 30 &&
+      tech.adx < 22 &&
+      pnlPct < maxPnlPct - 0.5 // 고점 대비 하락 중
+    ) {
+      sellReason = `조기익절(${holdingDays.toFixed(0)}일/+${pnlPct.toFixed(1)}%): RSI=${tech.rsi.toFixed(0)} 하락중 ADX=${tech.adx.toFixed(0)} → 수익확정`;
+      // v12.1 Phase B: 8일+ 보유 & +3.0% 이상인데 모멘텀 없음 → 수익 확정
     } else if (
       holdingDays >= 8 &&
       pnlPct >= 3.0 &&

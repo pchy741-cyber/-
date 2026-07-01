@@ -91,6 +91,22 @@ export type StrategyMode = (typeof StrategyMode)[keyof typeof StrategyMode];
 //   • KOSPI 대형주 일평균 변동폭: 1~2%, 중소형주: 2~5%
 //   • 5종목 분산 시 비체계적 리스크 80% 감소 (KOSPI 평균 상관계수 0.45 기준)
 //
+// ── 하락장 적응형 모드 (macroSizingMult ≤ 0.8 시 활성화) ──
+// 근거 (전수조사 수정):
+//   • 기존 TP1.5%/SL-1.0% → 실현 R:R=1.29:1.21 → 승률48.4% 필요 (하락장 30% WR → 음의 EV)
+//   • 수정: TP 2.5% / SL -1.5% → 실현 R:R=2.29:1.71 → 승률 42.8% (하락장에서도 +EV 가능)
+//   • 부분익절 비활성화 → TP 도달 시 전량 청산 (수수료 절감)
+//   • 포지션 0.3x, 최대 2개 → 리스크 노출 최소화 (volatilitybox.com 595심볼 연구)
+export const BEAR_ADAPTIVE = {
+  TAKE_PROFIT_PCT: 2.5,
+  STOP_LOSS_PCT: -1.5,
+  PARTIAL_TP_STAGES: [] as readonly { stage: number; triggerPct: number; sellRatio: number }[],
+  MAX_POSITION_COUNT: 2,
+  POSITION_SIZE_MULT: 0.3,
+  MAX_HOLDING_DAYS: 2,
+  TRAILING_ACTIVATE_PCT: 1.0,
+} as const;
+
 export const STRATEGY_PARAMS = {
   SWING: {
     // ┌─ 전략 최적화 v11 (2026-06: 손익분기 WR 인하 — 구조적 흑자 전환) ────┐
@@ -100,7 +116,7 @@ export const STRATEGY_PARAMS = {
     // │ splitCount 1: 분할매수 제거 (고확신 일괄진입)                         │
     // │ maxDailyTrades 2: 3→2 (양보다 질)                                    │
     // └─────────────────────────────────────────────────────────────────────┘
-    buyThreshold: 75, // v15: 80→75 (적당히 진입 확대, 무리하지 않음)
+    buyThreshold: 80, // v17: 75→80 복원 (진입 품질 강화 — 75에서 저품질 진입↑ 확인)
     splitCount: 1, // 일괄 진입 유지
     averageDownPct: 0,
     maxAveragingCount: 0,
@@ -163,7 +179,7 @@ export const STRATEGY_PARAMS = {
     // │ 익절 +8% / 손절 -3% (고확신 = 틀리면 빠르게 손절)                 │
     // │ v13: 물타기 제거 — averageDown -3% = SL -3% 충돌 버그 수정         │
     // └────────────────────────────────────────────────────────────────────┘
-    buyThreshold: 78, // v15 Hyper: 85→78 (SNIPER 진입 확장 → 고확신 거래 빈도↑)
+    buyThreshold: 82, // v17: 78→82 (SNIPER 컨셉 복원 — 고확신 집중, 78은 SWING과 차별성↓)
     splitCount: 1, // 분할 없음 — 단번에 풀 포지션
     averageDownPct: 0, // v13: 물타기 제거 (averageDown -3% = SL -3% 동일 트리거 충돌)
     maxAveragingCount: 0,
@@ -217,7 +233,7 @@ export const STRATEGY_PARAMS = {
     // │ R:R = 8:5 = 1.6:1 / 손익분기 승률 38.5%                           │
     // │ 1등 주도주 + 강한 거래대금 쏠림 종목만 진입 (미모사 원칙)          │
     // └────────────────────────────────────────────────────────────────────┘
-    buyThreshold: 60, // v15 Hyper: 70→60 (돌파매매 진입 확대)
+    buyThreshold: 72, // v11: 60→72 (EV+ 필수 — 60점 WR22%=음의EV, 72점에서 WR35%+)
     splitCount: 2, // 돌파확인 + 2차 진입
     averageDownPct: 0, // v11: -3.0→0 (물타기 제거 — 돌파 실패 시 손실 확대 방지)
     maxAveragingCount: 0, // v11: 1→0

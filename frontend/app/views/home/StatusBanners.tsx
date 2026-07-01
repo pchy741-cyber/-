@@ -18,7 +18,7 @@ interface StatusBannersProps {
   viewMode?: ViewMode;
 }
 
-export default function StatusBanners({ dash, busyAction, guard, toast, onRefresh, tradingStatus, aiStatus, defensePark, confirm, viewMode = 'live' }: StatusBannersProps) {
+function StatusBanners({ dash, busyAction, guard, toast, onRefresh, tradingStatus, aiStatus, defensePark, confirm, viewMode = 'live' }: StatusBannersProps) {
   return (
     <>
       {/* ── 연속손실 쿨다운 배너 ── */}
@@ -163,6 +163,25 @@ export default function StatusBanners({ dash, busyAction, guard, toast, onRefres
         </div>
       )}
 
+      {/* ── 리스크 엔진 사이징 배너 ── */}
+      {(() => {
+        const rs = (dash as any)?.riskSizing;
+        if (!rs || rs.multiplier >= 1.0) return null;
+        const pct = Math.round(rs.multiplier * 100);
+        const isHigh = rs.multiplier <= 0.3;
+        return (
+          <div className={`rounded-2xl border px-4 py-2.5 flex items-center gap-2 flex-wrap ${isHigh ? 'border-rose-500/30 bg-rose-500/[0.07]' : 'border-amber-500/30 bg-amber-500/[0.07]'}`}>
+            <span className="text-sm shrink-0">{isHigh ? '🛡️' : '📊'}</span>
+            <span className={`text-xs font-bold ${isHigh ? 'text-rose-300' : 'text-amber-300'}`}>
+              리스크 감소 중: x{rs.multiplier.toFixed(1)} ({pct}%)
+            </span>
+            {(rs.factors ?? []).map((f: string, i: number) => (
+              <span key={i} className="text-[10px] bg-white/[0.06] text-slate-400 rounded px-1.5 py-0.5">{f}</span>
+            ))}
+          </div>
+        );
+      })()}
+
       {/* ── AI 엔진 상태 배너 ── */}
       {aiStatus && (aiStatus.claude === 'no_credit' || aiStatus.claude === 'error' || aiStatus.gemini === 'quota' || aiStatus.gemini === 'error') && (
         <div className="rounded-2xl border border-amber-500/30 bg-amber-500/[0.07] px-4 py-2.5">
@@ -190,3 +209,5 @@ export default function StatusBanners({ dash, busyAction, guard, toast, onRefres
     </>
   );
 }
+
+export default React.memo(StatusBanners);

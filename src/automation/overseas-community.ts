@@ -108,7 +108,8 @@ async function fetchStockTwitsSentiment(symbol: string): Promise<{
 
     return { messageCount: messages.length, bullishCount, bearishCount, pumpHits };
   } catch (err) {
-    logger.debug(`StockTwits 조회 실패 (${symbol}): ${err}`, { component: COMP });
+    // v17: debug→warn (기존: 프로덕션 로그에서 보이지 않음 → 장애 감지 불가)
+    logger.warn(`StockTwits 조회 실패 (${symbol}): ${err}`, { component: COMP });
     return null;
   }
 }
@@ -227,14 +228,13 @@ export async function fetchOverseasCommunity(
     }
   }
 
-  // 로깅
+  // v17: 항상 결과 로깅 (기존: 유의미한 결과만 → 전부 0이면 아무 로그 없음)
   const significant = [...results.values()].filter((r) => r.scoreAdj !== 0 || r.blockEntry);
-  if (significant.length > 0) {
-    logger.info(
-      `🌐 OS Community ${results.size}종목: ${significant.map((r) => `${r.symbol}(Z=${r.mentionZ.toFixed(1)},bull=${(r.bullishRatio * 100).toFixed(0)}%,adj=${r.scoreAdj > 0 ? '+' : ''}${r.scoreAdj}${r.blockEntry ? ',BLOCK' : ''})`).join(' ')}`,
-      { component: COMP },
-    );
-  }
+  const nullCount = symbols.length - results.size;
+  logger.info(
+    `🌐 OS Community: ${results.size}/${symbols.length}종목 수집 (유의미 ${significant.length}, 실패/빈값 ${nullCount})${significant.length > 0 ? ' — ' + significant.map((r) => `${r.symbol}(adj=${r.scoreAdj > 0 ? '+' : ''}${r.scoreAdj}${r.blockEntry ? ',BLOCK' : ''})`).join(' ') : ''}`,
+    { component: COMP },
+  );
 
   return results;
 }

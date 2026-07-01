@@ -74,17 +74,31 @@ async function detectEvents(): Promise<DetectedEvent[]> {
       const lastTrig = _lastTrigger.get(code) ?? 0;
       if (now - lastTrig < TRIGGER_COOLDOWN_MS) continue;
 
-      // 1) 거래량 spike — 30초 사이에 평균 2회 이상 거래량 증가
-      const volIncrease = prev.volume > 0 ? volume / prev.volume : 1;
-      if (volIncrease >= VOLUME_SPIKE_THRESHOLD && volume > MIN_VOLUME_FOR_SPIKE) {
-        events.push({
-          stockCode: code,
-          type: 'VOLUME_SPIKE',
-          magnitude: volIncrease,
-          reason: `거래량 ${volIncrease.toFixed(1)}x spike (${prev.volume.toLocaleString()} → ${volume.toLocaleString()})`,
-        });
-        _lastTrigger.set(code, now);
-        continue;
+      // 1) 거래량 spike — 30초 구간 증분 vs 평균 증분 비교
+      // v17 fix: volume은 누적 일거래량 → 비율(volume/prev.volume)은 항상 ~1.0x
+      // 증분 기반: (현재-이전) / 기대 증분 = 실제 스파이크 배율
+      const volumeIncrement = volume - prev.volume;
+      if (volumeIncrement > 0 && prev.volume > 0) {
+        const elapsedSec = Math.max(10, (now - prev.ts) / 1000);
+        // KST 기준 장 시작(09:00) 이후 경과 시간으로 평균 증분율 계산
+        const kstNow = new Date(now);
+        const kstH = (kstNow.getUTCHours() + 9) % 24;
+        const kstM = kstNow.getUTCMinutes();
+        const minutesSinceOpen = Math.max(1, (kstH - 9) * 60 + kstM);
+        const avgVolumePerSec = prev.volume / (minutesSinceOpen * 60);
+        const expectedIncrement = avgVolumePerSec * elapsedSec;
+        const spikeRatio = expectedIncrement > 0 ? volumeIncrement / expectedIncrement : 1;
+
+        if (spikeRatio >= VOLUME_SPIKE_THRESHOLD && volume > MIN_VOLUME_FOR_SPIKE) {
+          events.push({
+            stockCode: code,
+            type: 'VOLUME_SPIKE',
+            magnitude: spikeRatio,
+            reason: `거래량 증분 ${spikeRatio.toFixed(1)}x spike (Δ${volumeIncrement.toLocaleString()} / 기대${Math.round(expectedIncrement).toLocaleString()})`,
+          });
+          _lastTrigger.set(code, now);
+          continue;
+        }
       }
 
       // 2) 갭업/갭다운 — 30초 사이 ±1% 이상 변동

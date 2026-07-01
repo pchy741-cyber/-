@@ -2,7 +2,7 @@ import { computeFingerprint, fingerprintKey, getPatternFeedback } from '../../an
 import { analyzeIntraday, analyzeTechnicals } from '../../analysis/indicators.js';
 import { getWinRateConfidenceBoost, winRateSummary } from '../../analysis/win-rate.js';
 import { getDynamicPositionSize } from '../../automation/position-sizer.js';
-import { getDynamicDomesticTpSl } from '../../config/constants.js';
+import { BEAR_ADAPTIVE, getDynamicDomesticTpSl } from '../../config/constants.js';
 import { getCtxIsPaper } from '../../config/context.js';
 import { getPool } from '../../db/client.js';
 import type { TradeDecision } from '../../db/models.js';
@@ -394,6 +394,28 @@ export async function executeBuyDecisions(
     return decisions;
   }
 
+  // 하락장 적응형 포지션 수 제한 (DIVIDEND 제외)
+  // v11: 폭락장(macroMult ≤ 0.6, regime.penalty ≥ 2) → 인버스 ETF 외 신규매수 전면 차단
+  if (macroSizingMult <= 0.6 && !ctxPaper) {
+    logger.info(
+      `🐻 폭락장 신규매수 전면차단 (macroMult=${macroSizingMult}) — ${candidates.length}개 후보 스킵`,
+      { component: 'TRACK_B' },
+    );
+    return decisions;
+  }
+
+  const bearMode = macroSizingMult <= 0.8 && mode !== 'DIVIDEND';
+  if (bearMode) {
+    const activeCount = openChains.filter((c) => Number(c.total_quantity) > 0).length;
+    if (activeCount >= BEAR_ADAPTIVE.MAX_POSITION_COUNT) {
+      logger.info(
+        `🐻 하락장 포지션 한도: ${activeCount}/${BEAR_ADAPTIVE.MAX_POSITION_COUNT}개 — 신규매수 차단`,
+        { component: 'TRACK_B' },
+      );
+      return decisions;
+    }
+  }
+
   for (const cand of candidates.slice(0, maxBuys)) {
     // ── BREAKOUT 전용 사이징 + 태깅 ──────────────────────────────────────
     if (mode === 'BREAKOUT' && cand.breakoutSignal) {
@@ -706,17 +728,18 @@ export async function executeBuyDecisions(
       logger.info(`  ⚠️ ${cand.stock_code}: 연속손실 배율 ×${lossStreakMult} → 포지션 축소`, { component: 'TRACK_B' });
     }
 
-    // v9: 곱연산 배수 합산 하한 — 과도한 축소 방지
-    // 이전: 0.5×0.6×0.65×0.5 = 0.098 → 25%→2.4% (거의 매수 불가)
-    // 수정: 합산 배수 최소 0.25 보장 → 25%→6.25% 이상 유지
+    // v11: per-factor 최소값 (전수조사 — 기존 0.25 하한이 적색 5신호에도 25% 진입 허용)
+    // 각 팩터별 최소값 적용 → 곱연산 자체가 합리적 범위에 머무름
+    const safeWinRate = Math.max(0.5, winRateMultiplier);   // WR 20% 이하라도 0.5x까지만 축소
+    const safeLossStreak = Math.max(0.4, lossStreakMult);    // 3연패라도 0.4x까지만
+    const safeEvMult = Math.max(0.4, evSizingMult);          // 음의 EV라도 0.4x (학습 기회)
     const rawCompoundMult =
-      modeScale * macroSizingMult * winRateMultiplier * lossStreakMult * evSizingMult * visionSizingMult;
-    // v9-fix: Paper는 학습용 → 곱연산 하한 0.5 (Live: 0.25) — 데이터 수집 위해 적극적 매수
-    // v11: paper도 live와 동일 바닥 (실전 동일 조건 학습)
-    const compoundMultFloor = Math.max(0.25, rawCompoundMult);
+      modeScale * macroSizingMult * safeWinRate * safeLossStreak * safeEvMult * visionSizingMult;
+    // 최종 하한: 0.10 (기존 0.25 → 0.10, per-factor 클램핑이 주력 방어)
+    const compoundMultFloor = Math.max(0.10, rawCompoundMult);
     if (rawCompoundMult < compoundMultFloor) {
       logger.info(
-        `  🔒 ${cand.stock_code}: 곱연산 하한 적용 (${rawCompoundMult.toFixed(3)}→${compoundMultFloor.toFixed(3)}): mode=${modeScale} macro=${macroSizingMult} wr=${winRateMultiplier.toFixed(2)} streak=${lossStreakMult}`,
+        `  🔒 ${cand.stock_code}: 곱연산 하한 적용 (${rawCompoundMult.toFixed(3)}→${compoundMultFloor.toFixed(3)}): mode=${modeScale} macro=${macroSizingMult} wr=${safeWinRate.toFixed(2)} streak=${safeLossStreak}`,
         { component: 'TRACK_B' },
       );
     }
@@ -783,6 +806,16 @@ export async function executeBuyDecisions(
     // 소자산 모드: 분산 불가 시에도 비율 계산 반영 (positionSize vs 현금 80% 중 작은 값)
     // Kelly/점수가 축소 시그널 → positionSize가 줄어들면 그대로 존중
     let effectivePositionSize = !canDiversify3 ? Math.round(Math.min(positionSize, remainingCash * 0.8)) : positionSize;
+
+    // 하락장 적응형 포지션 축소 (macroSizingMult ≤ 0.8 + DIVIDEND 제외)
+    if (macroSizingMult <= 0.8 && mode !== 'DIVIDEND') {
+      const bearBefore = effectivePositionSize;
+      effectivePositionSize = Math.round(effectivePositionSize * BEAR_ADAPTIVE.POSITION_SIZE_MULT);
+      logger.info(
+        `  🐻 ${cand.stock_code}: 하락장 포지션 축소 ×${BEAR_ADAPTIVE.POSITION_SIZE_MULT} (${Math.round(bearBefore / 10000)}만→${Math.round(effectivePositionSize / 10000)}만)`,
+        { component: 'TRACK_B' },
+      );
+    }
 
     // ── ATR+드로다운+연패 동적 보정 (Live 전용) ──────────────────────────
     if (!ctxPaper) {

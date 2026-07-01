@@ -394,7 +394,7 @@ export class ChainManager {
           entryFingerprint,
         ],
       );
-      if ((insertResult as any).rowCount === 0) {
+      if (insertResult.rowCount === 0) {
         logger.info(`📝 스코어 정확도: ${chain.stock_code} 이미 기록됨 (중복 체인 종료)`, { component: 'CHAIN' });
       } else {
         logger.info(

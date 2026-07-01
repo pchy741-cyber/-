@@ -1,9 +1,16 @@
+import { analyzeTechnicals } from '../analysis/indicators.js';
+import { detectCandlePatterns } from '../analysis/patterns.js';
 import { INVERSE_ETF_CODES } from '../automation/crash-profit.js';
 import { STRATEGY_PARAMS, type StrategyMode } from '../config/constants.js';
 import { getCtxIsPaper } from '../config/context.js';
 import { getActiveStrategy, getOpenChains, getPool } from '../db/client.js';
-import type { TradeDecision } from '../db/models.js';
-import { getBatchPrices, getCurrentPrice } from '../kis/market.js';
+import type { TradeDecision, TransactionChain } from '../db/models.js';
+import { getBatchPrices, getCurrentPrice, getDailyChart } from '../kis/market.js';
+
+/** DB SELECT tc.* 결과에는 Zod 스키마 외 컬럼도 포함됨 */
+type ChainRow = TransactionChain & {
+  escape_target_price?: string | number | null;
+};
 import { sendByPaperFlag } from '../notifications/mode-message.js';
 import { tradeExecutor } from '../trading/executor.js';
 import { reconcileExternalSells } from '../trading/fill-reconciler.js';
@@ -24,15 +31,43 @@ import { calcPnlPct } from '../utils/money.js';
  */
 const TRAILING_ACTIVATE_PCT = 1.5; // 트레일링 스탑 활성화 최소 수익률 (%)
 
-/** 수익률 구간별 동적 트레일링 드롭 (고점 대비 하락 허용 %) — 수익 클수록 타이트 */
-function getDynamicTrailingDrop(peakPnlPct: number): number {
-  if (peakPnlPct >= 20) return 1.0; // +20% 이상: 1.0% 하락 시 즉시 청산 (러너 수익 극대화)
-  if (peakPnlPct >= 15) return 1.2; // +15~20%: 1.2% 하락 허용 (고수익 보호)
-  if (peakPnlPct >= 9) return 1.5; // +9~15%: 1.5% 하락 시 즉시 청산 (v12: 1.2→1.5, 한국 주도주 숨고르기 1.5~1.8% 대응)
-  if (peakPnlPct >= 6) return 1.8; // +6~9%: 1.8% 하락 허용
-  if (peakPnlPct >= 4) return 2.2; // +4~6%: 2.2% 하락 허용
-  if (peakPnlPct >= 2) return 2.6; // +2~4%: 2.6% 하락 허용
-  return 3.0; // +1.5~2%: 기본 3.0% (초기 노이즈 흡수)
+/**
+ * 수익률 구간별 동적 트레일링 드롭 (고점 대비 하락 허용 %)
+ *
+ * 근거:
+ * - ATR 2.0x = 21% 거짓 트리거 (vs 1.5x=38%) — quant-signals.com 9,433거래
+ * - 캔들 종가 기준 패턴만 반영, 위크 관통 무시 — VWAP 연구 Sharpe 3.99
+ * - 클라이맥스 볼륨(3x+) = 단기 소진 신호 → 트레일 타이트닝
+ */
+function getDynamicTrailingDrop(
+  peakPnlPct: number,
+  tech?: { volumeRatio: number; rsi14: number; bearishCandle: boolean; bullishCandle: boolean } | null,
+): number {
+  // 기본 구간 (기존 로직 유지)
+  let baseDrop: number;
+  if (peakPnlPct >= 20) baseDrop = 1.0;
+  else if (peakPnlPct >= 15) baseDrop = 1.2;
+  else if (peakPnlPct >= 9) baseDrop = 1.5;
+  else if (peakPnlPct >= 6) baseDrop = 1.8;
+  else if (peakPnlPct >= 4) baseDrop = 2.2;
+  else if (peakPnlPct >= 2) baseDrop = 2.6;
+  else baseDrop = 3.0;
+
+  if (!tech) return baseDrop;
+
+  // 캔들 패턴 보정 (종가 기준 — VWAP 연구 근거)
+  if (tech.bearishCandle) baseDrop *= 0.6; // 약세 캔들 → 40% 타이트
+  else if (tech.bullishCandle) baseDrop *= 1.2; // 강세 캔들 → 20% 완화
+
+  // 볼륨 보정
+  if (tech.volumeRatio < 0.5) baseDrop *= 0.7; // 거래량 소진 → 30% 타이트
+  else if (tech.volumeRatio >= 3.0) baseDrop *= 0.75; // 클라이맥스 볼륨 = 소진 가능성
+  else if (tech.volumeRatio >= 1.5 && !tech.bearishCandle) baseDrop *= 1.15; // 건강한 볼륨
+
+  // RSI 약세
+  if (tech.rsi14 < 40) baseDrop *= 0.85;
+
+  return Math.max(0.5, Math.min(5.0, baseDrop));
 }
 
 /**
@@ -50,7 +85,8 @@ export async function runHoldingCheckJob(): Promise<void> {
   );
 
   try {
-    const chains = await getOpenChains(getCtxIsPaper());
+    // getOpenChains SELECT tc.* 결과에는 escape_target_price 등 Zod 스키마 외 컬럼 포함
+    const chains = (await getOpenChains(getCtxIsPaper())) as ChainRow[];
     if (chains.length === 0) return;
 
     // ── 탈출 모드 체크 (+0.5% 돌파 시 즉시 매도) ──
@@ -58,7 +94,6 @@ export async function runHoldingCheckJob(): Promise<void> {
 
     const strategy = await getActiveStrategy();
     const mode = (strategy?.mode ?? 'SWING') as StrategyMode;
-    const _globalParams = STRATEGY_PARAMS[mode];
 
     const now = new Date();
     const forceCloseDecisions: TradeDecision[] = [];
@@ -238,11 +273,11 @@ function checkStagnation(businessDays: number, pnlPct: number, maxDays: number, 
  * - 아직 익절 구간 미도달 or 하락폭 미달 → null 반환
  */
 async function checkAndUpdateTrailingStop(
-  chain: any,
+  chain: TransactionChain,
   currentPrice: number,
   pnlPct: number,
   params: { takeProfitPct: number },
-): Promise<import('../db/models.js').TradeDecision | null> {
+): Promise<TradeDecision | null> {
   const avgBuy = Number(chain.avg_buy_price);
   if (avgBuy <= 0 || currentPrice <= 0) return null;
 
@@ -276,11 +311,11 @@ async function checkAndUpdateTrailingStop(
   const chainTp = Number(chain.target_profit_pct) || params.takeProfitPct;
   const chainMode = chain.strategy_mode as keyof typeof STRATEGY_PARAMS | undefined;
   const modeParams = chainMode && chainMode in STRATEGY_PARAMS ? STRATEGY_PARAMS[chainMode] : null;
-  const tpRatio = (modeParams as any)?.takeProfitRatio ?? 0.5;
+  const tpRatio = (modeParams as Record<string, number> | null)?.takeProfitRatio ?? 0.5;
   const isFullSell = tpRatio >= 1.0;
 
   // ── 조기 부분익절: earlyTpPct 도달 시 50% 즉시 해제 → 현금 회전율 향상 ──
-  const earlyTpPct: number = (modeParams as any)?.earlyTpPct ?? 0;
+  const earlyTpPct: number = (modeParams as Record<string, number> | null)?.earlyTpPct ?? 0;
   if (
     earlyTpPct > 0 &&
     !partialSoldAlready &&
@@ -375,7 +410,24 @@ async function checkAndUpdateTrailingStop(
   if (newPeak <= 0) return null;
   const dropFromPeak = ((newPeak - currentPrice) / newPeak) * 100;
   const peakPnlPct = ((newPeak - avgBuy) / avgBuy) * 100;
-  const dynamicDrop = getDynamicTrailingDrop(peakPnlPct);
+
+  // 캔들+볼륨 기술 데이터 조회 (근거: VWAP 연구 Sharpe 3.99)
+  let trailTech: Parameters<typeof getDynamicTrailingDrop>[1] = null;
+  try {
+    const candles = await getDailyChart(chain.stock_code, 10).catch(() => []);
+    if (candles.length >= 3) {
+      const patterns = detectCandlePatterns(candles);
+      const tech = candles.length >= 20 ? analyzeTechnicals(candles) : null;
+      trailTech = {
+        volumeRatio: tech?.volumeRatio ?? 1.0,
+        rsi14: tech?.rsi14 ?? 50,
+        bearishCandle: patterns.some((p: { bullish: boolean; strength: string }) => !p.bullish && p.strength !== 'WEAK'),
+        bullishCandle: patterns.some((p: { bullish: boolean; strength: string }) => p.bullish && p.strength !== 'WEAK'),
+      };
+    }
+  } catch { /* 조회 실패 시 기본 트레일 사용 */ }
+
+  const dynamicDrop = getDynamicTrailingDrop(peakPnlPct, trailTech);
 
   if (dropFromPeak >= dynamicDrop) {
     logger.info(
@@ -461,7 +513,7 @@ function countBusinessDays(start: Date, end: Date): number {
  * 탈출 모드 체크: escape_target_price 가 설정된 체인 중
  * 현재가 >= 목표가 (+0.5%) 이면 즉시 전량 매도
  */
-async function checkEscapeTargets(chains: any[]): Promise<void> {
+async function checkEscapeTargets(chains: ChainRow[]): Promise<void> {
   const escapeChains = chains.filter((ch) => ch.escape_target_price != null && Number(ch.escape_target_price) > 0);
   if (escapeChains.length === 0) return;
 

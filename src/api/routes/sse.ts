@@ -8,6 +8,7 @@ import { getAccountBalance } from '../../kis/account.js';
 import { getCurrentPrice, isMarketOpen } from '../../kis/market.js';
 import { getPaperBalance } from '../../risk/engine.js';
 import { getKillSwitchStatusAll } from '../../risk/kill-switch.js';
+import { getLastRiskSizing } from '../../risk/risk-engine.js';
 import { getLoopStatus } from '../../scheduler/loop-mode.js';
 import { getOpenMarketRegions } from '../../scheduler/overseas/session.js';
 import { KR_FEE, FALLBACK_FX_RATE, OVERSEAS_FEE_PCT } from '../../config/constants.js';
@@ -49,8 +50,9 @@ async function refreshHeldPrices(chains: Array<{ stock_code: string }>, isPaper:
   const krCodes = chains.map((ch) => ch.stock_code).filter((code) => /^\d{6}$/.test(code));
   if (krCodes.length === 0) return;
 
-  // 15s 캐시 또는 2h 폴백 있으면 skip — KIS API 쿼타 절약
-  const staleCodes = krCodes.filter((code) => getCachedPriceMemory(code) == null && getLastKnownPriceMemory(code) == null);
+  // v17 fix: 15s 캐시만 체크 — 기존: 2h lastKnown도 체크 → 한번 fetch 후 2시간 동결 버그
+  // lastKnown(2h)은 buildChainPrices에서 폴백용으로만 사용 (KIS API 장애 시)
+  const staleCodes = krCodes.filter((code) => getCachedPriceMemory(code) == null);
   if (staleCodes.length === 0) return;
 
   const results = await Promise.allSettled(
@@ -379,6 +381,10 @@ async function buildMetaPayload(viewIsPaper: boolean): Promise<string> {
     recentEvents: getRecentEvents(10, viewIsPaper ? 'paper' : 'live'),
     todayStats,
     newInsightCount: newInsightRes,
+    riskSizing: (() => {
+      const rs = getLastRiskSizing();
+      return rs.updatedAt > 0 ? { multiplier: rs.multiplier, factors: rs.factors } : null;
+    })(),
   };
 
   return JSON.stringify(payload);

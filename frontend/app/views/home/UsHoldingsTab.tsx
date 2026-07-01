@@ -34,7 +34,7 @@ interface UsHoldingsTabProps {
   usMarketOpen?: boolean;
 }
 
-export default function UsHoldingsTab({
+function UsHoldingsTab({
   usHoldings, usW, dash, busyAction, guard, onRefresh, toast, confirm,
   insightsDraft, setInsightsDraft, insightsSaving, setInsightsSaving, usInsights, setUsInsights,
   viewMode = 'live', loopStatus,
@@ -322,3 +322,5 @@ export default function UsHoldingsTab({
     </div>
   );
 }
+
+export default React.memo(UsHoldingsTab);

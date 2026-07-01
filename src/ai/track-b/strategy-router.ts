@@ -78,7 +78,7 @@ export function routeByRegime(tech: TechnicalSummary, closes: number[], _aiScore
     case 'BREAKOUT': {
       // TTM fire=LONG + vol>=1.5x → 스퀴즈 돌파 진입
       const ttmLong = tech.ttmSqueeze.fireSignal === 'LONG';
-      const volOk = tech.volumeRatio >= 1.2; // v16: 1.5→1.2 (유기적 돌파 허용)
+      const volOk = tech.volumeRatio >= 1.5; // v17: 1.2→1.5 복원 (1.2에서 거짓 돌파↑ 확인)
       if (ttmLong && volOk) {
         return {
           ...base,

@@ -1,4 +1,7 @@
 import { checkLargeOrderEntryTiming } from '../ai/entry-timing.js';
+import { sma } from '../analysis/moving-averages.js';
+import { bollingerBands } from '../analysis/oscillators.js';
+import { calcFibonacciLevels, volumeProfile } from '../analysis/patterns.js';
 import { PARK_STOCK_CODE } from '../ai/track-b/defense-park.js';
 import { setKrPartialTpStageNum } from '../ai/track-b/partial-tp.js';
 import { recordSellForCooldown } from '../ai/track-b/sell-cooldown.js';
@@ -32,10 +35,11 @@ import { paperTradeOrder } from '../risk/paper.js';
 import { type GateInput, runTradeGates } from '../risk/trade-gate.js';
 import { acquireLock } from '../utils/lock.js';
 import { logger } from '../utils/logger.js';
-import { roundKrw } from '../utils/money.js';
+import { adjustToTickSize, roundKrw } from '../utils/money.js';
 import { getKSTNow } from '../utils/time.js';
 import { registerBuyIntent, releaseBuyIntent } from './buy-intent.js';
 import { chainManager } from './chain.js';
+import { cancelWatchdogTpOrder, startWatchdog } from './post-fill-watchdog.js';
 
 /**
  * 매매 실행기 (Trade Executor)
@@ -495,13 +499,13 @@ export class TradeExecutor {
             this._logFire('WARN', 'EXECUTOR', `호가 진입 보류: ${stockCode} 현재가=${estimatedPrice} ask2=${ask2}`);
             return;
           }
-          // v10: 예약매수 — bid1~ask1 중간가로 지정가 주문 (ask1 대비 스프레드 절반 절감)
+          // v11: 지지선 기반 지정가 매수 (BB+Fib+VP+SMA20 가중 지지선)
           // 체결 안 되면 confirmFill 타임아웃(~30s)에서 자동 취소 → 다음 사이클에서 재시도
           if (bid1 > 0 && ask1 > 0) {
-            smartBuyPrice = Math.floor((bid1 + ask1) / 2);
-            if (smartBuyPrice <= bid1) smartBuyPrice = bid1;
+            const support = await calcSupportBuyPrice(stockCode, estimatedPrice, bid1, ask1);
+            smartBuyPrice = support.price;
             logger.info(
-              `💰 예약매수: ${stockCode} bid1=${bid1.toLocaleString()} mid=${smartBuyPrice.toLocaleString()} ask1=${ask1.toLocaleString()} → 지정가`,
+              `💰 지지선매수: ${stockCode} bid1=${bid1.toLocaleString()} support=${smartBuyPrice.toLocaleString()} ask1=${ask1.toLocaleString()} [${support.reasoning}]`,
               { component: 'EXECUTOR' },
             );
           } else if (ask1 > 0) {
@@ -617,6 +621,20 @@ export class TradeExecutor {
             // orders.chain_id 연결 — 고아 포지션 방지 (audit P0)
             await updateOrderByKisOrderNo(result.orderNo, { chain_id: chainId });
             chainCreated = true;
+
+            // 워치독: 체결 즉시 TP 지정가 + SL 10초 폴링 (0-180초 무보호 갭 제거)
+            await startWatchdog({
+              chainId,
+              stockCode,
+              avgBuyPrice: fill.filledPrice,
+              quantity: filledQty,
+              stopLossPct,
+              takeProfitPct: targetProfitPct,
+              isPaper: isPaperSnapshot,
+              strategyMode: mode,
+            }).catch((e) =>
+              logger.warn(`워치독 시작 실패 (무시): ${stockCode} ${(e as Error).message}`, { component: 'EXECUTOR' }),
+            );
 
             // ScaleIn 3분할: 체인 생성 성공 후 2차(60s)/3차(120s) 분할 진입 스케줄
             if (useScaleIn && secondTranche > 0) {
@@ -1014,6 +1032,9 @@ export class TradeExecutor {
     const isPaperSnapshot = getCtxIsPaper();
     const chain = await chainManager.findOpenChain(stockCode, isPaperSnapshot);
     if (!chain || chain.total_quantity === 0) return;
+
+    // 워치독 TP 주문 취소 (다른 메커니즘의 매도와 충돌 방지)
+    await cancelWatchdogTpOrder(stockCode).catch(() => {});
 
     // 🔒 연속 실패 시 무한 루프 방지
     const failKey = `${isPaperSnapshot ? 'paper' : 'live'}-${stockCode}`;
@@ -1453,11 +1474,11 @@ export class TradeExecutor {
       return null;
     }
 
-    // v10.7: 공격적 폴링 → 초반 500ms 간격으로 빠르게 확인, 이후 2초 간격
-    // (기존: 3s,5s,8s,15s 순차=31초 → 새: 평균 2-5초로 체결확인 95% 단축)
-    const MAX_WAIT_MS = 30_000;
+    // v11: 체결확인 15초 타임아웃 (기존 30초 → 15초)
+    // 지정가 주문은 미체결 시 pending-order-manager가 관리하므로 빠른 반환 우선
+    const MAX_WAIT_MS = 15_000;
     const FAST_POLL_MS = 500; // 처음 5초: 500ms 간격
-    const SLOW_POLL_MS = 2000; // 이후: 2초 간격
+    const SLOW_POLL_MS = 1500; // 이후: 1.5초 간격 (기존 2초)
     const FAST_PHASE_MS = 5000;
     let elapsed = 0;
     let attempt = 0;
@@ -1656,6 +1677,70 @@ export class TradeExecutor {
       logger.warn(`ScaleIn 복구 조회 실패: ${(e as Error).message}`, { component: 'EXECUTOR' });
     }
   }
+}
+
+/**
+ * 지지선 기반 매수가 계산 (Phase 4: Smart Limit Entry)
+ * 근거: Bollinger+Fibonacci 복합 지지선 (Pineify 연구 — "기관급 지지/저항 구간")
+ * BB lower(25%) + Fib 0.618(30%) + VP support(25%) + SMA20(20%) 가중 평균
+ */
+async function calcSupportBuyPrice(
+  stockCode: string,
+  currentPrice: number,
+  bid1: number,
+  ask1: number,
+): Promise<{ price: number; reasoning: string }> {
+  const midPrice = Math.floor((bid1 + ask1) / 2);
+  const candles = await getDailyChart(stockCode, 65).catch(() => []);
+  if (candles.length < 20) return { price: midPrice, reasoning: 'mid(캔들부족)' };
+
+  const closes = candles.map((c) => c.close);
+  const floor = currentPrice * 0.98; // 현재가 대비 -2% 이내만
+
+  const bb = bollingerBands(closes, 20);
+  const fib = calcFibonacciLevels(candles, currentPrice);
+  const vp = volumeProfile(candles);
+  const sma20 = sma(closes, 20);
+
+  const candidates: { p: number; w: number; n: string }[] = [];
+
+  // BB lower band (최신값 = 배열 마지막)
+  if (bb.lower.length > 0) {
+    const bbLower = bb.lower[bb.lower.length - 1];
+    if (bbLower >= floor) candidates.push({ p: bbLower, w: 0.25, n: 'BB' });
+  }
+
+  // Fib 0.618 되돌림
+  if (fib?.levels) {
+    const fib618 = fib.levels.find((l) => Math.abs(l.level - 0.618) < 1e-9);
+    if (fib618 && fib618.price >= floor) candidates.push({ p: fib618.price, w: 0.3, n: 'Fib' });
+  }
+
+  // Volume Profile — 현재가 아래 최대 거래량 지지선
+  const vpSupports = vp
+    .filter((v) => v.isSupport && v.priceLevel < currentPrice && v.priceLevel >= floor)
+    .sort((a, b) => b.volumePct - a.volumePct);
+  if (vpSupports.length > 0) {
+    candidates.push({ p: vpSupports[0].priceLevel, w: 0.25, n: 'VP' });
+  }
+
+  // SMA20 (최신값 = 배열 마지막)
+  if (sma20.length > 0) {
+    const sma20Val = sma20[sma20.length - 1];
+    if (sma20Val >= floor) candidates.push({ p: sma20Val, w: 0.2, n: 'SMA20' });
+  }
+
+  if (candidates.length === 0) return { price: midPrice, reasoning: 'mid(지지선없음)' };
+
+  const totalW = candidates.reduce((s, c) => s + c.w, 0);
+  const weighted = candidates.reduce((s, c) => s + c.p * (c.w / totalW), 0);
+  // bid1 ≤ 지지선가 ≤ midPrice 범위 클램핑
+  const supportPrice = Math.max(bid1, Math.min(midPrice, Math.floor(weighted)));
+
+  return {
+    price: adjustToTickSize(supportPrice),
+    reasoning: candidates.map((c) => `${c.n}=${c.p.toLocaleString()}`).join(' '),
+  };
 }
 
 export const tradeExecutor = new TradeExecutor();

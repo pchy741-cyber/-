@@ -125,6 +125,36 @@ profitStatsRoutes.get('/profit-stats', async (c) => {
   }
 });
 
+// ── 에퀴티 커브 (portfolio_snapshots → 일별 총자산) ──
+profitStatsRoutes.get('/equity-curve', async (c) => {
+  try {
+    const rawDays = Number(c.req.query('days') ?? 30);
+    const days = Math.min(90, Math.max(7, Number.isFinite(rawDays) ? rawDays : 30));
+    const isPaper = resolveViewIsPaper(c);
+    const { rows } = await getPool().query(
+      `SELECT
+         (snapshot_at AT TIME ZONE 'Asia/Seoul')::date AS date,
+         MAX(total_value) AS total_value,
+         MAX(daily_pnl) AS daily_pnl
+       FROM portfolio_snapshots
+       WHERE is_paper = $1
+         AND snapshot_at >= NOW() - ($2 || ' days')::INTERVAL
+       GROUP BY 1
+       ORDER BY 1 ASC`,
+      [isPaper, days],
+    );
+    return c.json({
+      points: rows.map((r: any) => ({
+        date: r.date,
+        totalValue: Number(r.total_value ?? 0),
+        dailyPnl: Number(r.daily_pnl ?? 0),
+      })),
+    });
+  } catch {
+    return c.json({ error: 'Internal server error' }, 500);
+  }
+});
+
 // ── 세금 추정 (양도세 + 거래세) ──
 profitStatsRoutes.get('/market/tax-estimate', async (c) => {
   try {

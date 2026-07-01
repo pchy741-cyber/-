@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Panel } from '@/components/ui';
 import { ScoreSparkline } from '@/components/ScoreSparkline';
 import { ScoreRefreshTimer } from '@/components/ScoreRefreshTimer';
@@ -22,11 +22,21 @@ interface KrAiScorePanelProps {
   viewMode?: ViewMode;
 }
 
-export default function KrAiScorePanel({
+function KrAiScorePanel({
   dash, showAllKRScores, setShowAllKRScores,
   buyingStock, setBuyingStock, busyAction, guard, getStockName, toast, confirm,
   viewMode = 'live',
 }: KrAiScorePanelProps) {
+  // R² 정확도 배지
+  const [r2Data, setR2Data] = useState<{ rSquared: number; grade: string; winRate: number } | null>(null);
+  useEffect(() => {
+    api('/dashboard-analysis/score-accuracy/r2')
+      .then((r: any) => {
+        if (r?.overall?.rSquared != null) setR2Data({ rSquared: r.overall.rSquared, grade: r.overall.grade, winRate: r.overall.winRate });
+      })
+      .catch(() => {});
+  }, []);
+
   // CEO 자유도 매수 모달 상태
   const [modalStock, setModalStock] = useState<{
     code: string;
@@ -40,7 +50,7 @@ export default function KrAiScorePanel({
   } | null>(null);
 
   return (
-    <Panel title="AI가 보는 종목 점수" badge={(dash?.scores?.length ?? 0) > 0 ? `${dash!.scores!.length}종목` : undefined} badgeColor="blue">
+    <Panel title={<span className="flex items-center gap-2">AI가 보는 종목 점수{r2Data && <span className={`text-[9px] px-1.5 py-0.5 rounded-md font-medium ${r2Data.grade === 'EXCELLENT' ? 'bg-emerald-500/20 text-emerald-300' : r2Data.grade === 'GOOD' ? 'bg-blue-500/20 text-blue-300' : 'bg-slate-500/20 text-slate-400'}`}>R²={r2Data.rSquared.toFixed(2)} · 승률 {r2Data.winRate}%</span>}</span>} badge={(dash?.scores?.length ?? 0) > 0 ? `${dash!.scores!.length}종목` : undefined} badgeColor="blue">
       {(dash?.scores?.length ?? 0) > 0 ? (() => {
         const sorted = [...dash!.scores!].sort((a: StockScore, b: StockScore) => (b.composite_score ?? 0) - (a.composite_score ?? 0));
         const visible = showAllKRScores ? sorted : sorted.slice(0, 10);
@@ -165,3 +175,5 @@ export default function KrAiScorePanel({
     </Panel>
   );
 }
+
+export default React.memo(KrAiScorePanel);

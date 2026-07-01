@@ -39,7 +39,7 @@ function toBarPct(h: number, m: number) {
   return Math.round(((h * 60 + m - 9 * 60) / 390) * 1000) / 10;
 }
 
-export default function MarketProgressBar({
+function MarketProgressBar({
   health, holdingsTab, currentTimeStr, marketProgress, usMarketProgress,
   unrealizedPnl, overseasPnlUsd, dailyLossLimit, overseasLimitUsd,
 }: MarketProgressBarProps) {
@@ -148,3 +148,5 @@ export default function MarketProgressBar({
   </div>
   );
 }
+
+export default React.memo(MarketProgressBar);

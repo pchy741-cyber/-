@@ -70,8 +70,8 @@ async function syncDividendReceipts(): Promise<void> {
       logger.info(`배당 동기화: ${synced}건 신규 수령`, { component: COMP });
       await sendTelegramMessage(`💰 배당금 ${synced}건 자동 동기화 완료`).catch((e) => logger.debug(`배당 텔레그램 알림 실패: ${e}`, { component: COMP }));
     }
-  } catch (e: any) {
-    logger.warn(`배당 동기화 실패: ${e.message}`, { component: COMP });
+  } catch (e) {
+    logger.warn(`배당 동기화 실패: ${(e as Error).message}`, { component: COMP });
   }
 }
 
@@ -106,8 +106,8 @@ async function monitorExDates(): Promise<void> {
       await sendTelegramMessage(`💰 *배석일 경보*\n${alerts.join('\n')}`).catch(() => {});
       logger.info(`배석일 경보: ${alerts.length}건`, { component: COMP });
     }
-  } catch (e: any) {
-    logger.warn(`배석일 모니터링 실패: ${e.message}`, { component: COMP });
+  } catch (e) {
+    logger.warn(`배석일 모니터링 실패: ${(e as Error).message}`, { component: COMP });
   }
 }
 
@@ -129,8 +129,8 @@ async function updateHoldingDividendTotals(): Promise<void> {
     `,
       [isPaper],
     );
-  } catch (e: any) {
-    logger.warn(`배당 누적 업데이트 실패: ${e.message}`, { component: COMP });
+  } catch (e) {
+    logger.warn(`배당 누적 업데이트 실패: ${(e as Error).message}`, { component: COMP });
   }
 }
 
@@ -152,7 +152,7 @@ async function checkTop5Rotation(): Promise<void> {
       `SELECT stock_code FROM dividend_holdings WHERE is_paper = $1 AND quantity > 0`,
       [isPaper],
     );
-    const currentCodes = new Set(holdings.map((h: any) => h.stock_code));
+    const currentCodes = new Set(holdings.map((h: { stock_code: string }) => h.stock_code));
     if (currentCodes.size === 0) return;
 
     // watchlist에서 순수익률 상위 5개
@@ -166,8 +166,8 @@ async function checkTop5Rotation(): Promise<void> {
     );
 
     const top5Codes = watchlist
-      .map((w: any) => ({
-        code: w.stock_code as string,
+      .map((w: { stock_code: string; yield: string | number; expense: string | number }) => ({
+        code: w.stock_code,
         netYield: (Number(w.yield) - Number(w.expense)) * (1 - TAX_RATE),
       }))
       .filter((e) => e.netYield > MIN_NET);
@@ -191,8 +191,8 @@ async function checkTop5Rotation(): Promise<void> {
       logger.info(lines.join(' | '), { component: COMP });
       await sendTelegramMessage(lines.join('\n')).catch(() => {});
     }
-  } catch (e: any) {
-    logger.warn(`상위5 교체 감지 실패: ${e.message}`, { component: COMP });
+  } catch (e) {
+    logger.warn(`상위5 교체 감지 실패: ${(e as Error).message}`, { component: COMP });
   }
 }
 
@@ -329,8 +329,8 @@ async function simulateDRIP(): Promise<void> {
           side: 'BUY',
           quantity: sharesToBuy,
         });
-      } catch (e: any) {
-        logger.warn(`[Smart DRIP] ${bestTarget.code} 실주문 실패: ${e.message}`, { component: COMP });
+      } catch (e) {
+        logger.warn(`[Smart DRIP] ${bestTarget.code} 실주문 실패: ${(e as Error).message}`, { component: COMP });
       }
     }
 
@@ -351,8 +351,8 @@ async function simulateDRIP(): Promise<void> {
     await sendTelegramMessage(
       `💰 [Smart DRIP] 배당 $${totalDivPool.toFixed(2)} → ${bestTarget.code} ${sharesToBuy}주 집중 재투자 (비중 부족 ${gapPct}%p)`,
     ).catch(() => {});
-  } catch (e: any) {
-    logger.warn(`Smart DRIP 실패: ${e.message}`, { component: COMP });
+  } catch (e) {
+    logger.warn(`Smart DRIP 실패: ${(e as Error).message}`, { component: COMP });
   }
 }
 
@@ -410,7 +410,7 @@ async function tuneDividendAllocation(): Promise<void> {
          ORDER BY (dividend_yield - COALESCE(expense_ratio, 0)) * 0.846 DESC LIMIT 5`,
       );
       if (wl.length >= 3) {
-        const totalNet = wl.reduce((s: number, w: any) => s + (Number(w.yield) - Number(w.expense)) * 0.846, 0);
+        const totalNet = wl.reduce((s: number, w: { yield: string | number; expense: string | number }) => s + (Number(w.yield) - Number(w.expense)) * 0.846, 0);
         for (const w of wl) {
           const net = (Number(w.yield) - Number(w.expense)) * 0.846;
           baseWeights[w.stock_code] = totalNet > 0 ? +(net / totalNet).toFixed(3) : 1 / wl.length;
@@ -484,7 +484,7 @@ async function tuneDividendAllocation(): Promise<void> {
         .join(' ')}`,
       { component: COMP },
     );
-  } catch (e: any) {
-    logger.warn(`배당 배분 튜닝 실패: ${e.message}`, { component: COMP });
+  } catch (e) {
+    logger.warn(`배당 배분 튜닝 실패: ${(e as Error).message}`, { component: COMP });
   }
 }

@@ -33,7 +33,7 @@ const PRIORITY_STYLE = {
   low: { dot: 'bg-blue-400', border: 'border-l-blue-500/60', bg: 'bg-blue-500/[0.04]' },
 };
 
-export default function SuggestedActionsPanel({
+function SuggestedActionsPanel({
   suggestedActions,
   monthlyGoal,
   fxImpact,
@@ -168,3 +168,5 @@ export default function SuggestedActionsPanel({
     </div>
   );
 }
+
+export default React.memo(SuggestedActionsPanel);

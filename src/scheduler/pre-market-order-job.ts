@@ -27,7 +27,7 @@ import { logger } from '../utils/logger.js';
 import { getKSTNow } from '../utils/time.js';
 
 // ── 설정 ──
-const MIN_SCORE = 85; // 동시호가 진입 최소 AI 점수
+const MIN_SCORE = 78; // v17: 85→78 (기존 85점은 거의 미달 → 사전주문 사실상 비활성. Danelfin 연구: 상위 20% 진입 유효)
 const MAX_PREMARKET_ORDERS = 2; // 동시호가 최대 주문 종목 수
 const PRICE_PREMIUM_PCT = 2.0; // 전일 종가 대비 +2% 상한 지정가 (시초가 > 102%면 미체결 → 안전)
 const MIN_ORDER_KRW = 100_000; // 최소 주문금액 (10만원)

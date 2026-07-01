@@ -42,6 +42,8 @@ export interface WatchlistSentimentEntry {
 
 let languageClient: InstanceType<typeof import('@google-cloud/language').v1.LanguageServiceClient> | null = null;
 let nlApiAvailable: boolean | null = null; // null = not yet tested
+let nlApiDisabledAt = 0; // v17: 비활성 시간 기록 → 30분마다 재시도 (영구 사망 방지)
+const NL_API_RETRY_MS = 30 * 60 * 1000; // 30분
 
 async function getLanguageClient() {
   if (languageClient) return languageClient;
@@ -77,7 +79,13 @@ const NEUTRAL_RESULT: SentimentResult = { score: 0, magnitude: 0, label: 'NEUTRA
  * API 미설정/오류 시 NEUTRAL 반환
  */
 export async function analyzeSentiment(text: string): Promise<SentimentResult> {
-  if (nlApiAvailable === false) return NEUTRAL_RESULT;
+  // v17: 30분마다 NL API 재시도 (기존: 1회 실패 → 프로세스 수명 동안 영구 사망)
+  if (nlApiAvailable === false) {
+    if (Date.now() - nlApiDisabledAt < NL_API_RETRY_MS) return NEUTRAL_RESULT;
+    logger.info('🔄 Google NL API 재시도 (30분 경과)', { component: 'SENTIMENT' });
+    nlApiAvailable = null; // 재시도 허용
+    languageClient = null; // 클라이언트 재생성
+  }
 
   try {
     const client = await getLanguageClient();
@@ -116,8 +124,9 @@ export async function analyzeSentiment(text: string): Promise<SentimentResult> {
       errMsg.includes('PERMISSION_DENIED') ||
       errMsg.includes('Could not load the default credentials')
     ) {
-      logger.warn(`Google NL API 인증 오류 → 감성 분석 비활성: ${error}`, { component: 'SENTIMENT' });
+      logger.warn(`Google NL API 인증 오류 → 감성 분석 비활성 (30분 후 재시도): ${error}`, { component: 'SENTIMENT' });
       nlApiAvailable = false;
+      nlApiDisabledAt = Date.now();
     } else {
       logger.warn(`감성 분석 실패: ${error}`, { component: 'SENTIMENT' });
     }

@@ -15,7 +15,7 @@ export { COLOR };
 export function Panel({
   title, badge, badgeColor = 'neutral', children,
 }: {
-  title: string;
+  title: React.ReactNode;
   badge?: string;
   badgeColor?: ColorKey;
   children: React.ReactNode;

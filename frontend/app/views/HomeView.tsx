@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { useMemo, useCallback } from 'react';
 import type { Dashboard, Health, KillSwitch, Trade, UsDashboard, WithdrawConfig, WatchlistItem, Strategy, AllocConfig, ViewMode, ToastFn, ConfirmFn, UsHolding, UsWatchlistItem, Chain, MpData, SystemEvent, TradingStatus, AiStatus, LoopStatus, TodayStats } from '../types';
 import { api, fmtWon, pc, FALLBACK_FX_RATE, toKST, getKSTMinutes } from '../lib/utils';
 import { useCountUp } from '../lib/hooks';
@@ -38,6 +38,7 @@ import UsHoldingsTab from './home/UsHoldingsTab';
 import RecentTradesPanel from './home/RecentTradesPanel';
 import KrAiScorePanel from './home/KrAiScorePanel';
 import SuggestedActionsPanel from '../panels/SuggestedActionsPanel';
+import MarketSentimentPanel from '../panels/MarketSentimentPanel';
 
 interface HomeViewProps {
   dash: Dashboard | null;
@@ -140,110 +141,142 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
   }, [health?.usMarketOpen, userPickedTab]);
   React.useEffect(() => { onMarketTabChange?.(holdingsTab); }, [holdingsTab]);
 
-  // ── 파생값 ──
+  // ── 파생값 (useMemo로 SSE 3초 틱 리렌더 최소화) ──
   const p = dash?.portfolio;
   const os = dash?.overseas;
-  const stockNameMap = new Map((watchlist ?? []).map((w: WatchlistItem) => [w.stock_code, w.stock_name]));
-  const getStockName = (code: string): string => toDisplayName(stockNameMap.get(code), code);
-  const chains = dash?.chains || [];
-  const usW = usDash?.watchlist || [];
-  const usHoldings = (dash?.overseas?.holdings?.length ? dash.overseas.holdings : usDash?.holdings) ?? [];
-  const filled = trades.filter((t: Trade) => t.status === 'FILLED' || t.status === 'PENDING')
-    .sort((a: Trade, b: Trade) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-  const kstToday = new Date(Date.now() + 9 * 3600_000).toISOString().split('T')[0];
-  const todayTrades = filled.filter((t: Trade) => new Date(new Date(t.created_at).getTime() + 9 * 3600_000).toISOString().split('T')[0] === kstToday);
 
-  const unrealizedPnl = p?.unrealizedPnl ?? 0;
-  const realizedPnl   = p?.realizedPnl ?? 0;
-  const totalPnl      = p?.pnl ?? 0;
-  const totalPnlPct   = p?.pnlPct ?? 0;
-  const domesticInvested = p?.domesticInvested ?? 0;
-  const domesticEval = p?.domesticEval ?? domesticInvested; // KIS 시가평가 (비중 계산용)
-  const totalInvested    = p?.invested ?? domesticInvested;
-  const overseasInvestedUsd = os?.totalInvestedUsd ?? 0;
-  const overseasInvestedKrw = os?.totalInvestedKrw ?? 0;
-  const overseasMarketKrw = os?.totalMarketValueKrw ?? overseasInvestedKrw;
-  const overseasCashUsd = os?.cashUsd ?? 0;
-  const overseasCashKrw = os?.cashKrw ?? (overseasCashUsd * (os?.fxRate ?? FALLBACK_FX_RATE));
-  const fxRate = os?.fxRate ?? FALLBACK_FX_RATE;
-  const dailyLossLimit = dash?.riskLimits?.maxDailyDrawdownKrw ?? 200000;
-  const overseasLimitUsd = dash?.riskLimits?.overseasLimitUsd ?? 0;
-  const totalValue = Number(p?.totalValue ?? 0);
-  // 총현금 (비중 계산용): 국내실현금 + 해외현금
-  const domesticCash = Number(p?.cash ?? 0);
-  // KIS 국내 주문가능금액 (대용 포함, KIS max_buy_amt)
-  const domesticOrderable = Number(p?.domesticCash ?? p?.cash ?? 0);
-  // 실제 보유 증권 시가 기준 (HeroPnlCard와 동일 산식, T+1 미결제는 현금으로 분류)
-  const investedPctExact = totalValue > 0
-    ? Math.min(100, ((domesticEval + overseasMarketKrw) / totalValue) * 100)
-    : 0;
-  const cashPctExact = Math.max(0, 100 - investedPctExact);
-  const investedPct = Math.round(investedPctExact);
+  const stockNameMap = useMemo(
+    () => new Map((watchlist ?? []).map((w: WatchlistItem) => [w.stock_code, w.stock_name])),
+    [watchlist],
+  );
+  const getStockName = useCallback(
+    (code: string): string => toDisplayName(stockNameMap.get(code), code),
+    [stockNameMap],
+  );
+
+  const chains = useMemo(() => dash?.chains || [], [dash?.chains]);
+  const usW = useMemo(() => usDash?.watchlist || [], [usDash?.watchlist]);
+  const usHoldings = useMemo(
+    () => (dash?.overseas?.holdings?.length ? dash.overseas.holdings : usDash?.holdings) ?? [],
+    [dash?.overseas?.holdings, usDash?.holdings],
+  );
+
+  const { filled, kstToday, todayTrades } = useMemo(() => {
+    const f = trades.filter((t: Trade) => t.status === 'FILLED' || t.status === 'PENDING')
+      .sort((a: Trade, b: Trade) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+    const kst = new Date(Date.now() + 9 * 3600_000).toISOString().split('T')[0];
+    const today = f.filter((t: Trade) => new Date(new Date(t.created_at).getTime() + 9 * 3600_000).toISOString().split('T')[0] === kst);
+    return { filled: f, kstToday: kst, todayTrades: today };
+  }, [trades]);
+
+  const portfolio = useMemo(() => {
+    const unrealizedPnl = p?.unrealizedPnl ?? 0;
+    const domesticInvested = p?.domesticInvested ?? 0;
+    const domesticEval = p?.domesticEval ?? domesticInvested;
+    const totalInvested = p?.invested ?? domesticInvested;
+    const overseasInvestedUsd = os?.totalInvestedUsd ?? 0;
+    const overseasInvestedKrw = os?.totalInvestedKrw ?? 0;
+    const overseasMarketKrw = os?.totalMarketValueKrw ?? overseasInvestedKrw;
+    const overseasCashUsd = os?.cashUsd ?? 0;
+    const fxRate = os?.fxRate ?? FALLBACK_FX_RATE;
+    const overseasCashKrw = os?.cashKrw ?? (overseasCashUsd * fxRate);
+    const totalValue = Number(p?.totalValue ?? 0);
+    const domesticCash = Number(p?.cash ?? 0);
+    const domesticOrderable = Number(p?.domesticCash ?? p?.cash ?? 0);
+    const investedPctExact = totalValue > 0 ? Math.min(100, ((domesticEval + overseasMarketKrw) / totalValue) * 100) : 0;
+    return {
+      unrealizedPnl, domesticInvested, domesticEval, totalInvested,
+      overseasInvestedUsd, overseasInvestedKrw, overseasMarketKrw,
+      overseasCashUsd, overseasCashKrw, fxRate, totalValue,
+      domesticCash, domesticOrderable, investedPctExact,
+      cashPctExact: Math.max(0, 100 - investedPctExact),
+      investedPct: Math.round(investedPctExact),
+      dailyLossLimit: dash?.riskLimits?.maxDailyDrawdownKrw ?? 200000,
+      overseasLimitUsd: dash?.riskLimits?.overseasLimitUsd ?? 0,
+    };
+  }, [p, os, dash?.riskLimits]);
+
+  const { unrealizedPnl, domesticInvested, domesticEval, totalInvested,
+    overseasInvestedUsd, overseasInvestedKrw, overseasMarketKrw,
+    overseasCashUsd, overseasCashKrw, fxRate, totalValue,
+    domesticCash, domesticOrderable, investedPctExact, cashPctExact,
+    investedPct, dailyLossLimit, overseasLimitUsd } = portfolio;
   const overseasCashPctExact = 0; // 통합증거금: 별도 해외현금 없음
 
-  const overseasPnlUsd = usHoldings.reduce((sum: number, h: UsHolding) => {
+  const overseasPnlUsd = useMemo(() => usHoldings.reduce((sum: number, h: UsHolding) => {
     const priceData = usW.find((s: UsWatchlistItem) => s.code === h.stock_code);
     const curPrice = (priceData?.price ?? 0) > 0 ? priceData!.price! : (h.last_price ?? 0);
     if (curPrice <= 0 || h.avg_price <= 0) return sum;
     return sum + (curPrice! - h.avg_price) * h.quantity;
-  }, 0);
+  }, 0), [usHoldings, usW]);
   const overseasPnlKrw = Math.round(overseasPnlUsd * fxRate);
+
   const showOnlyKr = holdingsTab === 'KR';
   const showOnlyUs = holdingsTab === 'US';
-  // 통합증거금: 탭에 따라 해당 시장 PnL만 표시 (현금/비중은 통합)
-  const combinedPnl = showOnlyKr ? unrealizedPnl : (usHoldings.length > 0 ? overseasPnlKrw : 0);
-  const combinedInvested = showOnlyKr
-    ? (domesticInvested > 0 ? domesticInvested : 0)
-    : (overseasInvestedKrw > 0 ? overseasInvestedKrw : 0);
-  const combinedPnlPct = combinedInvested > 0 ? (combinedPnl / combinedInvested) * 100 : 0;
   const hasOverseasHoldings = usHoldings.length > 0;
 
-  // 서버 KST 기준 todayStats 우선 사용 (클라이언트 TZ 의존 제거)
-  const _krTodaySells = todayTrades.filter((t: Trade) => t.side === 'SELL' && t.trigger_source !== 'OVERSEAS');
-  const _krRealizedPnl = _krTodaySells.reduce((sum: number, t: Trade) => {
-    if (t.realized_pnl != null) return sum + Number(t.realized_pnl);
-    const avgBuy = Number(t.transaction_chains?.avg_buy_price) || 0;
-    const filledPx = Number(t.filled_price) || 0;
-    const qty = Number(t.filled_quantity ?? t.quantity) || 0;
-    if (avgBuy <= 0 || filledPx <= 0 || qty <= 0) return sum;
-    const grossPnl = (filledPx - avgBuy) * qty;
-    return sum + grossPnl - Math.round(avgBuy * qty * 0.00015) - Math.round(filledPx * qty * 0.00195); // 수수료0.015%+거래세0.18%
-  }, 0);
-  const krTabPnl = todayStats ? todayStats.krRealizedPnl : _krRealizedPnl;
-  const krTabHasData = todayStats ? todayStats.krSellCount > 0 : _krTodaySells.length > 0;
-  const krSellsCostBasis = _krTodaySells.reduce((sum: number, t: Trade) => {
-    const avgBuy = Number(t.transaction_chains?.avg_buy_price) || 0;
-    const qty = Number(t.filled_quantity ?? t.quantity) || 0;
-    return avgBuy > 0 ? sum + avgBuy * qty : sum;
-  }, 0);
-  const krTabPct = krSellsCostBasis > 0 ? (krTabPnl / krSellsCostBasis) * 100 : null;
-  const _usTodaySells = trades.filter((t: Trade) =>
-    t.status === 'FILLED' && t.side === 'SELL' && t.trigger_source === 'OVERSEAS' &&
-    !/^[0-9]/.test(t.stock_code) &&
-    new Date(new Date(t.created_at).getTime() + 9 * 3600_000).toISOString().split('T')[0] === kstToday
-  );
-  const usTodaySells = _usTodaySells;
-  const _usTabPnlUsd = _usTodaySells.reduce((sum: number, t: Trade) => {
-    const reasoningMatch = String(t.ai_reasoning ?? '').match(/\[avgBuy:([\d.]+)\]/);
-    const avgBuy = reasoningMatch ? Number(reasoningMatch[1]) : (Number(t.transaction_chains?.avg_buy_price) || 0);
-    const filledPx = Number(t.filled_price) || 0;
-    const qty = Number(t.quantity) || 0;
-    return avgBuy > 0 && filledPx > 0 ? sum + (filledPx - avgBuy) * qty : sum;
-  }, 0);
-  const usTabPnlUsd = todayStats ? todayStats.usRealizedPnlUsd : _usTabPnlUsd;
-  const usTabPnlKrw = Math.round(usTabPnlUsd * fxRate);
+  const { combinedPnl, combinedPnlPct } = useMemo(() => {
+    const cPnl = showOnlyKr ? unrealizedPnl : (usHoldings.length > 0 ? overseasPnlKrw : 0);
+    const cInvested = showOnlyKr
+      ? (domesticInvested > 0 ? domesticInvested : 0)
+      : (overseasInvestedKrw > 0 ? overseasInvestedKrw : 0);
+    return { combinedPnl: cPnl, combinedPnlPct: cInvested > 0 ? (cPnl / cInvested) * 100 : 0 };
+  }, [showOnlyKr, unrealizedPnl, overseasPnlKrw, usHoldings.length, domesticInvested, overseasInvestedKrw]);
 
-  const kstNow = toKST(new Date());
-  const marketStart = 9 * 60;
-  const marketEnd = 15 * 60 + 30;
-  const currentMin = getKSTMinutes();
-  const marketProgress = health?.marketOpen ? Math.min(100, Math.max(0, ((currentMin - marketStart) / (marketEnd - marketStart)) * 100)) : 0;
-  const usMarketProgress = (() => {
-    const cur = currentMin;
-    const adj = cur < 6 * 60 ? cur + 24 * 60 : cur;
-    return Math.min(100, Math.max(0, ((adj - (23 * 60 + 30)) / (6 * 60 + 24 * 60 - (23 * 60 + 30))) * 100));
-  })();
-  const currentTimeStr = `${kstNow.getUTCHours().toString().padStart(2,'0')}:${kstNow.getUTCMinutes().toString().padStart(2,'0')}`;
+  // 서버 KST 기준 todayStats 우선 사용 (클라이언트 TZ 의존 제거)
+  const todayPnl = useMemo(() => {
+    const _krTodaySells = todayTrades.filter((t: Trade) => t.side === 'SELL' && t.trigger_source !== 'OVERSEAS');
+    const _krRealizedPnl = _krTodaySells.reduce((sum: number, t: Trade) => {
+      if (t.realized_pnl != null) return sum + Number(t.realized_pnl);
+      const avgBuy = Number(t.transaction_chains?.avg_buy_price) || 0;
+      const filledPx = Number(t.filled_price) || 0;
+      const qty = Number(t.filled_quantity ?? t.quantity) || 0;
+      if (avgBuy <= 0 || filledPx <= 0 || qty <= 0) return sum;
+      const grossPnl = (filledPx - avgBuy) * qty;
+      return sum + grossPnl - Math.round(avgBuy * qty * 0.00015) - Math.round(filledPx * qty * 0.00195);
+    }, 0);
+    const krTabPnl = todayStats ? todayStats.krRealizedPnl : _krRealizedPnl;
+    const krTabHasData = todayStats ? todayStats.krSellCount > 0 : _krTodaySells.length > 0;
+    const krSellsCostBasis = _krTodaySells.reduce((sum: number, t: Trade) => {
+      const avgBuy = Number(t.transaction_chains?.avg_buy_price) || 0;
+      const qty = Number(t.filled_quantity ?? t.quantity) || 0;
+      return avgBuy > 0 ? sum + avgBuy * qty : sum;
+    }, 0);
+    const krTabPct = krSellsCostBasis > 0 ? (krTabPnl / krSellsCostBasis) * 100 : null;
+
+    const _usTodaySells = trades.filter((t: Trade) =>
+      t.status === 'FILLED' && t.side === 'SELL' && t.trigger_source === 'OVERSEAS' &&
+      !/^[0-9]/.test(t.stock_code) &&
+      new Date(new Date(t.created_at).getTime() + 9 * 3600_000).toISOString().split('T')[0] === kstToday
+    );
+    const _usTabPnlUsd = _usTodaySells.reduce((sum: number, t: Trade) => {
+      const reasoningMatch = String(t.ai_reasoning ?? '').match(/\[avgBuy:([\d.]+)\]/);
+      const avgBuy = reasoningMatch ? Number(reasoningMatch[1]) : (Number(t.transaction_chains?.avg_buy_price) || 0);
+      const filledPx = Number(t.filled_price) || 0;
+      const qty = Number(t.quantity) || 0;
+      return avgBuy > 0 && filledPx > 0 ? sum + (filledPx - avgBuy) * qty : sum;
+    }, 0);
+    const usTabPnlUsd = todayStats ? todayStats.usRealizedPnlUsd : _usTabPnlUsd;
+    const usTabPnlKrw = Math.round(usTabPnlUsd * fxRate);
+
+    return { krTabPnl, krTabHasData, krTabPct, usTodaySells: _usTodaySells, usTabPnlUsd, usTabPnlKrw };
+  }, [todayTrades, trades, kstToday, todayStats, fxRate]);
+
+  const { krTabPnl, krTabHasData, krTabPct, usTodaySells, usTabPnlUsd, usTabPnlKrw } = todayPnl;
+
+  const marketInfo = useMemo(() => {
+    const kstNow = toKST(new Date());
+    const marketStart = 9 * 60;
+    const marketEnd = 15 * 60 + 30;
+    const currentMin = getKSTMinutes();
+    const marketProgress = health?.marketOpen ? Math.min(100, Math.max(0, ((currentMin - marketStart) / (marketEnd - marketStart)) * 100)) : 0;
+    const adj = currentMin < 6 * 60 ? currentMin + 24 * 60 : currentMin;
+    const usMarketProgress = Math.min(100, Math.max(0, ((adj - (23 * 60 + 30)) / (6 * 60 + 24 * 60 - (23 * 60 + 30))) * 100));
+    const currentTimeStr = `${kstNow.getUTCHours().toString().padStart(2,'0')}:${kstNow.getUTCMinutes().toString().padStart(2,'0')}`;
+    return { marketProgress, usMarketProgress, currentTimeStr };
+  }, [health?.marketOpen]);
+
+  const { marketProgress, usMarketProgress, currentTimeStr } = marketInfo;
   const defensePark = dash?.defensePark;
 
   const animCombined = useCountUp(combinedPnl);
@@ -258,6 +291,8 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
       <SuggestedActionsPanel suggestedActions={dash?.suggestedActions} monthlyGoal={dash?.monthlyGoal} fxImpact={dash?.fxImpact} viewMode={viewMode} />
 
       <MarketProgressBar health={health} holdingsTab={holdingsTab} currentTimeStr={currentTimeStr} marketProgress={marketProgress} usMarketProgress={usMarketProgress} unrealizedPnl={unrealizedPnl} overseasPnlUsd={overseasPnlUsd} dailyLossLimit={dailyLossLimit} overseasLimitUsd={overseasLimitUsd} />
+
+      <MarketSentimentPanel />
 
       <HeroPnlCard holdingsTab={holdingsTab} combinedPnl={combinedPnl} animCombined={animCombined} combinedPnlPct={combinedPnlPct} overseasPnlUsd={overseasPnlUsd} overseasInvestedUsd={overseasInvestedUsd} showOnlyKr={showOnlyKr} showOnlyUs={showOnlyUs} hasOverseasHoldings={hasOverseasHoldings} privacyMode={privacyMode} setPrivacyMode={setPrivacyMode} krTabHasData={krTabHasData} usTodaySells={usTodaySells} krTabPnl={krTabPnl} krTabPct={krTabPct} usTabPnlUsd={usTabPnlUsd} todayRealizedPnl={todayRealizedPnl} animToday={animToday} domesticCash={domesticCash} domesticOrderable={domesticOrderable} overseasCashUsd={overseasCashUsd} domesticInvested={domesticInvested} domesticEval={domesticEval} overseasMarketKrw={overseasMarketKrw} chainsLength={chains.length} usHoldingsLength={usHoldings.length} withdrawConfig={withdrawConfig} todayTradesLength={todayTradesCount} totalValue={totalValue} totalInvested={totalInvested} fxRate={fxRate} cashSource={dash?.cashSource} prevDayTotalValue={p?.prevDayTotalValue} dailyChangePct={p?.dailyChangePct} />
 

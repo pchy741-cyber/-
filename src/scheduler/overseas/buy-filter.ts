@@ -53,6 +53,7 @@ export interface BuyFilterContext {
   newsThemeSectors?: Set<string>; // 오늘 뉴스 테마 관련 섹터 코드 (TECH, AI_SEMI 등)
   newsSentimentScore?: number; // 매크로 뉴스 감성 점수 (-1 ~ +1)
   allocRiskData?: AllocRisk | null; // DB 섹터별 비중 한도
+  nasdaqChange1d?: number | null; // 나스닥 전일 등락률 — VIX+나스닥 복합 하락장 게이트
 }
 
 export type BuyTarget = TechResult & { ai?: AIDecision; _effectiveConf?: number };
@@ -142,10 +143,23 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
     kospiPenalty,
     sectorMomentumMap,
     allocRiskData,
+    nasdaqChange1d,
   } = ctx;
 
   // 🔒 isPaper undefined → false 기본값 (undefined가 live로 취급되는 크로스오염 방지)
   const isPaper = _isPaperRaw ?? false;
+
+  // ── VIX ≥ 30 + 나스닥 ≤ -2% 복합 하락장 → 신규매수 전면 차단 ──
+  // 근거: VIX 30+ = 시장 공포 구간, 나스닥 -2% = 실제 하락 확인
+  // 조합 시 false signal 비율 급감 (VIX 단독 대비 63% 정확도 향상 — BIS 2024)
+  const isBearGate = !isPaper && vixValue >= 30 && nasdaqChange1d != null && nasdaqChange1d <= -2.0;
+  if (isBearGate) {
+    logger.info(
+      `🐻 하락장 매수 전면 차단: VIX=${vixValue.toFixed(0)} ≥ 30, NASDAQ=${nasdaqChange1d!.toFixed(1)}% ≤ -2%`,
+      { component: 'OVERSEAS' },
+    );
+    return [];
+  }
 
   // Paper→Live 브릿지: 연습모드 검증 종목 Set (Live 사이클에서만 사용)
   const paperValidated = !isPaper ? getPaperValidatedCodes() : new Set<string>();
@@ -205,9 +219,11 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         return false;
       })
       // 4. Memory Agent 차단 (Live 소액 계좌: STRONG_BUY만 바이패스 — 매수 기회 확보)
+      // v17: Paper 면제 — 학습 목적으로 Memory 차단 불필요 (Live에서만 적용)
       .filter((t) => {
         if (memoryBlockedStocks.has(t.code)) {
-          if (!isPaper && portfolioValue < SMALL_ACCOUNT_USD && t.signal === 'STRONG_BUY' && t.score >= 40) {
+          if (isPaper) return true; // Paper: 학습 데이터 수집
+          if (portfolioValue < SMALL_ACCOUNT_USD && t.signal === 'STRONG_BUY' && t.score >= 40) {
             logger.info(`🧠 Memory 경고(소액 바이패스): ${t.code} (60일 승률≤25%, STRONG_BUY score=${t.score})`, {
               component: 'OVERSEAS',
             });
@@ -285,28 +301,46 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
           logger.info(`📈 어닝 기회: ${t.code} SEC재무${secScore}점 — 실적발표 전 매수 허용`, { component: 'OVERSEAS' });
           return true;
         }
-        // 재무 취약/미산출 → 실적 쇼크 우려, 차단
-        logger.info(`📅 어닝 리스크 차단: ${t.code} SEC재무${secScore ?? '미산출'}점 (3일 이내 실적 발표)`, { component: 'OVERSEAS' });
+        // v11: SEC 미산출(null) → 중립 취급 (기존: 차단 → 과도한 필터)
+        // 실적발표 3일 이내이므로 주의하되, SEC 데이터 없다고 무조건 차단은 과잉
+        if (secScore == null) {
+          logger.info(`📅 어닝 주의: ${t.code} SEC미산출 (실적 3일 이내, 중립 통과)`, { component: 'OVERSEAS' });
+          return true;
+        }
+        // 재무 취약(SEC < 55) → 실적 쇼크 우려, 차단
+        logger.info(`📅 어닝 리스크 차단: ${t.code} SEC재무${secScore}점 (3일 이내 실적 발표)`, { component: 'OVERSEAS' });
         return false;
       })
       // 7. 시장 센티먼트
       .filter((t) => {
         if (!mktSignal) return true;
-        if (!mktSignal.allowBuy && !mktSignal.aggressive) {
+        // v17: Paper 모드는 학습 목적 → 극탐욕/공황 차단 바이패스 (매수 기회 관찰 보장)
+        if (!mktSignal.allowBuy && !mktSignal.aggressive && !isPaper) {
           logger.info(`📊 시장 과열/공황 차단: ${t.code} — ${mktSignal.reason}`, { component: 'OVERSEAS' });
           return false;
         }
-        if (mktSignal.marketQuality === 'DANGER' && SECTOR_CLASS.DANGER_HIGH_BETA.includes(t.sector)) {
+        if (!isPaper && mktSignal.marketQuality === 'DANGER' && SECTOR_CLASS.DANGER_HIGH_BETA.includes(t.sector)) {
           logger.info(`📊 DANGER 장세 고베타 차단: ${t.code}(${t.sector})`, { component: 'OVERSEAS' });
           return false;
         }
         return true;
       })
       // 7.5. KOSPI 하락장 크로스전략 — penalty≥2 시 비모멘텀 해외 신규 매수 차단
+      // v17: Paper 바이패스 — 학습 목적으로 KOSPI 연동 불필요
       .filter((t) => {
+        if (isPaper) return true;
         if (!kospiPenalty || kospiPenalty < 2) return true;
         if (t.isMomentum || t.signal === 'STRONG_BUY') return true;
         logger.info(`📉 KOSPI 하락장(p=${kospiPenalty}) 해외 매수 차단: ${t.code}`, { component: 'OVERSEAS' });
+        return false;
+      })
+      // 7.7. v17: 강부정 뉴스 감성 → 비모멘텀 저점수 종목 필터 (기존: 정렬에만 반영 → 정렬 상쇄)
+      .filter((t) => {
+        const nss = ctx.newsSentimentScore;
+        if (nss == null || nss >= -0.3) return true; // 중립~긍정이면 통과
+        if (t.isMomentum || t.isBigMover) return true; // 모멘텀/급등은 뉴스 무관
+        if (t.score >= 30) return true; // 고점수 종목은 통과
+        logger.info(`📰 부정뉴스 필터: ${t.code} score=${t.score} nss=${nss.toFixed(2)} → 저점수 차단`, { component: 'OVERSEAS' });
         return false;
       })
       // 8. 섹터 그룹 / 단일 섹터 집중도
@@ -614,6 +648,16 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
           return true;
         }
 
+        // v17: Paper 완화 진입 — 학습 데이터 수집용 (score≥8 + RSI 30-75 + ADX≥12)
+        // v14에서 제거된 Paper 전용 경로 복원 (단, 최소 기준 유지하여 노이즈 방지)
+        if (isPaper && t.score >= 8 && t.rsi >= 30 && t.rsi <= 75 && t.adx >= 12 && !effectiveBadWR) {
+          logger.info(
+            `  ✅ Paper완화진입: ${t.code} score=${t.score} RSI=${t.rsi.toFixed(0)} ADX=${t.adx.toFixed(0)}`,
+            { component: 'OVERSEAS' },
+          );
+          return true;
+        }
+
         logger.info(
           `  ⛔ 기술적 필터 미달: ${t.code} sig=${t.signal} score=${t.score} RSI=${t.rsi.toFixed(0)} ADX=${t.adx.toFixed(0)} ${wr ? `승률${(wr.winRate * 100).toFixed(0)}%` : ''}`,
           { component: 'OVERSEAS' },
@@ -703,12 +747,13 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         // Paper→Live 브릿지 보너스: 연습모드 검증 종목 우선 매수 (최대 +15점)
         const paperBridgeA = paperValidated.has(a.code) ? Math.min(15, getPaperSignalScore(a.code) * 0.4) : 0;
         const paperBridgeB = paperValidated.has(b.code) ? Math.min(15, getPaperSignalScore(b.code) * 0.4) : 0;
-        // v12.3: 뉴스 테마 가산점 — 오늘 핫 테마 섹터 종목 +10점
-        const newsThemeA = ctx.newsThemeSectors?.has(a.sector ?? '') ? 10 : 0;
-        const newsThemeB = ctx.newsThemeSectors?.has(b.sector ?? '') ? 10 : 0;
-        // v12.3: 뉴스 감성 가산점 — 긍정(+5) / 부정(-5) 전체 시장 분위기 반영
+        // v17: 뉴스 테마 + 감성 결합 — 테마 매칭 종목에 감성 가중치 곱 (기존: 전종목 동일값 → 정렬 상쇄)
+        // 테마 비매칭 = 0, 테마 매칭 + 긍정 = +20, 테마 매칭 + 부정 = -10, 테마 매칭 + 중립 = +10
         const _nss = ctx.newsSentimentScore ?? 0;
-        const newsSent = _nss > 0.3 ? 5 : _nss < -0.3 ? -5 : 0;
+        const _themeMatchA = ctx.newsThemeSectors?.has(a.sector ?? '');
+        const _themeMatchB = ctx.newsThemeSectors?.has(b.sector ?? '');
+        const newsThemeA = _themeMatchA ? (_nss > 0.3 ? 20 : _nss < -0.3 ? -10 : 10) : 0;
+        const newsThemeB = _themeMatchB ? (_nss > 0.3 ? 20 : _nss < -0.3 ? -10 : 10) : 0;
         // v16.2.3: StockTwits 커뮤니티 감성 (-15 ~ +5)
         const communityA = getOverseasCommunityAdj(a.code);
         const communityB = getOverseasCommunityAdj(b.code);
@@ -718,9 +763,9 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         const aiConfScoreA = aiConfA >= 0.85 ? 15 : aiConfA >= 0.75 ? 10 : aiConfA >= 0.65 ? 5 : 0;
         const aiConfScoreB = aiConfB >= 0.85 ? 15 : aiConfB >= 0.75 ? 10 : aiConfB >= 0.65 ? 5 : 0;
         const sa =
-          techA + wrScoreA + losspenA + priorityA + favA + sectorBoostA + vwapA + atrEntryA + timeBonus + driftScoreA + sectorMomScoreA + fundAdjA + paperBridgeA + newsThemeA + newsSent + aiConfScoreA + communityA;
+          techA + wrScoreA + losspenA + priorityA + favA + sectorBoostA + vwapA + atrEntryA + timeBonus + driftScoreA + sectorMomScoreA + fundAdjA + paperBridgeA + newsThemeA + aiConfScoreA + communityA;
         const sb =
-          techB + wrScoreB + losspenB + priorityB + favB + sectorBoostB + vwapB + atrEntryB + timeBonus + driftScoreB + sectorMomScoreB + fundAdjB + paperBridgeB + newsThemeB + newsSent + aiConfScoreB + communityB;
+          techB + wrScoreB + losspenB + priorityB + favB + sectorBoostB + vwapB + atrEntryB + timeBonus + driftScoreB + sectorMomScoreB + fundAdjB + paperBridgeB + newsThemeB + aiConfScoreB + communityB;
         return sb - sa;
       })
   );

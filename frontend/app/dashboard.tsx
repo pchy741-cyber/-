@@ -145,11 +145,12 @@ export default function Dashboard() {
 
   const isPaper = viewMode === 'paper';
   const isUS = marketTab === 'US';
-  const theme = isPaper
+  const theme = React.useMemo(() => isPaper
     ? isUS ? { bg: '#0a0906', side: '#100f08', main1: '#0a0906', main2: '#0f0e08', accent: 'amber', border: 'amber-500/[0.06]', bar: 'from-amber-700/40 via-amber-500/60 to-amber-700/40' }
            : { bg: '#0d0a06', side: '#12100a', main1: '#0d0a06', main2: '#11100a', accent: 'amber', border: 'amber-500/[0.06]', bar: 'from-amber-600/60 via-amber-400/80 to-amber-600/60' }
     : isUS ? { bg: '#080610', side: '#0e0a1a', main1: '#080610', main2: '#0c0a18', accent: 'violet', border: 'violet-500/[0.06]', bar: 'from-indigo-600/50 via-violet-500/60 to-indigo-600/50' }
-           : { bg: '#06080f', side: '#0a0e1a', main1: '#06080f', main2: '#0a0e1a', accent: 'blue', border: 'white/[0.04]', bar: '' };
+           : { bg: '#06080f', side: '#0a0e1a', main1: '#06080f', main2: '#0a0e1a', accent: 'blue', border: 'white/[0.04]', bar: '' },
+  [isPaper, isUS]);
 
   if (showOverlay) return <DbWarmingOverlay onReady={() => { setDbSyncing(false); load(true); }} />;
 
@@ -232,11 +233,10 @@ export default function Dashboard() {
                 {tab === 'news' && <NewsView watchlist={watchlist} setWatchlist={setWatchlist} viewMode={viewMode} />}
               </ErrorBoundary>
               <ErrorBoundary fallbackTitle="퀀트봇 로딩 오류">
-                {tab === 'research' && (
-                  <div className="space-y-4">
-                    <ResearchBotPanel />
-                  </div>
-                )}
+                {/* v17: 사전로드 — 탭 전환 시 즉시 표시 (기존: lazy mount → 탭 클릭 후 fetch 시작) */}
+                <div className="space-y-4" style={{ display: tab === 'research' ? undefined : 'none' }}>
+                  <ResearchBotPanel />
+                </div>
               </ErrorBoundary>
               <ErrorBoundary fallbackTitle="배당 로딩 오류">
                 {tab === 'dividend' && <DividendView toast={toast} viewMode={viewMode} confirm={confirm} mpData={mpData} onRefreshMp={refreshMp} />}

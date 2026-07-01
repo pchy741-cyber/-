@@ -1,8 +1,54 @@
 'use client';
 
-import React from 'react';
-import { fmtWon, pc } from '../../lib/utils';
+import React, { useState, useEffect, useMemo } from 'react';
+import { api, fmtWon, pc } from '../../lib/utils';
 import type { Trade, WithdrawConfig } from '../../types';
+
+/** 미니 에퀴티 커브 스파크라인 (순수 SVG, 라이브러리 없음) */
+const EquitySparkline = React.memo(function EquitySparkline() {
+  const [points, setPoints] = useState<{ date: string; totalValue: number }[]>([]);
+  useEffect(() => {
+    api('/dashboard-analysis/equity-curve?days=14&viewMode=live')
+      .then((r: { points?: { date: string; totalValue: number }[] }) => {
+        if (r?.points?.length) setPoints(r.points);
+      })
+      .catch(() => {});
+  }, []);
+
+  const path = useMemo(() => {
+    if (points.length < 2) return null;
+    const values = points.map(p => p.totalValue);
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+    const range = max - min || 1;
+    const W = 120, H = 28;
+    const coords = values.map((v, i) => ({
+      x: (i / (values.length - 1)) * W,
+      y: H - ((v - min) / range) * (H - 4) - 2,
+    }));
+    const d = coords.map((c, i) => `${i === 0 ? 'M' : 'L'}${c.x.toFixed(1)},${c.y.toFixed(1)}`).join(' ');
+    const last = values[values.length - 1];
+    const first = values[0];
+    return { d, isUp: last >= first };
+  }, [points]);
+
+  if (!path) return null;
+  return (
+    <svg width="120" height="28" viewBox="0 0 120 28" className="opacity-60">
+      <polyline
+        points={path.d.replace(/[ML]/g, '').replace(/,/g, ' ').trim().split(/\s+/).reduce((acc, _, i, arr) => {
+          if (i % 2 === 0) acc.push(`${arr[i]},${arr[i+1]}`);
+          return acc;
+        }, [] as string[]).join(' ')}
+        fill="none"
+        stroke={path.isUp ? '#34d399' : '#f87171'}
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+});
 
 interface HeroPnlCardProps {
   holdingsTab: 'KR' | 'US';
@@ -41,7 +87,7 @@ interface HeroPnlCardProps {
   dailyChangePct?: number;
 }
 
-export default function HeroPnlCard({
+function HeroPnlCard({
   holdingsTab, combinedPnl, animCombined, combinedPnlPct,
   overseasPnlUsd, overseasInvestedUsd, showOnlyKr, showOnlyUs,
   hasOverseasHoldings, privacyMode, setPrivacyMode,
@@ -59,9 +105,12 @@ export default function HeroPnlCard({
 
   return (
     <div className={`rounded-2xl border p-5 ${combinedPnl > 0 ? 'bg-gradient-to-br from-emerald-950/60 via-emerald-900/20 to-transparent border-emerald-500/20' : combinedPnl < 0 ? 'bg-gradient-to-br from-rose-950/60 via-rose-900/20 to-transparent border-rose-500/20' : 'glass border-white/[0.06]'}`}>
-      {/* 상단 헤더 */}
+      {/* 상단 헤더 + 에퀴티 스파크라인 */}
       <div className="flex items-center justify-between mb-4">
-        <span className="text-xs font-semibold text-slate-400 tracking-wide">미실현 손익{showOnlyKr ? ' 🇰🇷 국내' : showOnlyUs ? ' 🇺🇸 해외' : hasOverseasHoldings ? ' (국내+해외)' : ''}</span>
+        <div className="flex items-center gap-3">
+          <span className="text-xs font-semibold text-slate-400 tracking-wide">미실현 손익{showOnlyKr ? ' 🇰🇷 국내' : showOnlyUs ? ' 🇺🇸 해외' : hasOverseasHoldings ? ' (국내+해외)' : ''}</span>
+          <EquitySparkline />
+        </div>
         <button onClick={() => setPrivacyMode(v => !v)} className="text-slate-500 hover:text-slate-300 transition-colors p-1 -m-1 rounded-lg">
           {privacyMode ? (
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" /></svg>
@@ -147,3 +196,5 @@ export default function HeroPnlCard({
     </div>
   );
 }
+
+export default React.memo(HeroPnlCard);
