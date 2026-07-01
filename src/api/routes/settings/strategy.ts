@@ -18,9 +18,13 @@ strategyRoutes.put('/strategy', async (c) => {
   const body = await c.req.json();
 
   const rawMode = (body.mode ?? 'SWING') as keyof typeof STRATEGY_PARAMS;
-  // SCALPING/EOD_BETTING 영구 비활성화 — API 레벨 차단 (UI 우회 방지)
-  const BLOCKED_MODES = new Set(['SCALPING', 'EOD_BETTING']);
-  const requestedMode = BLOCKED_MODES.has(rawMode) ? 'SWING' : rawMode;
+  // Live: SCALPING/EOD_BETTING/DIVIDEND 차단 (안정성)
+  // Paper: SCALPING/EOD_BETTING 허용 (튜닝용), DIVIDEND 제거
+  const isPaperReq = resolveRequestMode(c);
+  const LIVE_BLOCKED = new Set(['SCALPING', 'EOD_BETTING', 'DIVIDEND']);
+  const PAPER_BLOCKED = new Set(['DIVIDEND']);
+  const blockedSet = isPaperReq ? PAPER_BLOCKED : LIVE_BLOCKED;
+  const requestedMode = blockedSet.has(rawMode) ? 'SWING' : rawMode;
   const modeBase = STRATEGY_PARAMS[requestedMode] ?? STRATEGY_PARAMS.SWING;
   // 강제 ON: AI 자동 관리 — UI에서 변경 불가
   const useDynamic: boolean = true;
@@ -62,7 +66,7 @@ strategyRoutes.put('/strategy', async (c) => {
 
   try {
     // ── 통합 설정: CEO 대시보드에서 변경 시 paper/live 모두 동일하게 적용 ──
-    const isPaper = resolveRequestMode(c);
+    const isPaper = isPaperReq;
     const setParams = [
       strategyData.mode,
       strategyData.notebooklm_prompt,

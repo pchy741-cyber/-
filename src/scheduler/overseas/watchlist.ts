@@ -38,8 +38,8 @@ const CORE_WATCHLIST = [
   { code: 'UMC', name: 'United Micro', exchange: 'NYSE', region: 'US', sector: 'TW_SEMI' },
 ];
 
-// ── Extended 감시 목록 — 모멘텀/볼륨 기반 보조 후보 (12종목) ──
-// 대형주 유동성 + 섹터 다각화 보강 → Core에 없는 기회 포착
+// ── Extended 감시 목록 — 섹터 다각화 + 모멘텀/볼륨 보조 후보 ──
+// 전 섹터 커버리지 확보 → Core에 없는 기회 포착
 const EXTENDED_WATCHLIST = [
   // 🤖 AI/반도체 추가
   { code: 'MRVL', name: 'Marvell Tech', exchange: 'NASDAQ', region: 'US', sector: 'AI_SEMI' },
@@ -68,9 +68,29 @@ const EXTENDED_WATCHLIST = [
   { code: 'JD', name: 'JD.com', exchange: 'NASDAQ', region: 'US', sector: 'CN_ADR' },
   { code: 'PDD', name: 'PDD Holdings', exchange: 'NASDAQ', region: 'US', sector: 'CN_ADR' },
   { code: 'BIDU', name: 'Baidu', exchange: 'NASDAQ', region: 'US', sector: 'CN_ADR' },
+  // ⛽ 에너지 (원유·가스 메이저 — 인플레이션 헤지, 고배당)
+  { code: 'XOM', name: 'Exxon Mobil', exchange: 'NYSE', region: 'US', sector: 'ENERGY' },
+  { code: 'CVX', name: 'Chevron', exchange: 'NYSE', region: 'US', sector: 'ENERGY' },
+  // 🏢 REITs (디지털 인프라 — 5G/데이터센터 성장)
+  { code: 'AMT', name: 'American Tower', exchange: 'NYSE', region: 'US', sector: 'REIT' },
+  // 🛒 필수소비재 (경기방어 — 안정적 매출)
+  { code: 'COST', name: 'Costco', exchange: 'NASDAQ', region: 'US', sector: 'CONSUMER' },
+  // ⚡ 유틸리티 (클린에너지 — AI 데이터센터 전력 수혜)
+  { code: 'NEE', name: 'NextEra Energy', exchange: 'NYSE', region: 'US', sector: 'UTILITY' },
+  // 🧬 바이오텍 (mRNA 플랫폼 — 고변동 고수익)
+  { code: 'MRNA', name: 'Moderna', exchange: 'NASDAQ', region: 'US', sector: 'BIOTECH' },
+  // 🪙 크립토 (암호화폐 시장 프록시)
+  { code: 'COIN', name: 'Coinbase', exchange: 'NASDAQ', region: 'US', sector: 'CRYPTO' },
+  // 💳 핀테크 (디지털 결제 성장)
+  { code: 'PYPL', name: 'PayPal', exchange: 'NASDAQ', region: 'US', sector: 'FINTECH' },
+  { code: 'SQ', name: 'Block Inc', exchange: 'NYSE', region: 'US', sector: 'FINTECH' },
+  // 🇯🇵 일본 ADR 추가 (3500조엔 경제부흥 투자 수혜 — 인프라·금융·제조)
+  { code: 'SMFG', name: 'Sumitomo Mitsui', exchange: 'NYSE', region: 'US', sector: 'JP_BANK' },
+  { code: 'HMC', name: 'Honda Motor', exchange: 'NYSE', region: 'US', sector: 'JP_AUTO' },
+  { code: 'NMR', name: 'Nomura Holdings', exchange: 'NYSE', region: 'US', sector: 'JP_FINANCE' },
 ];
 
-// ── 통합 감시 목록 (Core 23 + Extended 16 = 39종목) ──
+// ── 통합 감시 목록 (Core 24 + Extended 30 = 54종목, 전 섹터 커버) ──
 // 모든 코드에서 GLOBAL_WATCHLIST를 사용 → 기존 호환성 유지
 export const GLOBAL_WATCHLIST = [...CORE_WATCHLIST, ...EXTENDED_WATCHLIST];
 

@@ -640,6 +640,28 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     };
   });
 
+  // ── 섹터별 분포 (대시보드 표시용) ──
+  const sectorMap = new Map<string, { count: number; holdings: string[]; investedUsd: number }>();
+  for (const w of GLOBAL_WATCHLIST) {
+    const s = sectorMap.get(w.sector) ?? { count: 0, holdings: [], investedUsd: 0 };
+    s.count++;
+    sectorMap.set(w.sector, s);
+  }
+  for (const h of overseasHoldings) {
+    const s = sectorMap.get(h.sector);
+    if (s) {
+      s.holdings.push(h.stock_code);
+      s.investedUsd += h.avg_price * h.quantity;
+    }
+  }
+  const sectorBreakdown = [...sectorMap.entries()].map(([sector, d]) => ({
+    sector,
+    watchlistCount: d.count,
+    holdingCount: d.holdings.length,
+    holdings: d.holdings,
+    investedUsd: Math.round(d.investedUsd * 100) / 100,
+  })).sort((a, b) => b.holdingCount - a.holdingCount || b.watchlistCount - a.watchlistCount);
+
   const dashPayload = {
     portfolio: {
       totalValue: assets.grandTotalValue,
@@ -674,6 +696,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
       cashKrw: overseasCashForDisplay,
       fxRate: FX_RATE,
       scores: getOverseasScores(),
+      sectorBreakdown,
     },
     activeChains: displayChains.length,
     chains: displayChains,
