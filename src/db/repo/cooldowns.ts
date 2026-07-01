@@ -20,10 +20,10 @@ export async function getRecentManuallySoldStocks(hoursBack = 24): Promise<Set<s
   }
 }
 
-/** 최근 매도(CLOSED) 종목 쿨다운 — v10.4: 모든 매도에 동일 쿨다운 적용 (churning 방지)
- *  기존 익절(+3%↑) 면제, 승률 70%+ 5분 단축 제거 → 반복 매매 = 적자 주범
+/** 최근 매도(CLOSED) 종목 쿨다운 — churning 방지 (Freqtrade: 2-5 candles 권장)
+ *  4h→2h: 국내 장중 6.5시간에서 4h는 61% 차단 → 2h(31%)로 완화
  */
-export async function getRecentlySoldStocks(hoursBack = 4): Promise<Set<string>> {
+export async function getRecentlySoldStocks(hoursBack = 2): Promise<Set<string>> {
   if (isMemoryMode()) return new Set();
   try {
     const { rows } = await queryWithRetry(
@@ -45,11 +45,11 @@ const _lossStocksCache = new Map<string, Set<string>>();
 const _bigLossStocksCache = new Map<string, Set<string>>();
 
 /** 최근 손절 종목 코드 반환 (졸업식 재진입 방지)
- *  - 일반 손실(>5000원): 7일 차단
- *  - 대손실(>50000원): 14일 차단
- *  - ATR/손절 사유 매도: 7일 차단 (같은 패턴 반복 방지)
+ *  - 일반 손실(>5000원): 3일 차단 (smart-reentry가 기술적 반등 2차 검증)
+ *  - 대손실(>50000원): 7일 차단
+ *  - ATR/손절 사유 매도: 3일 차단
  */
-export async function getRecentLossStocks(_daysBack = 14): Promise<Set<string>> {
+export async function getRecentLossStocks(_daysBack = 7): Promise<Set<string>> {
   const cacheKey = String(getCtxIsPaper());
   if (isMemoryMode()) {
     // 메모리 모드: 마지막 DB 조회 캐시 사용 (fail-closed). 캐시 없으면 빈 Set.
@@ -62,9 +62,9 @@ export async function getRecentLossStocks(_daysBack = 14): Promise<Set<string>> 
        WHERE status = 'CLOSED'
          AND is_paper = $1
          AND (
-           (realized_pnl < -5000  AND closed_at > NOW() - INTERVAL '7 days')
+           (realized_pnl < -5000  AND closed_at > NOW() - INTERVAL '3 days')
            OR
-           (realized_pnl < -50000 AND closed_at > NOW() - INTERVAL '14 days')
+           (realized_pnl < -50000 AND closed_at > NOW() - INTERVAL '7 days')
          )`,
       [getCtxIsPaper()],
     );
@@ -75,7 +75,7 @@ export async function getRecentLossStocks(_daysBack = 14): Promise<Set<string>> 
       `SELECT DISTINCT o.stock_code FROM orders o
        WHERE o.side = 'SELL' AND o.status = 'FILLED'
          AND o.is_paper = $1
-         AND o.created_at > NOW() - INTERVAL '7 days'
+         AND o.created_at > NOW() - INTERVAL '3 days'
          AND (o.ai_reasoning LIKE '%손절%' OR o.ai_reasoning LIKE '%ATR트레일%'
               OR o.ai_reasoning LIKE '%FORCE_CLOSE%' OR o.ai_reasoning LIKE '%시간 손절%')`,
       [getCtxIsPaper()],
@@ -96,8 +96,8 @@ export async function getRecentLossStocks(_daysBack = 14): Promise<Set<string>> 
 }
 
 /**
- * 5% 초과 손실 매도 종목 — 30일 절대 차단 (CEO allowRebuy override 없이 재매수 불가)
- * AI 점수와 무관하게 차단. 손해보고 판 걸 또 사는 건 금지.
+ * 5% 초과 손실 매도 종목 — 14일 차단 (smart-reentry 기술적 반등 확인 시 해제)
+ * 30일→14일: 시장 전환 주기(2~3주) 고려, smart-reentry가 5MA/피보나치/RSI 검증
  */
 export async function getBigLossBlockedStocks(): Promise<Set<string>> {
   const cacheKey = String(getCtxIsPaper());
@@ -110,7 +110,7 @@ export async function getBigLossBlockedStocks(): Promise<Set<string>> {
        WHERE status = 'CLOSED'
          AND is_paper = $1
          AND pnl_pct < -5.0
-         AND closed_at > NOW() - INTERVAL '30 days'`,
+         AND closed_at > NOW() - INTERVAL '14 days'`,
       [getCtxIsPaper()],
     );
     const blocked = new Set(rows.map((r: { stock_code: string }) => r.stock_code));
