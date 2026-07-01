@@ -1656,8 +1656,8 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
         // $500 미만: cap 무제한 (concentration-cap도 skip), $500+: 25% (cap 발동 기준과 동일)
         const existingHolding = updatedHoldings.get(target.code);
         const existingQty = existingHolding?.qty ?? 0;
-        // v15: 소액 계좌($2000 미만) 집중캡 100% (고가 주식 1주 매수 가능하도록)
-        const CONC_CAP_PCT = sizingPortfolioValue < 2000 ? 1.0 : 0.25;
+        // v17: 소액 계좌도 집중캡 적용 (한 종목 몰빵 → 수익 다 까먹는 패턴 방지)
+        const CONC_CAP_PCT = sizingPortfolioValue < 500 ? 0.60 : sizingPortfolioValue < 2000 ? 0.40 : 0.25;
         let maxQtyByConc =
           sizingPortfolioValue > 0
             ? Math.max(0, Math.floor((sizingPortfolioValue * CONC_CAP_PCT) / priceWithFee) - existingQty)
@@ -1776,8 +1776,9 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
           atrPct: entryAtrPct,
           tunerOverrides,
         });
-        // TACTICAL: -1.5% SL (오버나이트 갭 최소화), SNIPER: -2.0% SL (고확신이므로 타이트하게)
-        const effectiveSlPct = targetBucket === 'TACTICAL' ? 1.5 : effectiveBucket === 'SNIPER' ? 2.0 : dynSlPct;
+        // TACTICAL: 섹터별 SL (CRYPTO/HIGH_BETA는 넓게), SNIPER: -2.0% SL (고확신 타이트)
+        const tacticalSl = target.sector === 'CRYPTO' ? 3.0 : target.sector === 'CN_ADR' ? 2.5 : 2.0;
+        const effectiveSlPct = targetBucket === 'TACTICAL' ? tacticalSl : effectiveBucket === 'SNIPER' ? 2.0 : dynSlPct;
         // 매수 시점 동적 TP/SL + 버킷을 overseas_holdings에 영속 저장
         await updateTradeState({
           code: target.code,

@@ -440,10 +440,10 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
       //   손절 임계까지 보유하거나 시간기반 손절(섹션 6)이 처리하게 양보
       //   과거 SONY 케이스: maxPnlPct=2.0 잠깐 가고 -1.19%에서 매도 (7회 누적 -11.7%)
     } else if (
-      maxPnlPct >= 2.0 &&
+      maxPnlPct >= 3.5 && // v17: 2.0→3.5 (충분한 수익 확보 후 보호, COIN 같은 고변동 조기매도 방지)
       maxPnlPct < trailActivatePct &&
       pnlPct >= 0 && // 🛡️ 핵심 가드: 현재 수익 상태일 때만
-      drawdownFromPeak <= -1.5 &&
+      drawdownFromPeak <= -2.0 && // v17: -1.5→-2.0 (정상 풀백 허용)
       !tech.isMomentum &&
       !(tech.aboveMA20 && tech.adx >= 30)
     ) {
