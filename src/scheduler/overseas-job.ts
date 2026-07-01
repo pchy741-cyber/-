@@ -1212,58 +1212,49 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
       );
     }
 
-    // ── 포트폴리오 배분 비중 체크 — kr_pct / us_pct 목표 준수 (Live 전용) ──
-    // Paper 모드는 국내 포트폴리오가 없어 해외비중 100%로 잡히므로 스킵
+    // ── 포트폴리오 배분 비중 체크 — 총자산(totalAccountKrw) 기준 (Live 전용) ──
+    // 기존 버그: 투자금만으로 비중 계산 → 현금 누락, 비중 왜곡
+    // 수정: totalAccountKrw(국내+해외 전체 자산) 기준으로 해외 비중 정확 계산
     let allocBlocked = false;
-    const fxNow = cycleFxRate; // 사이클 환율 재사용
-    if (!isPaper()) {
+    const fxNow = cycleFxRate;
+    if (!isPaper() && totalAccountKrw > 0 && fxNow > 0) {
       try {
-        // 3개 독립 쿼리 병렬 실행 (기존 순차 → 병렬, ~300ms 절약)
-        const rotKey = isPaper() ? 'p_rotation_signal' : 'l_rotation_signal';
-        const [domResult, allocResult, rotResult] = await Promise.all([
-          getPool().query(
-            `SELECT COALESCE(SUM(invested_amount), 0) AS domestic_invested
-             FROM chains WHERE is_active = true AND is_paper = $1`,
-            [isPaper()],
-          ),
+        const rotKey = 'l_rotation_signal';
+        const [allocResult, rotResult] = await Promise.all([
           getPool().query(
             'SELECT us_pct FROM portfolio_allocation_config WHERE is_paper = $1 ORDER BY id DESC LIMIT 1',
             [isPaper()],
           ),
           getPool().query('SELECT value FROM system_state WHERE key = $1', [rotKey]).catch(() => ({ rows: [] })),
         ]);
-        const domesticInvestedKrw = Number(domResult.rows[0]?.domestic_invested ?? 0);
-        const domesticInvestedUsd = fxNow > 0 ? domesticInvestedKrw / fxNow : 0;
-        // 국내 투자중 금액이 $100 이상일 때만 비중 체크
-        if (domesticInvestedUsd >= 100) {
-          const grandInvestedUsd = (holdingEvalUsdPost || 0) + domesticInvestedUsd;
-          let targetUsPct = Number(allocResult.rows[0]?.us_pct ?? 100);
-          // 크로스마켓 로테이션: DB에 저장된 최신 로테이션 신호로 동적 조정
-          try {
-            const rotRows = rotResult.rows;
-            if (rotRows.length > 0) {
-              const rot = JSON.parse(rotRows[0].value);
-              const ageMs = Date.now() - new Date(rot.updatedAt).getTime();
-              if (ageMs < 12 * 60 * 60_000 && rot.adjustedUsPct !== undefined) {
-                if (rot.adjustedUsPct !== targetUsPct) {
-                  logger.info(`📊 로테이션 적용: US 목표 ${targetUsPct}%→${rot.adjustedUsPct}%`, {
-                    component: 'OVERSEAS',
-                  });
-                }
-                targetUsPct = rot.adjustedUsPct;
+        let targetUsPct = Number(allocResult.rows[0]?.us_pct ?? 100);
+        // 크로스마켓 로테이션: DB에 저장된 최신 로테이션 신호로 동적 조정
+        try {
+          const rotRows = rotResult.rows;
+          if (rotRows.length > 0) {
+            const rot = JSON.parse(rotRows[0].value);
+            const ageMs = Date.now() - new Date(rot.updatedAt).getTime();
+            if (ageMs < 12 * 60 * 60_000 && rot.adjustedUsPct !== undefined) {
+              if (rot.adjustedUsPct !== targetUsPct) {
+                logger.info(`📊 로테이션 적용: US 목표 ${targetUsPct}%→${rot.adjustedUsPct}%`, {
+                  component: 'OVERSEAS',
+                });
               }
+              targetUsPct = rot.adjustedUsPct;
             }
-          } catch {
-            /* 로테이션 미설정 시 원래값 유지 */
           }
-          const currentUsPct = grandInvestedUsd > 0 ? ((holdingEvalUsdPost || 0) / grandInvestedUsd) * 100 : 0;
-          if (currentUsPct > targetUsPct * 1.15) {
-            allocBlocked = true;
-            logger.warn(
-              `📊 해외 배분 비중 초과: ${currentUsPct.toFixed(0)}% > 목표 ${targetUsPct}% (+15% 여유) → 신규 매수 차단`,
-              { component: 'OVERSEAS' },
-            );
-          }
+        } catch {
+          /* 로테이션 미설정 시 원래값 유지 */
+        }
+        // 총자산 기준 해외 비중: 해외보유(시가) / 총자산
+        const grandTotalUsd = totalAccountKrw / fxNow;
+        const currentUsPct = grandTotalUsd > 0 ? ((holdingEvalUsdPost || 0) / grandTotalUsd) * 100 : 0;
+        if (currentUsPct > targetUsPct * 1.15) {
+          allocBlocked = true;
+          logger.warn(
+            `📊 해외 배분 비중 초과: ${currentUsPct.toFixed(0)}% > 목표 ${targetUsPct}% (+15% 여유, 총자산₩${(totalAccountKrw / 10000).toFixed(0)}만 기준) → 신규 매수 차단`,
+            { component: 'OVERSEAS' },
+          );
         }
       } catch {
         /* alloc config 미존재 시 무시 */
