@@ -1590,8 +1590,23 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
       if (killSwitchBuyBlockFresh) {
         logger.warn(`🛑 Kill Switch 활성 — 해외 매수 ${buyTargets.length}건 건너뜀`, { component: 'OVERSEAS' });
       }
+      // 승률가드: Live 신규매수만 차단 (기존 포지션 매도/청산은 위에서 이미 처리되어 영향 없음)
+      // CEO 지적(2026-07-02): 이전엔 overseasJobDual()에서 승률<60% 시 live 전체를 스킵해서
+      // 손절/트레일링 등 방어 로직까지 통째로 멈추는 버그가 있었음 — 여기서 매수만 막도록 수정.
+      let winRateBuyBlock = false;
+      if (!isPaper()) {
+        const { isOsWinRateBelowThreshold } = await import('../risk/win-rate-guard.js');
+        winRateBuyBlock = await isOsWinRateBelowThreshold(0.60);
+        if (winRateBuyBlock) {
+          logger.warn(`⛔ 승률가드: 해외 Live 신규매수 ${buyTargets.length}건 차단 (기존 포지션 관리는 정상 진행)`, {
+            component: 'OVERSEAS',
+          });
+        }
+      }
       const slotsAvailable =
-        killSwitchBuyBlockFresh || defenseBlockBuys || eodBlockBuys ? 0 : MAX_POSITIONS - currentHoldingCount;
+        killSwitchBuyBlockFresh || defenseBlockBuys || eodBlockBuys || winRateBuyBlock
+          ? 0
+          : MAX_POSITIONS - currentHoldingCount;
       logger.info(
         `🔧 매수 루프: slots=${slotsAvailable} (max=${MAX_POSITIONS} held=${currentHoldingCount} kill=${killSwitchBuyBlockFresh} defense=${defenseBlockBuys}) cash=$${cash.toFixed(0)} targets=${buyTargets.length}`,
         { component: 'OVERSEAS' },
@@ -2008,9 +2023,8 @@ export async function runOverseasDual(): Promise<void> {
     logger.info('🇺🇸 paperOnly 모드 — live 스킵', { component: 'OVERSEAS' });
     return;
   }
-  // 해외 승률 < 60% → live 차단 (paper only 강제)
-  const { isOsWinRateBelowThreshold } = await import('../risk/win-rate-guard.js');
-  if (await isOsWinRateBelowThreshold(0.60)) return;
+  // 해외 승률 < 60% 시 신규매수만 차단(runOverseasJob 내부에서 처리) — 여기서 전체를 막으면
+  // 손절/트레일링 등 기존 포지션 방어 로직까지 멈춰버리는 버그가 있었음(2026-07-02 수정)
   await runWithMode(false, async () => {
     try {
       await runOverseasJob({ isPaper: false });

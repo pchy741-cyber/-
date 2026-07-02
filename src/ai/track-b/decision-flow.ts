@@ -81,6 +81,24 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
 
   let decisions = [...rawDecisions];
 
+  // ── 0-prepre. 승률가드: Live 신규매수만 차단 (기존 포지션 관리/매도는 계속 실행) ──
+  // CEO 지적(2026-07-02): 이전엔 runner.ts에서 승률<60% 시 Live Track B "전체"를 스킵해서
+  // 손절/트레일링 등 방어 로직까지 통째로 멈춰버리는 심각한 버그가 있었음(마이너스 방치).
+  // 승률가드의 원래 취지(신규매수만 억제)에 맞게 여기서 BUY/AVERAGE_DOWN만 필터링.
+  if (!params.isPaper) {
+    const { isKrWinRateBelowThreshold } = await import('../../risk/win-rate-guard.js');
+    if (await isKrWinRateBelowThreshold(0.60)) {
+      const blockedBuys = decisions.filter((d) => d.action === 'BUY' || d.action === 'AVERAGE_DOWN');
+      if (blockedBuys.length > 0) {
+        logger.warn(
+          `⛔ 승률가드: Live 신규매수 ${blockedBuys.length}건 차단 (기존 포지션 관리는 정상 진행): ${blockedBuys.map((d) => d.stock_code).join(', ')}`,
+          { component: 'DECISION_FLOW' },
+        );
+        decisions = decisions.filter((d) => d.action !== 'BUY' && d.action !== 'AVERAGE_DOWN');
+      }
+    }
+  }
+
   // ── 0-pre. 실험 전략 실전 차단: 졸업 전까지 Paper에서 승률 검증 ──
   // 졸업 시스템 연동: AUTO_APPLIED/APPROVED된 전략은 Live 매수 허용
   // 연습(Paper) = 전체 전략 허용 → 승률 데이터 축적
