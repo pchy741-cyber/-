@@ -268,22 +268,28 @@ export async function buildDefenseParkEntryDecisions(
   const parkName = INVERSE_ETFS[0].name;
   const scoreLabel = crashSignal ? ` (score=${crashSignal.score})` : '';
 
-  logger.warn(
-    `🛡️ 방어 파킹 진입: ${reason}${DEFENSE_PARK_BUY_PAUSED ? ' → 손실포지션 청산만 (인버스 매수 보류 중)' : ` → ${parkName}${scoreLabel}`}`,
-    { component: 'DEFENSE_PARK' },
-  );
-  await activateDefensePark(reason);
+  if (DEFENSE_PARK_BUY_PAUSED) {
+    // 매수가 없으니 activateDefensePark()로 isActive=true를 세우면 안 됨 —
+    // pipeline.ts가 "활성인데 인버스 포지션 없음"을 매수실패로 보고 매 사이클 자동
+    // 초기화(deactivate)하면서 재진입을 다시 트리거 → 알림 무한 반복(스팸) 버그가 있었음
+    // (2026-07-02 실전 확인: 몇 분 간격으로 "DEFENSE 모드 진입" 푸시 반복). 상태 전환/알림 없이
+    // 손실 포지션 청산만 조용히 수행.
+    logger.debug(`🛡️ 방어 파킹 트리거(매수 보류 중, 상태전환 없음): ${reason}`, { component: 'DEFENSE_PARK' });
+  } else {
+    logger.warn(`🛡️ 방어 파킹 진입: ${reason} → ${parkName}${scoreLabel}`, { component: 'DEFENSE_PARK' });
+    await activateDefensePark(reason);
+  }
 
-  import('../../notifications/web-push.js')
-    .then((m) =>
-      m.notifyAlert(
-        `🛡️ DEFENSE 모드 진입`,
-        DEFENSE_PARK_BUY_PAUSED
-          ? `사유: ${reason.slice(0, 80)}\n손실 포지션 청산 (인버스 파킹은 보류 중 — CEO 재개 지시 대기)`
-          : `사유: ${reason.slice(0, 80)}\n${parkName}으로 자산 이동 (인버스)`,
-      ),
-    )
-    .catch(() => {});
+  if (!DEFENSE_PARK_BUY_PAUSED) {
+    import('../../notifications/web-push.js')
+      .then((m) =>
+        m.notifyAlert(
+          `🛡️ DEFENSE 모드 진입`,
+          `사유: ${reason.slice(0, 80)}\n${parkName}으로 자산 이동 (인버스)`,
+        ),
+      )
+      .catch(() => {});
+  }
 
   const decisions: TradeDecision[] = [];
 

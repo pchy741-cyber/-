@@ -446,7 +446,7 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
   decisions = deduplicateSells(decisions);
 
   // ── 9. EOD 블루칩 줍줍 + 익일 장시작 청산 ────────────────────────────
-  decisions = applyEodBluechipStrategy(decisions, {
+  decisions = await applyEodBluechipStrategy(decisions, {
     kstH,
     kstM,
     openChains,

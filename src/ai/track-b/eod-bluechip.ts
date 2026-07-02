@@ -1,5 +1,7 @@
 import type { TradeDecision, TransactionChain } from '../../db/models.js';
 import type { CurrentPrice } from '../../kis/market.js';
+import { getCtxIsPaper } from '../../config/context.js';
+import { getLossStreakMultiplier } from '../../risk/loss-streak.js';
 import { logger } from '../../utils/logger.js';
 import { getKSTNow } from '../../utils/time.js';
 
@@ -29,7 +31,7 @@ interface EodContext {
  *
  * 호출 위치: deduplicateSells() AFTER → 이미 청산 결정 있으면 중복 추가 안 함
  */
-export function applyEodBluechipStrategy(decisions: TradeDecision[], ctx: EodContext): TradeDecision[] {
+export async function applyEodBluechipStrategy(decisions: TradeDecision[], ctx: EodContext): Promise<TradeDecision[]> {
   const {
     kstH,
     kstM,
@@ -106,6 +108,14 @@ export function applyEodBluechipStrategy(decisions: TradeDecision[], ctx: EodCon
   // - 하락장: 당일 -0.5%↓ 블루칩 (기존)
   // - 중립/상승장: 당일 -1.0%↓ 이상 개별 하락 + 일중고점 대비 -1.5%↓ 풀백
   if (isEodBuyWindow && !blockNewBuys) {
+    // CEO 지적(2026-07-02): EOD줍줍은 Kelly/승률/연속손실 배율을 전혀 안 타서, 나머지 매매가
+    // 승률 25%대로 1~5%까지 축소된 상황에도 혼자 7~10%(최대 3종목=최대 30%) 고정 배팅 —
+    // 소액 스캘핑은 이겨도 몇만원, EOD줍줍은 져도 몇십만원인 비대칭 손익의 핵심 원인이었음.
+    // 동일한 연속손실 배율을 적용해 다른 전략과 리스크 수준을 맞춤.
+    const eodLossStreakMult = await getLossStreakMultiplier(getCtxIsPaper());
+    if (eodLossStreakMult < 1.0) {
+      logger.info(`🌅 EOD줍줍 사이징 축소: 연속손실 배율 ×${eodLossStreakMult}`, { component: 'EOD_BLUECHIP' });
+    }
     for (const code of EOD_BLUECHIP_CODES) {
       if (openChains.some((c) => c.stock_code === code && Number(c.total_quantity) > 0)) continue;
       const p = livePrices.get(code);
@@ -119,8 +129,8 @@ export function applyEodBluechipStrategy(decisions: TradeDecision[], ctx: EodCon
 
       if (!isEodCandidate) continue;
 
-      // 사이징: 하락장 10%, 중립장 7% (보수적)
-      const eodAllocPct = isBearDay ? 0.10 : 0.07;
+      // 사이징: 하락장 10%, 중립장 7% (보수적) × 연속손실 배율
+      const eodAllocPct = (isBearDay ? 0.10 : 0.07) * eodLossStreakMult;
       const eodPositionKrw = Math.round(totalAssets * eodAllocPct);
       const qty = Math.floor(eodPositionKrw / p.currentPrice);
       if (qty <= 0) continue;
