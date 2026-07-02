@@ -1320,7 +1320,7 @@ export class TradeExecutor {
       const pnlPct = avgBuy > 0 ? ((fill.filledPrice - avgBuy) / avgBuy) * 100 : 0;
       if (soldQty >= chain.total_quantity) {
         await chainManager.closeChain(chain.id, fill.filledPrice, chain, closeReason);
-        recordSellForCooldown(stockCode); // v10.4: 인메모리 재진입 쿨다운
+        recordSellForCooldown(stockCode, isPaperSnapshot); // v10.4: 인메모리 재진입 쿨다운
       } else {
         await chainManager.partialProfit(chain.id, soldQty, fill.filledPrice, chain);
         // v10.9.4: FORCE_CLOSE 부분체결 → 잔여 수량 즉시 시장가 재매도 (잔여 포지션 방치 방지)
@@ -1343,7 +1343,7 @@ export class TradeExecutor {
                 const updatedChain = await chainManager.findOpenChain(stockCode, isPaperSnapshot);
                 if (updatedChain) {
                   await chainManager.closeChain(updatedChain.id, retryFill.filledPrice, updatedChain, `${closeReason} (잔여 재매도)`);
-                  recordSellForCooldown(stockCode);
+                  recordSellForCooldown(stockCode, isPaperSnapshot);
                 }
               }
             }

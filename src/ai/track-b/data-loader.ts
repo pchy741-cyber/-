@@ -105,7 +105,7 @@ export async function loadPipelineData(): Promise<PipelineData> {
   ]);
 
   // v10.4: 인메모리 쿨다운 병합 (DB 반영 전 매도도 차단)
-  for (const code of getMemoryCooldownCodes()) recentlySoldCodes.add(code);
+  for (const code of getMemoryCooldownCodes(ctxIsPaper)) recentlySoldCodes.add(code);
   // 인버스 ETF는 쿨다운 예외 — 하락장 지속 시 즉시 재진입 가능해야 함
   for (const code of INVERSE_ETF_CODES) recentlySoldCodes.delete(code);
   if (todayRepeatStopCodes.size > 0) {

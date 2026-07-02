@@ -144,13 +144,30 @@ export function registerManualBuyRoutes(app: Hono) {
       return c.json({ error: '매수 차단: 커뮤니티 펌프/작전주 리스크 감지' }, 403);
     }
 
-    // 매도 후 4시간 쿨다운 — Live만 (Paper는 실험 허용)
+    // 매도 후 쿨다운/반복손절 차단 — Live만 (Paper는 실험 허용)
+    // CEO 지적(2026-07-02): 006340 대원전선이 하루에 3번 사고 3번 손절(-8,634원) —
+    // Track B는 getTodayRepeatStopCodes/getRecentLossStocks를 항상 체크하는데
+    // manual-buy(CLAUDE 소스, 실전 루프가 호출)는 인메모리 4h 쿨다운 하나만 체크하고
+    // 나머지 안전장치를 전혀 거치지 않아서 같은 종목에 반복 진입이 가능했던 게 근본 원인.
+    // Track B와 동일한 쿨다운 세트를 하드 블록으로 추가.
     if (!isPaper) {
       const { getMemoryCooldownCodes } = await import('../../../ai/track-b/sell-cooldown.js');
-      const cooldownCodes = getMemoryCooldownCodes();
+      const { getTodayRepeatStopCodes, getRecentLossStocks } = await import('../../../db/repo/cooldowns.js');
+      const cooldownCodes = getMemoryCooldownCodes(false);
+      const [repeatStopCodes, recentLossCodes] = await runWithMode(false, () =>
+        Promise.all([getTodayRepeatStopCodes(1), getRecentLossStocks(5)]),
+      );
       if (cooldownCodes.has(stock_code)) {
-        logger.warn(`🚫 HARD BLOCK: ${stock_code} — 매도 후 4h 쿨다운`, { component: 'CLAUDE_BUY' });
-        return c.json({ error: '매수 차단: 4시간 이내 매도 종목 (반복매매=적자 주범)' }, 403);
+        logger.warn(`🚫 HARD BLOCK: ${stock_code} — 매도 후 2h 쿨다운`, { component: 'CLAUDE_BUY' });
+        return c.json({ error: '매수 차단: 2시간 이내 매도 종목 (반복매매=적자 주범)' }, 403);
+      }
+      if (repeatStopCodes.has(stock_code)) {
+        logger.warn(`🚫 HARD BLOCK: ${stock_code} — 당일 반복손절`, { component: 'CLAUDE_BUY' });
+        return c.json({ error: '매수 차단: 오늘 이미 손절된 종목 (반복 재진입 금지)' }, 403);
+      }
+      if (recentLossCodes.has(stock_code)) {
+        logger.warn(`🚫 HARD BLOCK: ${stock_code} — 최근 손실 쿨다운(3~7일)`, { component: 'CLAUDE_BUY' });
+        return c.json({ error: '매수 차단: 최근 손실 종목 쿨다운 중 (3~7일)' }, 403);
       }
     }
 
