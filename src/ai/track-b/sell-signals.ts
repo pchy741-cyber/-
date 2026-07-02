@@ -263,7 +263,8 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
     ) {
       try {
         const { rowCount } = await getPool().query(
-          `UPDATE transaction_chains SET stop_loss_pct = $2, updated_at = NOW() WHERE id = $1 AND stop_loss_pct < $2`,
+          // updated_at 컬럼 없음 (전수조사 C1) — stop_loss_pct만 갱신
+          `UPDATE transaction_chains SET stop_loss_pct = $2 WHERE id = $1 AND stop_loss_pct < $2`,
           [chain.id, beTargetSl],
         );
         if (rowCount && rowCount > 0) {

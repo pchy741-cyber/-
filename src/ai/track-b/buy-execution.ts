@@ -20,6 +20,8 @@ import {
   type TechnicalFallbackParams,
 } from './technical-fallback-types.js';
 import { PRIORITY_SECTOR_CODES, MEGA_CAP_PRIORITY_CODES } from './trading-rules.js';
+import { computeUnifiedPositionSize } from './unified-sizer.js';
+import { getAdaptiveBuyThreshold } from './adaptive-threshold.js';
 
 // ── 국내 주식 Kelly 사이징 (해외 kelly.ts 패턴 재사용) ──
 interface DomesticKellyResult {
@@ -188,9 +190,26 @@ export async function executeBuyDecisions(
     winRates,
     candidates,
     macroSizingMult: _macroMult,
+    softBlockSizingMult: _softBlockMult,
   } = params;
   const macroSizingMult = _macroMult ?? 1.0;
+  const softBlockSizingMult = _softBlockMult ?? 1.0;
   const strategyParams = resolveStrategyParams(mode, params);
+
+  // v17: 적응형 매수 임계값 — 레짐/변동성/연승패/가동률 반영
+  const portfolioUtil = totalAssets && totalAssets > 0
+    ? Math.max(0, 1 - (orderableCash / totalAssets))
+    : undefined;
+  const firstCandRegime = candidates[0]?.regimeRoute?.regime;
+  const adaptiveBuyThreshold = getAdaptiveBuyThreshold({
+    base: strategyParams.buyThreshold ?? 65,
+    regime: firstCandRegime,
+    atrPct: candidates[0]?.tech?.atrPct,
+    recentStreak: undefined, // TODO: 연승/연패 추적 추가 시 연결
+    portfolioUtil,
+  });
+  strategyParams.buyThreshold = adaptiveBuyThreshold;
+
   const aiScoreMap = buildAiScoreMap(params.aiScores);
   const noAiScores = hasNoAiScores(params.aiScores);
   const decisions: TradeDecision[] = [];
@@ -245,6 +264,11 @@ export async function executeBuyDecisions(
   const intradayBonus = new Map<string, number>();
   const intraday15mDown = new Set<string>(); // 15분봉 하락 종목
   const intradayVwapBelow = new Set<string>(); // VWAP 아래 종목 (싸게 사기 보너스)
+  // Innovation #2: 60분봉 멀티타임프레임 데이터
+  const intraday60mDown = new Set<string>(); // 60분봉 하락 종목
+  const intraday60mData = new Map<string, { trend: string; rsi: number }>(); // 60m 상세 데이터
+  // Innovation #4: VWAP 값 저장 (Pullback Entry용)
+  const intradayVwapValue = new Map<string, number>(); // 종목별 분봉 VWAP 값
   if (isMarketOpen() && candidates.length > 0) {
     const topN = candidates.slice(0, 15); // 장중 MTF 게이트 상위 15개 후보에 적용
     await Promise.allSettled(
@@ -253,6 +277,17 @@ export async function executeBuyDecisions(
           const minuteCandles = await getMinuteChart(cand.stock_code);
           if (minuteCandles.length >= 5) {
             const intraday = analyzeIntraday(minuteCandles);
+            // Innovation #4: VWAP 값 계산 및 저장 (Pullback Entry용)
+            if (minuteCandles.length >= 20) {
+              const ascCandles = [...minuteCandles].reverse();
+              let cumPV = 0, cumVol = 0;
+              for (const mc of ascCandles) {
+                const typical = (mc.high + mc.low + mc.close) / 3;
+                cumPV += typical * mc.volume;
+                cumVol += mc.volume;
+              }
+              if (cumVol > 0) intradayVwapValue.set(cand.stock_code, cumPV / cumVol);
+            }
             // VWAP 아래서 사면 유리 → 보너스 +5, 위에서 사면 페널티 -3
             const vwapAdj = intraday.vwapPosition === 'BELOW' ? 5 : intraday.vwapPosition === 'ABOVE' ? -3 : 0;
             // 5분 반등 확인: 현재가 > 5분 전 가격이면 반등 중, 아니면 하락세로 진입 금지
@@ -265,8 +300,11 @@ export async function executeBuyDecisions(
             if (intraday.vwapPosition === 'BELOW') {
               intradayVwapBelow.add(cand.stock_code);
             }
+            // Innovation #2: 60분봉 데이터 수집
+            if (intraday.trend60m === 'DOWN') intraday60mDown.add(cand.stock_code);
+            intraday60mData.set(cand.stock_code, { trend: intraday.trend60m, rsi: intraday.rsi60m });
             logger.info(
-              `  ⏱️ ${cand.stock_code}: 분봉=${intraday.trend}(${intraday.score}) 15m=${intraday.trend15m} VWAP=${intraday.vwapPosition}(${vwapAdj >= 0 ? '+' : ''}${vwapAdj}) 반등=${isBouncing ? '✅' : '❌'}(${bounceAdj}) vol급등=${intraday.volumeSurge} | ${intraday.reason}`,
+              `  ⏱️ ${cand.stock_code}: 분봉=${intraday.trend}(${intraday.score}) 15m=${intraday.trend15m} 60m=${intraday.trend60m}(RSI${intraday.rsi60m.toFixed(0)}) VWAP=${intraday.vwapPosition}(${vwapAdj >= 0 ? '+' : ''}${vwapAdj}) 반등=${isBouncing ? '✅' : '❌'}(${bounceAdj}) vol급등=${intraday.volumeSurge} | ${intraday.reason}`,
               { component: 'TRACK_B' },
             );
           }
@@ -552,6 +590,51 @@ export async function executeBuyDecisions(
       );
     }
 
+    // ── Innovation #2: Multi-Timeframe Entry (60m Triple Screen) ──────────────
+    const mtf60 = intraday60mData.get(cand.stock_code);
+    let multiTfSizingMult = 1.0;
+    if (mtf60) {
+      // 60m RSI < 30 + 하락추세 → BUY 차단 (falling knife 방지)
+      if (mtf60.rsi < 30 && mtf60.trend === 'DOWN') {
+        logger.warn(
+          `  🔻 MULTI_TF: ${cand.stock_code} 60m falling knife 차단 (RSI${mtf60.rsi.toFixed(0)} + 하락추세)`,
+          { component: 'TRACK_B' },
+        );
+        continue;
+      }
+      // 60m 하락추세 → 매수 페널티 -10~-15점
+      if (mtf60.trend === 'DOWN') {
+        const penalty60m = mtf60.rsi < 40 ? -15 : -10;
+        blendedScore = Math.max(0, Math.min(100, blendedScore + penalty60m));
+        logger.info(
+          `  📉 MULTI_TF: ${cand.stock_code} 60m 하락추세 페널티 ${penalty60m}점 → blend=${blendedScore.toFixed(0)}`,
+          { component: 'TRACK_B' },
+        );
+      }
+      // 15m/60m 방향 불일치 → 수량 50% 축소
+      const is15mDown = intraday15mDown.has(cand.stock_code);
+      if (mtf60.trend === 'UP' && is15mDown) {
+        multiTfSizingMult = 0.5;
+        logger.info(
+          `  ⚠️ MULTI_TF: ${cand.stock_code} 15m↓/60m↑ 방향 불일치 → 수량 50% 축소`,
+          { component: 'TRACK_B' },
+        );
+      } else if (mtf60.trend === 'DOWN' && !is15mDown) {
+        multiTfSizingMult = 0.5;
+        logger.info(
+          `  ⚠️ MULTI_TF: ${cand.stock_code} 15m↑/60m↓ 방향 불일치 → 수량 50% 축소`,
+          { component: 'TRACK_B' },
+        );
+      }
+      // 60m RSI > 70 + 상승추세 → 모멘텀 탑승 (페널티 없음, 로그만)
+      if (mtf60.rsi > 70 && mtf60.trend === 'UP') {
+        logger.info(
+          `  🚀 MULTI_TF: ${cand.stock_code} 60m 모멘텀 탑승 (RSI${mtf60.rsi.toFixed(0)} + 상승추세)`,
+          { component: 'TRACK_B' },
+        );
+      }
+    }
+
     // ── Vision 차트 확인: 85점+ 고확신 종목 매수 전 캔들차트 시각 검증 (Live 전용) ──
     let visionSizingMult = 1.0;
     if (blendedScore >= 85 && !ctxPaper) {
@@ -728,16 +811,39 @@ export async function executeBuyDecisions(
       logger.info(`  ⚠️ ${cand.stock_code}: 연속손실 배율 ×${lossStreakMult} → 포지션 축소`, { component: 'TRACK_B' });
     }
 
+    // Innovation #3: Unified Sizer — 통합 포지션 사이징 (Paper 모드 우선 활성화)
+    const unifiedResult = computeUnifiedPositionSize({
+      basePct: baseAllocPct,
+      confidence: Math.min(1, blendedScore / 100),
+      winRate: wr?.winRate,
+      winRateSamples: wr?.sampleCount,
+      atrPct: cand.tech.atrPct,
+      regime: cand.regimeRoute?.regime,
+      evScore: evSizingMult,
+      macroScore: macroSizingMult,
+      streak: lossStreakMult < 1.0 ? (lossStreakMult <= 0.5 ? -3 : -2) : undefined,
+      maxPositionPct: 0.50,
+      isPaper: ctxPaper,
+    });
+    // Paper 모드: unified sizer 결과 사용, Live: 기존 로직 유지 (안전장치)
+    if (ctxPaper) {
+      baseAllocPct = unifiedResult.positionPct;
+    }
+
     // v11: per-factor 최소값 (전수조사 — 기존 0.25 하한이 적색 5신호에도 25% 진입 허용)
     // 각 팩터별 최소값 적용 → 곱연산 자체가 합리적 범위에 머무름
     const safeWinRate = Math.max(0.5, winRateMultiplier);   // WR 20% 이하라도 0.5x까지만 축소
     const safeLossStreak = Math.max(0.4, lossStreakMult);    // 3연패라도 0.4x까지만
     const safeEvMult = Math.max(0.4, evSizingMult);          // 음의 EV라도 0.4x (학습 기회)
+    // v16.3: softBlockSizingMult 적용 (점심/뉴스끊김 → 완전 차단 대신 수량 축소)
     const rawCompoundMult =
-      modeScale * macroSizingMult * safeWinRate * safeLossStreak * safeEvMult * visionSizingMult;
+      modeScale * macroSizingMult * softBlockSizingMult * safeWinRate * safeLossStreak * safeEvMult * visionSizingMult;
     // 최종 하한: 0.10 (기존 0.25 → 0.10, per-factor 클램핑이 주력 방어)
-    const compoundMultFloor = Math.max(0.10, rawCompoundMult);
-    if (rawCompoundMult < compoundMultFloor) {
+    // paper는 unified sizer가 macro/wr/ev 이미 반영 → compoundMult 이중적용 방지
+    const compoundMultFloor = ctxPaper
+      ? Math.max(0.10, modeScale * visionSizingMult * safeLossStreak)
+      : Math.max(0.10, rawCompoundMult);
+    if (rawCompoundMult < compoundMultFloor && !ctxPaper) {
       logger.info(
         `  🔒 ${cand.stock_code}: 곱연산 하한 적용 (${rawCompoundMult.toFixed(3)}→${compoundMultFloor.toFixed(3)}): mode=${modeScale} macro=${macroSizingMult} wr=${safeWinRate.toFixed(2)} streak=${safeLossStreak}`,
         { component: 'TRACK_B' },
@@ -815,6 +921,10 @@ export async function executeBuyDecisions(
         `  🐻 ${cand.stock_code}: 하락장 포지션 축소 ×${BEAR_ADAPTIVE.POSITION_SIZE_MULT} (${Math.round(bearBefore / 10000)}만→${Math.round(effectivePositionSize / 10000)}만)`,
         { component: 'TRACK_B' },
       );
+    }
+    // Innovation #2: Multi-Timeframe 수량 축소 적용
+    if (multiTfSizingMult < 1.0) {
+      effectivePositionSize = Math.round(effectivePositionSize * multiTfSizingMult);
     }
 
     // ── ATR+드로다운+연패 동적 보정 (Live 전용) ──────────────────────────
@@ -923,13 +1033,50 @@ export async function executeBuyDecisions(
       : srClass === 'SCALP_TARGET'
         ? { trigger_source: 'SCALP_TARGET' }
         : {};
+    // Innovation #4: VWAP 기반 Pullback Entry — 고점 매수 방지
+    const vwapVal = intradayVwapValue.get(cand.stock_code);
+    let pullbackPriceType: 'MARKET' | 'LIMIT' = 'MARKET';
+    let pullbackLimitPrice = Math.round(cand.price.currentPrice * (1 + (pricePos?.limitAdj ?? 0)));
+    let pullbackTag = '';
+    if (vwapVal && vwapVal > 0) {
+      const vwapDiffPct = ((cand.price.currentPrice - vwapVal) / vwapVal) * 100;
+      if (vwapDiffPct > 0.5) {
+        // 현재가가 VWAP 대비 +0.5% 이상 → 풀백 지정가 주문
+        // 지정가 = min(VWAP, SMA5) + 1틱 (10분 미체결 시 fill-reconciler가 취소 후 시장가 재주문)
+        const sma5Price = cand.tech.sma5 > 0 ? cand.tech.sma5 : vwapVal;
+        const baseLimit = Math.min(vwapVal, sma5Price);
+        // 1틱 = 호가 단위 (가격대별: ~1000원=1, ~5000원=5, ~10000원=10, ~50000원=50, ~100000원=100, 500000+원=500)
+        const tick = cand.price.currentPrice >= 500000 ? 500
+          : cand.price.currentPrice >= 100000 ? 100
+          : cand.price.currentPrice >= 50000 ? 50
+          : cand.price.currentPrice >= 10000 ? 10
+          : cand.price.currentPrice >= 5000 ? 5
+          : 1;
+        pullbackPriceType = 'LIMIT';
+        pullbackLimitPrice = Math.round(baseLimit + tick);
+        pullbackTag = ` [PULLBACK: VWAP${vwapDiffPct > 0 ? '+' : ''}${vwapDiffPct.toFixed(1)}%→지정가${pullbackLimitPrice.toLocaleString()}]`;
+        logger.info(
+          `  🎯 PULLBACK: ${cand.stock_code} 현재가${cand.price.currentPrice.toLocaleString()} > VWAP${Math.round(vwapVal).toLocaleString()}+0.5% → 지정가${pullbackLimitPrice.toLocaleString()} (10분 미체결 시 시장가 전환)`,
+          { component: 'TRACK_B' },
+        );
+      } else if (vwapDiffPct < -1.0) {
+        // VWAP 대비 -1% 이하 → 즉시 매수 (할인 기회)
+        pullbackTag = ` [PULLBACK: VWAP${vwapDiffPct.toFixed(1)}%→즉시매수(할인)]`;
+        logger.info(
+          `  💰 PULLBACK: ${cand.stock_code} 현재가${cand.price.currentPrice.toLocaleString()} < VWAP${Math.round(vwapVal).toLocaleString()}-1% → 할인 즉시매수`,
+          { component: 'TRACK_B' },
+        );
+      }
+      // ±0.5% 이내 → 기존 로직 유지 (즉시 주문)
+    }
+
     decisions.push({
       action: 'BUY',
       stock_code: cand.stock_code,
       quantity,
-      price_type: 'MARKET',
-      limit_price: Math.round(cand.price.currentPrice * (1 + (pricePos?.limitAdj ?? 0))),
-      reasoning: `기술적 매수: score=${cand.tech.score}(blend=${blendedScore.toFixed(0)}) cat=${cand.tech.catTrend}/${cand.tech.catMomentum}/${cand.tech.catVolatility}/${cand.tech.catVolume}(${cand.tech.catPositive}/4)${cand.candleBonus > 0 ? `+${cand.candleBonus}캔들` : ''}${idBonus !== 0 ? `${idBonus > 0 ? '+' : ''}${idBonus}분봉` : ''} RSI=${cand.tech.rsi14.toFixed(0)} MACD=${cand.tech.macdCrossover} ADX=${cand.tech.adx14.toFixed(0)}(${cand.tech.trendStrength}) vol=${cand.tech.volumeRatio.toFixed(2)}x SMA=${smaAlign}${cand.tech.goldenCross ? ' 골든크로스' : ''}${isPriority ? ' [우선테마]' : ''}${allocStr}${patternFb.scoreAdj !== 0 ? ` [패턴${patternFb.scoreAdj > 0 ? '+' : ''}${patternFb.scoreAdj}]` : ''}${winRateSummary(cand.stock_code, winRates?.get(cand.stock_code))} fp=${fpKey}${srTag}${pricePos ? ` [일중${(pricePos.pos * 100).toFixed(0)}%]` : ''}`,
+      price_type: pullbackPriceType,
+      limit_price: pullbackLimitPrice,
+      reasoning: `기술적 매수: score=${cand.tech.score}(blend=${blendedScore.toFixed(0)}) cat=${cand.tech.catTrend}/${cand.tech.catMomentum}/${cand.tech.catVolatility}/${cand.tech.catVolume}(${cand.tech.catPositive}/4)${cand.candleBonus > 0 ? `+${cand.candleBonus}캔들` : ''}${idBonus !== 0 ? `${idBonus > 0 ? '+' : ''}${idBonus}분봉` : ''} RSI=${cand.tech.rsi14.toFixed(0)} MACD=${cand.tech.macdCrossover} ADX=${cand.tech.adx14.toFixed(0)}(${cand.tech.trendStrength}) vol=${cand.tech.volumeRatio.toFixed(2)}x SMA=${smaAlign}${cand.tech.goldenCross ? ' 골든크로스' : ''}${isPriority ? ' [우선테마]' : ''}${allocStr}${patternFb.scoreAdj !== 0 ? ` [패턴${patternFb.scoreAdj > 0 ? '+' : ''}${patternFb.scoreAdj}]` : ''}${winRateSummary(cand.stock_code, winRates?.get(cand.stock_code))} fp=${fpKey}${srTag}${pricePos ? ` [일중${(pricePos.pos * 100).toFixed(0)}%]` : ''}${pullbackTag}`,
       confidence: Math.min(
         0.95,
         Math.max(

@@ -264,8 +264,26 @@ export async function runQuickRescore(): Promise<{ scored: number; errors: numbe
 
     let scored = 0;
     let errors = 0;
+    let skippedEnsemble = 0;
     const today = new Date(Date.now() + KST_OFFSET_MS).toISOString().slice(0, 10); // KST
+    let ensembleCodes = new Set<string>();
+    try {
+      const { rows } = await getPool().query(
+        `SELECT stock_code FROM ai_scores WHERE score_date = $1 AND confidence >= 0.6 AND reasoning NOT LIKE '%Quick Re-Score%'`,
+        [today],
+      );
+      ensembleCodes = new Set(rows.map((r: Record<string, unknown>) => String(r.stock_code)));
+    } catch {
+      // 조회 실패 시 전부 보호 (보수적)
+      ensembleCodes = new Set(results.map((r) => r.stock_code));
+      logger.warn('기존 스코어 조회 실패 → Quick Re-Score 전면 스킵 (보수적)', { component: COMP });
+    }
     for (const r of results) {
+      // 정식 AI 점수 보호: ensemble/Gemini가 이미 높은 confidence로 저장한 종목은 스킵
+      if (ensembleCodes.has(r.stock_code)) {
+        skippedEnsemble++;
+        continue;
+      }
       const enh = enhanced.get(r.stock_code);
       const finalScore = enh ? enh.finalScore : r.composite_score;
 
@@ -352,7 +370,7 @@ export async function runQuickRescore(): Promise<{ scored: number; errors: numbe
     );
 
     const elapsed = ((Date.now() - start) / 1000).toFixed(1);
-    logger.info(`⚡ Quick Re-Score 완료: ${scored}건 갱신, ${errors}건 에러 (${elapsed}초)`, { component: COMP });
+    logger.info(`⚡ Quick Re-Score 완료: ${scored}건 갱신, ${skippedEnsemble}건 정식AI보호, ${errors}건 에러 (${elapsed}초)`, { component: COMP });
     // 마지막 실행 시각 system_state에 기록
     try {
       await getPool().query(

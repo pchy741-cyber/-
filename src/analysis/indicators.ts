@@ -484,6 +484,10 @@ export interface IntradaySignal {
   score: number;
   trend: 'UP' | 'DOWN' | 'NEUTRAL';
   trend15m: 'UP' | 'DOWN' | 'NEUTRAL';
+  /** Innovation #2: 60분봉 추세 */
+  trend60m: 'UP' | 'DOWN' | 'NEUTRAL';
+  /** Innovation #2: 60분봉 RSI */
+  rsi60m: number;
   volumeSurge: boolean;
   vwapPosition: 'ABOVE' | 'BELOW' | 'AT';
   reason: string;
@@ -513,6 +517,8 @@ export function analyzeIntraday(minuteCandles: OHLCV[]): IntradaySignal {
     score: 0,
     trend: 'NEUTRAL',
     trend15m: 'NEUTRAL',
+    trend60m: 'NEUTRAL',
+    rsi60m: 50,
     volumeSurge: false,
     vwapPosition: 'AT',
     reason: '데이터부족',
@@ -649,6 +655,25 @@ export function analyzeIntraday(minuteCandles: OHLCV[]): IntradaySignal {
     }
   }
 
+  // 7-b. Innovation #2: 60분봉 추세 분석 (Triple Screen)
+  let trend60m: IntradaySignal['trend60m'] = 'NEUTRAL';
+  let rsi60m = 50;
+  const candles60m = aggregateToTimeframe(minuteCandles, 60);
+  if (candles60m.length >= 3) {
+    const c60 = candles60m.map((c) => c.close);
+    const last3 = c60.slice(-3);
+    const upCount60 = last3.filter((v, i) => i > 0 && v > last3[i - 1]).length;
+    const downCount60 = last3.filter((v, i) => i > 0 && v < last3[i - 1]).length;
+    if (upCount60 >= 2 && downCount60 === 0) {
+      trend60m = 'UP';
+    } else if (downCount60 >= 2 && upCount60 === 0) {
+      trend60m = 'DOWN';
+    }
+    if (c60.length >= 5) {
+      rsi60m = rsi(c60, Math.min(7, c60.length - 1)).pop() ?? 50;
+    }
+  }
+
   // 8. 3연속 양봉/음봉
   if (closes.length >= 4) {
     const last3Dir = [
@@ -667,5 +692,5 @@ export function analyzeIntraday(minuteCandles: OHLCV[]): IntradaySignal {
 
   score = Math.max(-50, Math.min(50, score));
   const trend = score > 5 ? 'UP' : score < -5 ? 'DOWN' : 'NEUTRAL';
-  return { score, trend, trend15m, volumeSurge, vwapPosition, reason: tags.join('+') || '중립' };
+  return { score, trend, trend15m, trend60m, rsi60m, volumeSurge, vwapPosition, reason: tags.join('+') || '중립' };
 }

@@ -82,18 +82,33 @@ export default function StrategyLabView({ toast, viewMode, confirm }: Props) {
     setRefreshing(false);
   };
 
-  // 모드별 데이터 분리 — 실전/연습 혼합 방지
-  const activeStrategies = useMemo(() =>
-    strategies.filter(s => {
+  // 모드별 데이터 분리 — Paper: SCALPING/EOD_BETTING 항상 표시, DIVIDEND 제거
+  const PAPER_ALWAYS_SHOW = ['SCALPING', 'EOD_BETTING'];
+  const HIDDEN_MODES = ['DIVIDEND'];
+
+  const activeStrategies = useMemo(() => {
+    let filtered = strategies.filter(s => !HIDDEN_MODES.includes(s.mode));
+
+    // Paper 모드: SCALPING/EOD_BETTING 항상 표시 (거래 없어도 카드 노출)
+    if (viewMode === 'paper') {
+      for (const mode of PAPER_ALWAYS_SHOW) {
+        if (!filtered.find(s => s.mode === mode)) {
+          filtered.push({ mode, paper: null, live: null, graduation: null });
+        }
+      }
+    }
+
+    return filtered.filter(s => {
+      if (viewMode === 'paper' && PAPER_ALWAYS_SHOW.includes(s.mode)) return true;
       const perf = viewMode === 'live' ? s.live : s.paper;
       return perf && perf.totalTrades > 0;
-    }),
-    [strategies, viewMode]
-  );
+    });
+  }, [strategies, viewMode]);
 
   const agg = useMemo(() =>
     activeStrategies.reduce((a, s) => {
-      const p = (viewMode === 'live' ? s.live : s.paper)!;
+      const p = viewMode === 'live' ? s.live : s.paper;
+      if (!p) return a;
       a.trades += p.totalTrades;
       a.wins += p.wins;
       a.pnlKrw += p.totalPnlKrw;

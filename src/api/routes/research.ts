@@ -2,7 +2,7 @@
 import { Hono } from 'hono';
 import { safeQuery as query } from '../../db/client.js';
 import { logger } from '../../utils/logger.js';
-import { runDartResearch, runDartResearchBatch } from '../../automation/dart-research.js';
+import { runDartResearch, runDartResearchBatch, getCachedDartResults } from '../../automation/dart-research.js';
 import { runSecResearch, runSecResearchBatch } from '../../automation/sec-research.js';
 
 export const researchRoutes = new Hono();
@@ -128,6 +128,23 @@ researchRoutes.delete('/research/notes/:id', async (c) => {
   } catch (err: any) {
     logger.warn(`리서치 노트 삭제 실패: ${err.message}`, { component: 'RESEARCH' });
     return c.json({ error: 'Internal server error' }, 500);
+  }
+});
+
+// GET /api/research/dart/cached — DB 캐시에서 분석 완료된 결과 즉시 반환 (Gemini 호출 없음)
+// 퀀트봇 탭 자동 로드용 — 탭 진입 시 수동 클릭 없이 바로 표시
+// ⚠️ :stockCode 와일드카드 라우트보다 반드시 위에 등록해야 함
+researchRoutes.get('/research/dart/cached', async (c) => {
+  try {
+    const codesParam = c.req.query('codes');
+    if (!codesParam) return c.json({ ok: true, results: [] });
+    const codes = codesParam.split(',').filter((c) => /^\d{6}$/.test(c)).slice(0, 30);
+    if (codes.length === 0) return c.json({ ok: true, results: [] });
+    const results = await getCachedDartResults(codes);
+    return c.json({ ok: true, count: results.length, results });
+  } catch (err: any) {
+    logger.warn(`DART 캐시 조회 실패: ${err.message}`, { component: 'RESEARCH' });
+    return c.json({ ok: true, results: [] });
   }
 });
 

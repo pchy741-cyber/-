@@ -111,16 +111,16 @@ export function UsHoldingTpSlBar({
             title="클릭하여 TP 조절">+{effectiveTp.toFixed(1)}%<span className="text-slate-600 ml-0.5">${targetPrice.toFixed(0)}</span></span>
         </div>
       )}
-      {(trailActive || partialStage > 0 || nextPartialTpPct != null) && (
-        <div className="text-[10px] text-slate-600 px-1 text-center">
-          {trailActive
-            ? <span className="text-yellow-500">트레일 활성 · 스톱 ${(avgPrice * (1 + trailStopPct / 100)).toFixed(2)} · 고점+{maxPnlPct.toFixed(1)}%</span>
-            : partialStage > 0
-              ? <span className="text-cyan-500">{partialStage}단계 부분익절 완료</span>
-              : <span className="text-slate-500">1차 익절 +{nextPartialTpPct}% · 트레일 +{trailPct}%</span>
-          }
-        </div>
-      )}
+      <div className="text-[10px] text-slate-600 px-1 text-center">
+        {trailActive
+          ? <span className="text-yellow-500">트레일 활성 · 스톱 ${(avgPrice * (1 + trailStopPct / 100)).toFixed(2)} · 고점+{maxPnlPct.toFixed(1)}%</span>
+          : partialStage > 0
+            ? <span className="text-cyan-500">{partialStage}단계 부분익절 완료</span>
+            : nextPartialTpPct != null
+              ? <span className="text-slate-500">1차 익절 +{nextPartialTpPct}% · 트레일 +{trailPct}%</span>
+              : <span className="text-slate-500">트레일 +{trailPct}% · SL {effectiveSl?.toFixed(1)}%</span>
+        }
+      </div>
     </div>
   );
 }

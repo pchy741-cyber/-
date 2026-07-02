@@ -21,6 +21,8 @@ const MODE_LABELS: Record<string, string> = {
   SWING: '스윙 (중단기)',
   DEFENSE: '방어 (하락장)',
   SNIPER: '저격수 (AI 88점+ 집중)',
+  SCALPING: '스캘핑 (초단기)',
+  EOD_BETTING: '종가베팅 (장마감)',
 };
 
 const DEFAULT_ENSEMBLE: EnsembleConfig = {

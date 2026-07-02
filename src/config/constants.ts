@@ -589,9 +589,9 @@ export const GATE = {
 
 // ── 섹터 분류 (매수/매도/트레일링 전역 공유) ──
 export const SECTOR_CLASS = {
-  /** 고변동: EV, 암호화폐, AI반도체, 성장주 */
-  HIGH_BETA: ['EV', 'CRYPTO', 'AI_SEMI', 'GROWTH'] as readonly string[],
-  /** 중변동: 빅테크, 인프라, 산업재, 클라우드, 헬스, 금융, 일본/대만 */
+  /** 고변동: EV, 암호화폐, AI반도체, 성장주, 바이오텍 */
+  HIGH_BETA: ['EV', 'CRYPTO', 'AI_SEMI', 'GROWTH', 'BIOTECH'] as readonly string[],
+  /** 중변동: 빅테크, 인프라, 산업재, 클라우드, 헬스, 금융, 핀테크, 에너지, 일본/대만 */
   MEDIUM_BETA: [
     'TECH',
     'INFRA',
@@ -599,15 +599,19 @@ export const SECTOR_CLASS = {
     'CLOUD',
     'HEALTH',
     'FINANCE',
+    'FINTECH',
+    'ENERGY',
     'JP_AUTO',
     'JP_TECH',
     'JP_BANK',
+    'JP_FINANCE',
     'TW_SEMI',
+    'CN_ADR',
   ] as readonly string[],
-  /** 방어: 방위산업 */
-  DEFENSE: ['DEFENSE'] as readonly string[],
-  /** DANGER 장세에서 추가 고베타 취급 (JP_AUTO/JP_TECH 포함) */
-  DANGER_HIGH_BETA: ['AI_SEMI', 'GROWTH', 'EV', 'CRYPTO', 'JP_AUTO', 'JP_TECH'] as readonly string[],
+  /** 방어: 방위산업, REITs, 필수소비재, 유틸리티 */
+  DEFENSE: ['DEFENSE', 'REIT', 'CONSUMER', 'UTILITY'] as readonly string[],
+  /** DANGER 장세에서 추가 고베타 취급 */
+  DANGER_HIGH_BETA: ['AI_SEMI', 'GROWTH', 'EV', 'CRYPTO', 'BIOTECH', 'FINTECH', 'JP_AUTO', 'JP_TECH', 'CN_ADR'] as readonly string[],
 } as const;
 
 /**

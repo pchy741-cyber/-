@@ -7,12 +7,36 @@ import type { StrategyLabOverview } from '../../types';
 export function StrategyCard({ s, expanded, onToggle, viewMode = 'paper' }: { s: StrategyLabOverview; expanded: boolean; onToggle: () => void; viewMode?: 'paper' | 'live' }) {
   // 모드별 데이터 분리 — 실전/연습 혼합 방지
   const p = viewMode === 'live' ? s.live : s.paper;
-  if (!p || p.totalTrades === 0) return null; // 해당 모드에 데이터 없으면 렌더링 안 함
+  const label = STRATEGY_LABELS[s.mode] || s.mode;
+  const icon = STRATEGY_ICONS[s.mode] || '📊';
+
+  // 데이터 없는 전략: 대기 중 플레이스홀더 표시
+  if (!p || p.totalTrades === 0) {
+    return (
+      <div className="relative rounded-2xl border border-white/[0.06] hover:border-white/[0.12] transition-all cursor-pointer group">
+        <div className="relative p-4 space-y-3">
+          <div className="flex items-center gap-2">
+            <span className="text-base opacity-60">{icon}</span>
+            <span className="font-bold text-sm text-slate-400">{label}</span>
+            <span className="text-[9px] text-slate-600">{s.mode}</span>
+          </div>
+          <div className="text-center py-3">
+            <div className="text-xl opacity-20">⏳</div>
+            <div className="text-[11px] text-slate-500 mt-1.5">데이터 수집 대기</div>
+            <div className="text-[10px] text-slate-600 mt-0.5">Paper 매매 시작 시 성과 자동 표시</div>
+          </div>
+          <div className="space-y-1">
+            <ProgressBar value={0} colorClass="bg-slate-600" height="h-1" />
+            <div className="text-[9px] text-slate-600 text-right">0% 졸업</div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   const ref = s.paper ?? p; // 졸업 기준은 paper (없으면 현재 모드)
   const c = CRITERIA[s.mode] ?? CRITERIA.DEFAULT;
   const isProfitable = p.totalPnlKrw >= 0;
-  const label = STRATEGY_LABELS[s.mode] || s.mode;
-  const icon = STRATEGY_ICONS[s.mode] || '📊';
 
   const gradStatus = s.graduation?.status;
   const isLive = gradStatus === 'AUTO_APPLIED' || gradStatus === 'APPROVED';

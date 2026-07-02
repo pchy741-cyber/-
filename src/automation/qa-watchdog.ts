@@ -31,6 +31,12 @@ export interface QAIssue {
   detail: string;
 }
 
+export interface QAAction {
+  level: 'danger' | 'warn' | 'info';
+  action: string;
+  apiHint?: string;
+}
+
 export interface QAReport {
   runAt: string;
   elapsedSec: number;
@@ -39,6 +45,8 @@ export interface QAReport {
   warning: number;
   info: number;
   status: 'pass' | 'warn' | 'fail';
+  score: number;
+  actions: QAAction[];
 }
 
 // 인메모리 캐시 (DB 조회 부하 절감)
@@ -58,10 +66,12 @@ export async function getQAReports(): Promise<QAReport[]> {
       runAt: r.run_at,
       elapsedSec: Number(r.elapsed_sec),
       issues: r.issues ?? [],
-      critical: r.critical,
-      warning: r.warning,
-      info: r.info,
+      critical: Number(r.critical),
+      warning: Number(r.warning),
+      info: Number(r.info),
       status: r.status,
+      score: Math.max(0, 100 - Number(r.critical) * 25 - Number(r.warning) * 10 - Number(r.info) * 2),
+      actions: deriveQAActions(r.issues ?? []),
     }));
     _cacheTs = Date.now();
     return _cachedReports;
@@ -114,6 +124,8 @@ export async function runQAWatchdog(): Promise<void> {
     const infos = issues.filter((i) => i.severity === 'INFO');
 
     // 리포트 저장 (DB 영구 + 캐시 무효화)
+    const score = Math.max(0, 100 - critical.length * 25 - warnings.length * 10 - infos.length * 2);
+    const qaActions = deriveQAActions(issues);
     const report: QAReport = {
       runAt: getKSTNow().toISOString(),
       elapsedSec,
@@ -122,6 +134,8 @@ export async function runQAWatchdog(): Promise<void> {
       warning: warnings.length,
       info: infos.length,
       status: critical.length > 0 ? 'fail' : warnings.length > 0 ? 'warn' : 'pass',
+      score,
+      actions: qaActions,
     };
     try {
       await getPool().query(
@@ -148,9 +162,9 @@ export async function runQAWatchdog(): Promise<void> {
       { component: COMPONENT },
     );
 
-    // 텔레그램 (간결)
+    // 텔레그램 (간결 + 스코어)
     const teleMsg = [
-      `🔍 *QA Watchdog 감시 결과*`,
+      `🔍 *QA Watchdog* [SCORE: ${score}/100]`,
       `⏱️ ${elapsed}s · ${getKSTNow().toISOString().slice(0, 16)}`,
       '',
       ...critical.map((i) => `🔴 [${i.category}] ${i.title}`),
@@ -631,6 +645,34 @@ async function checkLargeLoss(issues: QAIssue[]): Promise<void> {
       detail: `${pnlAmt}원 손실 — 갭 하락 슬리피지 또는 SL 미작동 의심`,
     });
   }
+}
+
+// ═══════════════════════════════════════════
+//  QA 이슈 → 액션 추천
+// ═══════════════════════════════════════════
+
+function deriveQAActions(issues: QAIssue[]): QAAction[] {
+  const actions: QAAction[] = [];
+  for (const issue of issues) {
+    if (issue.category === '크로스오염') {
+      actions.push({ level: 'danger', action: `${issue.title} — 모드 불일치 즉시 확인`, apiHint: 'GET /api/dashboard 로 상태 확인' });
+    } else if (issue.category === '매매로직' && issue.title.includes('연패')) {
+      actions.push({ level: 'warn', action: `${issue.title} — 쿨다운 연장 고려`, apiHint: 'POST /api/ai-loop/command {"category":"cooldown_min","value":120}' });
+    } else if (issue.category === '매매로직' && issue.title.includes('승률')) {
+      actions.push({ level: issue.severity === 'CRITICAL' ? 'danger' : 'warn', action: `${issue.title} — 전략 재검토 필요` });
+    } else if (issue.category === '매매로직' && issue.title.includes('즉시 반전')) {
+      actions.push({ level: 'danger', action: `${issue.title} — 매매 로직 버그 확인`, apiHint: 'GET /api/qa/reports' });
+    } else if (issue.category === '시스템' && issue.title.includes('Kill Switch')) {
+      actions.push({ level: 'warn', action: `${issue.title} — 정상화 시 해제 권장`, apiHint: 'POST /api/kill-switch/reset' });
+    } else if (issue.category === '시스템' && issue.title.includes('에러')) {
+      actions.push({ level: issue.severity === 'CRITICAL' ? 'danger' : 'warn', action: `${issue.title} — 시스템 로그 확인` });
+    } else if (issue.category === '정합성') {
+      actions.push({ level: issue.severity === 'CRITICAL' ? 'danger' : 'warn', action: `${issue.title} — 데이터 정합성 검증 필요` });
+    } else if (issue.category === 'AI비용') {
+      actions.push({ level: 'warn', action: `${issue.title} — AI 호출 패턴 점검` });
+    }
+  }
+  return actions;
 }
 
 // ═══════════════════════════════════════════

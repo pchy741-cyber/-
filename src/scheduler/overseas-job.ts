@@ -736,7 +736,8 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
 
     const latestSessionCache = getSessionCache(region);
     let aiInputs = allAiInputs;
-    if (latestSessionCache) {
+    if (latestSessionCache && !isPaper()) {
+      // Live: 세션 캐시로 AI 입력 최적화 (토큰 절약)
       const topSet = new Set(latestSessionCache.topCodes);
       aiInputs = allAiInputs.filter(
         (si) => heldSet.has(si.code) || topSet.has(si.code) || si.isMomentum || si.isBigMover,
@@ -748,19 +749,22 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
         );
       }
     }
+    // Paper: 세션 캐시 필터 안 함 → 전 종목 AI 분석 (GPT-4o-mini 비용 무시 수준, 학습 데이터 극대화)
 
     const hasBuyCandidates = aiInputs.some((si) => !si.isHolding);
     const hasSellCandidates = aiInputs.some((si) => si.isHolding);
     const now_ms = Date.now();
     const intervalMs = OVERSEAS.AI_INTERVAL_MS;
     const lastAiCall = isPaper() ? s.lastPaperAiCallAt : s.lastUSAiCallAt;
-    const aiCooldownOk = isUSSession ? now_ms - lastAiCall >= intervalMs : true;
+    // Paper: 쿨다운 절반 (5분) — 학습용이므로 기회 놓치면 데이터 손실
+    const effectiveInterval = isPaper() ? intervalMs / 2 : intervalMs;
+    const aiCooldownOk = isUSSession ? now_ms - lastAiCall >= effectiveInterval : true;
     // 🔧 보유종목 악화 신호 시 쿨다운 바이패스 — 매도 결정 지연 방지
     const hasUrgentSell = aiInputs.some((si) => si.isHolding && (si.score <= -15 || si.rsi > 72));
     const shouldCallAI = (hasBuyCandidates || hasSellCandidates) && (aiCooldownOk || hasUrgentSell);
     if ((hasBuyCandidates || hasSellCandidates) && !aiCooldownOk && !hasUrgentSell) {
       logger.info(
-        `🤖 AI 대기 중 — 다음 호출까지 ${Math.ceil((intervalMs - (now_ms - lastAiCall)) / 60000)}분 (무료 한도 절약)`,
+        `🤖 AI 대기 중 — 다음 호출까지 ${Math.ceil((effectiveInterval - (now_ms - lastAiCall)) / 60000)}분`,
         { component: 'OVERSEAS' },
       );
     }
@@ -1229,66 +1233,57 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
       );
     }
 
-    // ── 포트폴리오 배분 비중 체크 — kr_pct / us_pct 목표 준수 (Live 전용) ──
-    // Paper 모드는 국내 포트폴리오가 없어 해외비중 100%로 잡히므로 스킵
+    // ── 포트폴리오 배분 비중 체크 — 총자산(totalAccountKrw) 기준 (Live 전용) ──
+    // 기존 버그: 투자금만으로 비중 계산 → 현금 누락, 비중 왜곡
+    // 수정: totalAccountKrw(국내+해외 전체 자산) 기준으로 해외 비중 정확 계산
     let allocBlocked = false;
-    const fxNow = cycleFxRate; // 사이클 환율 재사용
-    if (!isPaper()) {
+    const fxNow = cycleFxRate;
+    if (!isPaper() && totalAccountKrw > 0 && fxNow > 0) {
       try {
-        // 3개 독립 쿼리 병렬 실행 (기존 순차 → 병렬, ~300ms 절약)
-        const rotKey = isPaper() ? 'p_rotation_signal' : 'l_rotation_signal';
-        const [domResult, allocResult, rotResult] = await Promise.all([
-          getPool().query(
-            `SELECT COALESCE(SUM(invested_amount), 0) AS domestic_invested
-             FROM chains WHERE is_active = true AND is_paper = $1`,
-            [isPaper()],
-          ),
+        const rotKey = 'l_rotation_signal';
+        const [allocResult, rotResult] = await Promise.all([
           getPool().query(
             'SELECT us_pct FROM portfolio_allocation_config WHERE is_paper = $1 ORDER BY id DESC LIMIT 1',
             [isPaper()],
           ),
           getPool().query('SELECT value FROM system_state WHERE key = $1', [rotKey]).catch(() => ({ rows: [] })),
         ]);
-        const domesticInvestedKrw = Number(domResult.rows[0]?.domestic_invested ?? 0);
-        const domesticInvestedUsd = fxNow > 0 ? domesticInvestedKrw / fxNow : 0;
-        // 국내 투자중 금액이 $100 이상일 때만 비중 체크
-        if (domesticInvestedUsd >= 100) {
-          const grandInvestedUsd = (holdingEvalUsdPost || 0) + domesticInvestedUsd;
-          let targetUsPct = Number(allocResult.rows[0]?.us_pct ?? 100);
-          // 크로스마켓 로테이션: DB에 저장된 최신 로테이션 신호로 동적 조정
-          try {
-            const rotRows = rotResult.rows;
-            if (rotRows.length > 0) {
-              const rot = JSON.parse(rotRows[0].value);
-              const ageMs = Date.now() - new Date(rot.updatedAt).getTime();
-              if (ageMs < 12 * 60 * 60_000 && rot.adjustedUsPct !== undefined) {
-                if (rot.adjustedUsPct !== targetUsPct) {
-                  logger.info(`📊 로테이션 적용: US 목표 ${targetUsPct}%→${rot.adjustedUsPct}%`, {
-                    component: 'OVERSEAS',
-                  });
-                }
-                targetUsPct = rot.adjustedUsPct;
+        let targetUsPct = Number(allocResult.rows[0]?.us_pct ?? 100);
+        // 크로스마켓 로테이션: DB에 저장된 최신 로테이션 신호로 동적 조정
+        try {
+          const rotRows = rotResult.rows;
+          if (rotRows.length > 0) {
+            const rot = JSON.parse(rotRows[0].value);
+            const ageMs = Date.now() - new Date(rot.updatedAt).getTime();
+            if (ageMs < 12 * 60 * 60_000 && rot.adjustedUsPct !== undefined) {
+              if (rot.adjustedUsPct !== targetUsPct) {
+                logger.info(`📊 로테이션 적용: US 목표 ${targetUsPct}%→${rot.adjustedUsPct}%`, {
+                  component: 'OVERSEAS',
+                });
               }
+              targetUsPct = rot.adjustedUsPct;
             }
-          } catch {
-            /* 로테이션 미설정 시 원래값 유지 */
           }
-          const currentUsPct = grandInvestedUsd > 0 ? ((holdingEvalUsdPost || 0) / grandInvestedUsd) * 100 : 0;
-          if (currentUsPct > targetUsPct * 1.15) {
-            allocBlocked = true;
-            logger.warn(
-              `📊 해외 배분 비중 초과: ${currentUsPct.toFixed(0)}% > 목표 ${targetUsPct}% (+15% 여유) → 신규 매수 차단`,
-              { component: 'OVERSEAS' },
-            );
-          }
+        } catch {
+          /* 로테이션 미설정 시 원래값 유지 */
+        }
+        // 총자산 기준 해외 비중: 해외보유(시가) / 총자산
+        const grandTotalUsd = totalAccountKrw / fxNow;
+        const currentUsPct = grandTotalUsd > 0 ? ((holdingEvalUsdPost || 0) / grandTotalUsd) * 100 : 0;
+        if (currentUsPct > targetUsPct * 1.15) {
+          allocBlocked = true;
+          logger.warn(
+            `📊 해외 배분 비중 초과: ${currentUsPct.toFixed(0)}% > 목표 ${targetUsPct}% (+15% 여유, 총자산₩${(totalAccountKrw / 10000).toFixed(0)}만 기준) → 신규 매수 차단`,
+            { component: 'OVERSEAS' },
+          );
         }
       } catch {
         /* alloc config 미존재 시 무시 */
       }
     }
 
-    // v17: Paper 15→10% (매수 기회 확보, 학습용이므로 증거금 여유 불필요)
-    const minCashForBuy = portfolioValue * (isPaper() ? 0.10 : 0.05);
+    // Paper/Live 동일 파라미터 — Freqtrade·Alpaca·Lumibot 등 업계 합의: 실행 레이어만 다르고 전략 파라미터 동일 유지
+    const minCashForBuy = portfolioValue * 0.05;
     if (riskBlocked || allocBlocked || currentHoldingCount >= MAX_POSITIONS || cash < minCashForBuy) {
       const reasons: string[] = [];
       if (riskBlocked) reasons.push(`리스크차단(-${lossPctOfPortfolio.toFixed(1)}%)`);
@@ -1683,8 +1678,8 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
         // $500 미만: cap 무제한 (concentration-cap도 skip), $500+: 25% (cap 발동 기준과 동일)
         const existingHolding = updatedHoldings.get(target.code);
         const existingQty = existingHolding?.qty ?? 0;
-        // v15: 소액 계좌($2000 미만) 집중캡 100% (고가 주식 1주 매수 가능하도록)
-        const CONC_CAP_PCT = sizingPortfolioValue < 2000 ? 1.0 : 0.25;
+        // v17: 소액 계좌도 집중캡 적용 (한 종목 몰빵 → 수익 다 까먹는 패턴 방지)
+        const CONC_CAP_PCT = sizingPortfolioValue < 500 ? 0.60 : sizingPortfolioValue < 2000 ? 0.40 : 0.25;
         let maxQtyByConc =
           sizingPortfolioValue > 0
             ? Math.max(0, Math.floor((sizingPortfolioValue * CONC_CAP_PCT) / priceWithFee) - existingQty)
@@ -1803,8 +1798,9 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
           atrPct: entryAtrPct,
           tunerOverrides,
         });
-        // TACTICAL: -1.5% SL (오버나이트 갭 최소화), SNIPER: -2.0% SL (고확신이므로 타이트하게)
-        const effectiveSlPct = targetBucket === 'TACTICAL' ? 1.5 : effectiveBucket === 'SNIPER' ? 2.0 : dynSlPct;
+        // TACTICAL: 섹터별 SL (CRYPTO/HIGH_BETA는 넓게), SNIPER: -2.0% SL (고확신 타이트)
+        const tacticalSl = target.sector === 'CRYPTO' ? 3.0 : target.sector === 'CN_ADR' ? 2.5 : 2.0;
+        const effectiveSlPct = targetBucket === 'TACTICAL' ? tacticalSl : effectiveBucket === 'SNIPER' ? 2.0 : dynSlPct;
         // 매수 시점 동적 TP/SL + 버킷을 overseas_holdings에 영속 저장
         await updateTradeState({
           code: target.code,
@@ -1833,7 +1829,7 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
           stockEV && stockEV.sampleCount >= 3
             ? ` EV${stockEV.evPct >= 0 ? '+' : ''}${stockEV.evPct.toFixed(1)}%×${evMult.toFixed(2)}`
             : '';
-        const slTag = targetBucket === 'TACTICAL' ? ' ⚡SL-1.5%' : '';
+        const slTag = targetBucket === 'TACTICAL' ? ` ⚡SL-${tacticalSl.toFixed(1)}%` : '';
         const buyLog = [
           `매수 ${target.code} x${exec.filledQty} @$${entryP.toFixed(2)} ${buyMode}${slTag}`,
           `📌 목표: $${tpPrice}(+${tpPct.toFixed(1)}%) | 손절: $${slPrice}(-${effectiveSlPct.toFixed(1)}%) | ATR트레일: ${entryTrailDrop.toFixed(1)}%(ATR${entryAtrPct.toFixed(1)}%) [${tpLabel}]`,

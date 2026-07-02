@@ -302,6 +302,32 @@ async function tick(): Promise<void> {
     }
   }
 
+  // ── 1.5. 고확신 매수 게이트 + 레짐 기반 임계값 자동 조절 ──
+  try {
+    const { setOverride, removeOverride } = await import('../ai/ai-overrides.js');
+    const brief = getActiveSessionBrief();
+    if (brief && state.lastRunResult !== 'error' && state.consecutiveErrors === 0) {
+      const regime = brief.marketRegime;
+      const isCrisis = regime === 'CRISIS' || brief.riskLevel === 'DEFENSIVE';
+
+      if (!isCrisis) {
+        // 매수 게이트 활성화 (TTL 10분 — 다음 tick에서 갱신)
+        await setOverride('signal', 'loopBuyGate', true, `Loop ${regime}/${brief.riskLevel}`, 10);
+        // 레짐별 매수 임계값: BEAR=88 / NORMAL=83 / BULL=78
+        const minScore = regime === 'BEAR' ? 88 : regime === 'BULL' ? 78 : 83;
+        await setOverride('threshold', 'minBuyScore', minScore, `Regime ${regime}`, 10);
+        // 레짐별 포지션 크기: BEAR=8% / NORMAL=15% / BULL=20%
+        const maxPos = regime === 'BEAR' ? 8 : regime === 'BULL' ? 20 : 15;
+        await setOverride('risk', 'maxPositionPct', maxPos, `Regime ${regime}`, 10);
+      } else {
+        // 위기: 매수 게이트 닫기 + 보수적 설정
+        await removeOverride('loopBuyGate');
+        await setOverride('threshold', 'minBuyScore', 92, 'CRISIS mode', 10);
+        await setOverride('risk', 'maxPositionPct', 5, 'CRISIS mode', 10);
+      }
+    }
+  } catch {}
+
   // ── 2. 매매 실행 — 국내/해외 분기 ──
   const krOpen = tickOpenRegions.has('KR');
   const overseasOpen = [...tickOpenRegions].some((r) => r !== 'KR');
@@ -388,6 +414,24 @@ async function tick(): Promise<void> {
     logger.info(`Auto Pilot 복구 성공 (시도 ${state.recoveryAttempts}회)`, { component: 'LOOP' });
     state.recoveryAttempts = 0;
   }
+
+  // ── QA 건강도 체크 (매 tick — 안정성 + 수익성 연동) ──
+  try {
+    const { getCopilotLiteScore } = await import('../api/routes/review/copilot-lite.js');
+    const healthResult = await getCopilotLiteScore(true);
+    if (healthResult.score < 50 && healthResult.issues.length > 0) {
+      logger.warn(
+        `Health Score ${healthResult.score}/100 — ${healthResult.issues.map((i: { label: string }) => i.label).join(', ')}`,
+        { component: 'LOOP' },
+      );
+      // 건강도 위험: 매수 게이트 닫기 + 방어 모드
+      try {
+        const { removeOverride, setOverride } = await import('../ai/ai-overrides.js');
+        await removeOverride('loopBuyGate');
+        await setOverride('threshold', 'minBuyScore', 90, `Health ${healthResult.score}`, 15);
+      } catch {}
+    }
+  } catch {}
 
   // 메트릭 누적 (강화 #1): 직전 틱 이후 발생한 매수/매도/PnL을 orders 테이블에서 집계
   updateSessionMetrics().catch(() => {});

@@ -667,3 +667,50 @@ export async function warmDartCacheFromDb(): Promise<number> {
     return 0;
   }
 }
+
+/**
+ * DB 캐시에서 분석 완료된 종목 결과 일괄 조회 (Gemini 호출 없음)
+ * 퀀트봇 탭 자동 로드용 — 이미 분석된 결과만 즉시 반환
+ */
+export async function getCachedDartResults(stockCodes: string[]): Promise<DartResearchResult[]> {
+  const { year, quarter } = getCurrentQuarter();
+  const results: DartResearchResult[] = [];
+
+  // 1. 인메모리 캐시에서 먼저 조회
+  const missingCodes: string[] = [];
+  for (const code of stockCodes) {
+    const cacheKey = `${code}-${year}-${quarter}`;
+    const cached = _resultCache.get(cacheKey);
+    if (cached) {
+      results.push(cached.result);
+    } else {
+      missingCodes.push(code);
+    }
+  }
+
+  // 2. 인메모리 미스 → DB에서 조회
+  if (missingCodes.length > 0) {
+    try {
+      const { rows } = await getPool().query(
+        `SELECT stock_code, result FROM dart_research_cache
+         WHERE year = $1 AND quarter = $2 AND stock_code = ANY($3) AND result IS NOT NULL`,
+        [year, quarter, missingCodes],
+      );
+      for (const row of rows) {
+        try {
+          const parsed = typeof row.result === 'string' ? JSON.parse(row.result) : row.result;
+          if (!parsed?.stockCode) continue;
+          const result = parsed as DartResearchResult;
+          results.push(result);
+          // 인메모리 캐시에도 적재
+          const cacheKey = `${row.stock_code}-${year}-${quarter}`;
+          _resultCache.set(cacheKey, { result, fetchedAt: Date.now() });
+        } catch { continue; }
+      }
+    } catch (e) {
+      logger.debug(`DART 캐시 조회 실패: ${e}`, { component: COMP });
+    }
+  }
+
+  return results;
+}

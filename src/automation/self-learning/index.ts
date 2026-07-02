@@ -319,7 +319,7 @@ async function saveInsights(insights: LearnedInsight[]): Promise<void> {
       logger.debug(`dismissed 인사이트 조회 실패 (is_dismissed 컬럼 미존재 가능): ${err}`, { component: 'SELF_LEARN' });
     }
 
-    // v10: dismissed 행 보존 — is_dismissed IS NOT TRUE 조건 추가
+    // v17: applied + dismissed + promoted 행 모두 보존 — 중복 승인 요청 방지
     await getPool()
       .query(
         `DELETE FROM learned_insights
@@ -327,12 +327,13 @@ async function saveInsights(insights: LearnedInsight[]): Promise<void> {
          AND COALESCE(is_promoted, false) IS NOT TRUE
          AND COALESCE(source_mode, 'native') = 'native'
          AND COALESCE(is_dismissed, false) IS NOT TRUE
+         AND COALESCE(is_applied, false) IS NOT TRUE
          AND is_paper = $1`,
         [isPaper],
       )
       .catch(() =>
         getPool().query(
-          'DELETE FROM learned_insights WHERE is_manual IS NOT TRUE AND COALESCE(is_dismissed, false) IS NOT TRUE AND is_paper = $1',
+          'DELETE FROM learned_insights WHERE is_manual IS NOT TRUE AND COALESCE(is_dismissed, false) IS NOT TRUE AND COALESCE(is_applied, false) IS NOT TRUE AND is_paper = $1',
           [isPaper],
         ),
       );
@@ -556,7 +557,9 @@ export async function autoApplyInsights(insights: LearnedInsight[]): Promise<voi
     // mode 필드 허용 값: LLM이 임의 문자열 주입 방지
     const VALID_MODES = new Set(['SWING', 'DEFENSE', 'SCALPING', 'DIVIDEND', 'SNIPER', 'BOTTOM_FISHING', 'EOD_BETTING', 'BREAKOUT']);
     const applied: string[] = [];
-    for (const insight of sorted.slice(0, 5)) {
+    // v17: Paper 자동적용 확대 (백테스팅 목적 — 빠른 튜닝 필요)
+    const maxApply = isPaper ? 10 : 5;
+    for (const insight of sorted.slice(0, maxApply)) {
       const { field, value } = insight.paramChange!;
       const safeCol = SAFE_COL[field];
       if (!safeCol) {
@@ -687,7 +690,7 @@ export async function applyInsightById(insightId: string): Promise<{ ok: boolean
 
 export async function getInsightsForDashboard(): Promise<LearnedInsight[]> {
   const { rows } = await getPool().query(
-    `SELECT * FROM learned_insights WHERE COALESCE(is_dismissed, false) IS NOT TRUE AND is_paper = $1 ORDER BY confidence DESC, sample_count DESC LIMIT 20`,
+    `SELECT * FROM learned_insights WHERE COALESCE(is_dismissed, false) IS NOT TRUE AND is_paper = $1 ORDER BY confidence DESC, sample_count DESC LIMIT 50`,
     [getCtxIsPaper()],
   );
   return rows.map((r) => ({

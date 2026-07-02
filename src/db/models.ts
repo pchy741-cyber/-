@@ -59,13 +59,15 @@ const TransactionChainSchema = z.object({
   current_averaging_count: z.number(),
   peak_price: z.number().nullable().optional(),
   peak_price_since_open: z.number().nullable().optional(),
+  escape_target_price: z.number().nullable().optional(), // DDL 007: 탈출 모드 목표가
   pnl_pct: z.number().nullable().optional(),
   sell_reason: z.string().nullable().optional(),
   trigger_source: z.string().nullable().optional(),
-  // DDL 104: stock_name 컬럼 추가 (watchlist JOIN 대체)
+  // DDL 104: stock_name 컬럼 + LEFT JOIN watchlist 양쪽에서 제공
   stock_name: z.string().nullable().optional(),
-  // DDL 109: partial_tp_stage 추적용 JSONB
+  // DDL 108/109: partial_tp_stage 등 분할익절 메타데이터
   metadata: z.record(z.unknown()).nullable().optional(),
+  notes: z.string().nullable().optional(), // DDL 108: 체인 메모
   // DDL 020: NOT NULL DEFAULT true — paper/live 분리 핵심 컬럼
   is_paper: z.boolean().default(true),
   opened_at: z.string(),
@@ -87,7 +89,7 @@ const OrderSchema = z.object({
   kis_status: z.string().nullable(),
   filled_quantity: z.number(),
   filled_price: z.number().nullable(),
-  status: z.enum(['PENDING', 'FILLED', 'PARTIAL', 'CANCELLED', 'FAILED']),
+  status: z.enum(['PENDING', 'FILLED', 'PARTIAL', 'CANCELLED', 'FAILED', 'REJECTED', 'EXPIRED']),
   trading_mode: z.enum(['paper', 'live', 'p_arch']),
   trigger_source: z.string().nullable(),
   ai_reasoning: z.string().nullable(),

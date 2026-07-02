@@ -549,12 +549,12 @@ export async function evaluateAppliedInsights(): Promise<void> {
  */
 export async function autoPromotePaperInsights(): Promise<void> {
   try {
-    // Paper 인사이트 중 프로모션 대상 조회
+    // v17: Paper 프로모션 조건 완화 — Paper 백테스팅 결과를 빠르게 Live에 반영
     const { rows: candidates } = await getPool().query(
       `SELECT * FROM learned_insights
        WHERE is_paper = true
-         AND confidence >= 0.75
-         AND sample_count >= 10
+         AND confidence >= 0.70
+         AND sample_count >= 8
          AND param_change IS NOT NULL
          AND COALESCE(is_dismissed, false) IS NOT TRUE
          AND COALESCE(is_promoted, false) IS NOT TRUE`,

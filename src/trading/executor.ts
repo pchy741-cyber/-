@@ -74,7 +74,7 @@ export class TradeExecutor {
    * @returns true = 서킷브레이커 발동 (매수 차단)
    */
   private async _checkDailyCircuitBreaker(): Promise<boolean> {
-    const DAILY_LOSS_LIMIT = -99.0; // v16: 서킷브레이커 OFF (손절만 유발, 회복 차단)
+    const DAILY_LOSS_LIMIT = getCtxIsPaper() ? -10.0 : -7.0; // Live -7%: -5%는 정상 변동성에도 발동 → 회복 매수 차단
     try {
       const isPaper = getCtxIsPaper();
       const latest = await getLatestSnapshot(isPaper);
@@ -96,11 +96,12 @@ export class TradeExecutor {
       }
       return false;
     } catch (e) {
-      // fail-open: 서킷브레이커 조회 실패 시 매수 허용 (스냅샷 DB 장애가 매매를 막으면 안 됨)
-      logger.warn(`서킷브레이커 체크 실패 → 매수 허용 (fail-open): ${(e as Error).message}`, {
+      // v17: live=fail-closed (안전), paper=fail-open (가용성)
+      const failClosed = !getCtxIsPaper();
+      logger.warn(`서킷브레이커 체크 실패 → ${failClosed ? '매수 차단 (fail-closed)' : '매수 허용 (fail-open)'}: ${(e as Error).message}`, {
         component: 'CIRCUIT_BREAKER',
       });
-      return false;
+      return failClosed;
     }
   }
 
@@ -304,12 +305,13 @@ export class TradeExecutor {
       return;
     }
 
-    // v9: 동시 포지션 한도 확인 — _pendingBuyCount 포함하여 race condition 방지
-    // 이전: DB 체인만 세면 동시 매수 시 8/8→9/8 초과 발생
-    const allOpenChains = await getOpenChains(getCtxIsPaper());
+    // v17: 원자적 포지션 한도 체크 — DB 조회 전 slot 선점(optimistic lock)으로 race condition 제거
     const pk = this._getPendingKey();
+    this._pendingBuyCount[pk]++; // 먼저 슬롯 선점
+    const allOpenChains = await getOpenChains(getCtxIsPaper());
     const effectiveCount = allOpenChains.length + this._pendingBuyCount[pk];
-    if (effectiveCount >= config.risk.maxConcurrentPositions) {
+    if (effectiveCount > config.risk.maxConcurrentPositions) {
+      this._pendingBuyCount[pk]--; // 슬롯 반환
       releaseBuyIntent(stockCode);
       logger.warn(
         `⛔ 동시 포지션 한도 초과 (${effectiveCount}/${config.risk.maxConcurrentPositions}, pending=${this._pendingBuyCount[pk]}) → 신규 매수 차단: ${stockCode}`,
@@ -322,7 +324,6 @@ export class TradeExecutor {
       );
       return;
     }
-    this._pendingBuyCount[pk]++; // 예약 슬롯 확보
     try {
       // v9: 모든 exit path에서 _pendingBuyCount 감소 보장
 
@@ -487,6 +488,8 @@ export class TradeExecutor {
 
       // 호가 진입 타이밍 — ask2 이하일 때만 매수 (ETF 파킹/바닥낚시 제외 — 시간외 단일가는 호가 무의미)
       // v10: 예약매수 — bid1~ask1 중간가 지정가 주문 (기존 ask1 → mid 가격으로 개선)
+      // v16.3: 고확신 모멘텀 종목은 시장가 유지 (스마트매수 지정가 변환 시 체결률 저하 방지)
+      const isHighConviction = (aiScore ?? 0) >= 85 && (tpSlHints?.confidence ?? 0) >= 0.7;
       let smartBuyPrice: number | undefined;
       if (!skipGates) {
         try {
@@ -495,28 +498,39 @@ export class TradeExecutor {
           const ask2 = book[1]?.askPrice ?? 0;
           const bid1 = book[0]?.bidPrice ?? 0;
           if (ask1 > 0 && ask2 > 0 && estimatedPrice > ask2) {
-            releaseBuyIntent(stockCode);
-            logger.warn(`⏸️ 호가 진입 보류: ${stockCode} 현재가 ${estimatedPrice} > ask2 ${ask2} — 스킵`, {
-              component: 'EXECUTOR',
-            });
-            this._logFire('WARN', 'EXECUTOR', `호가 진입 보류: ${stockCode} 현재가=${estimatedPrice} ask2=${ask2}`);
-            return;
+            if (isHighConviction) {
+              // 고확신 모멘텀: ask2 초과해도 수량 50% 축소 후 시장가 진입
+              gatedQuantity = Math.max(1, Math.floor(gatedQuantity * 0.5));
+              logger.info(
+                `🚀 모멘텀 진입: ${stockCode} 현재가 ${estimatedPrice} > ask2 ${ask2} — 수량 50% 축소(${gatedQuantity}주), 시장가`,
+                { component: 'EXECUTOR' },
+              );
+            } else {
+              releaseBuyIntent(stockCode);
+              logger.warn(`⏸️ 호가 진입 보류: ${stockCode} 현재가 ${estimatedPrice} > ask2 ${ask2} — 스킵`, {
+                component: 'EXECUTOR',
+              });
+              this._logFire('WARN', 'EXECUTOR', `호가 진입 보류: ${stockCode} 현재가=${estimatedPrice} ask2=${ask2}`);
+              return;
+            }
+          } else if (!isHighConviction) {
+            // v11: 지지선 기반 지정가 매수 (BB+Fib+VP+SMA20 가중 지지선)
+            // 체결 안 되면 confirmFill 타임아웃(~30s)에서 자동 취소 → 다음 사이클에서 재시도
+            if (bid1 > 0 && ask1 > 0) {
+              const support = await calcSupportBuyPrice(stockCode, estimatedPrice, bid1, ask1);
+              smartBuyPrice = support.price;
+              logger.info(
+                `💰 지지선매수: ${stockCode} bid1=${bid1.toLocaleString()} support=${smartBuyPrice.toLocaleString()} ask1=${ask1.toLocaleString()} [${support.reasoning}]`,
+                { component: 'EXECUTOR' },
+              );
+            } else if (ask1 > 0) {
+              smartBuyPrice = ask1;
+              logger.info(`💰 스마트 매수: ${stockCode} ask1=${ask1.toLocaleString()} → 지정가 폴백`, {
+                component: 'EXECUTOR',
+              });
+            }
           }
-          // v11: 지지선 기반 지정가 매수 (BB+Fib+VP+SMA20 가중 지지선)
-          // 체결 안 되면 confirmFill 타임아웃(~30s)에서 자동 취소 → 다음 사이클에서 재시도
-          if (bid1 > 0 && ask1 > 0) {
-            const support = await calcSupportBuyPrice(stockCode, estimatedPrice, bid1, ask1);
-            smartBuyPrice = support.price;
-            logger.info(
-              `💰 지지선매수: ${stockCode} bid1=${bid1.toLocaleString()} support=${smartBuyPrice.toLocaleString()} ask1=${ask1.toLocaleString()} [${support.reasoning}]`,
-              { component: 'EXECUTOR' },
-            );
-          } else if (ask1 > 0) {
-            smartBuyPrice = ask1;
-            logger.info(`💰 스마트 매수: ${stockCode} ask1=${ask1.toLocaleString()} → 지정가 폴백`, {
-              component: 'EXECUTOR',
-            });
-          }
+          // 고확신 모멘텀 + ask2 이하: 시장가 유지 (smartBuyPrice undefined → 시장가)
         } catch (e) {
           logger.warn(`호가 조회 실패 → 시장가 폴백: ${stockCode} ${(e as Error).message}`, { component: 'EXECUTOR' });
         }
@@ -796,6 +810,18 @@ export class TradeExecutor {
     if (!chain) {
       logger.warn(`물타기 실패: ${stockCode} 열린 체인 없음`, { component: 'EXECUTOR' });
       return;
+    }
+
+    // v17: ScaleIn 분할 진입도 Kill Switch + 서킷브레이커 재검증 (gate 우회 방지)
+    if (isScaleIn) {
+      if (isKillSwitchActiveForMode('KR', isPaperSnapshot)) {
+        logger.warn(`🛑 ScaleIn 차단: ${stockCode} Kill Switch 활성`, { component: 'EXECUTOR' });
+        return;
+      }
+      if (await this._checkDailyCircuitBreaker()) {
+        logger.warn(`🛑 ScaleIn 차단: ${stockCode} 서킷브레이커 발동`, { component: 'EXECUTOR' });
+        return;
+      }
     }
 
     // ScaleIn 분할 진입은 물타기 횟수 한도 적용 안 함 (계획된 분할이므로)

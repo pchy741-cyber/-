@@ -51,20 +51,36 @@ export async function checkDiversification(stockCode: string, isPaper = false): 
     const count24h = Number(rows[0]?.c24h ?? 0);
     const count1h = Number(rows[0]?.c1h ?? 0);
 
-    // v16: 중복 매수 → 소프트 (사이즈 축소, 하드블록 제거)
+    // v17: live=hard block (반복매수 차단), paper=soft (50% 축소)
     if (count1h >= MAX_BUY_PER_1H) {
+      if (!isPaper) {
+        return {
+          allowed: false,
+          reason: `🚫 1시간 내 ${count1h}건 매수 → 차단 (Live 다양화 강제)`,
+          count24h,
+          count1h,
+        };
+      }
       return {
         allowed: true,
-        reason: `1시간 내 ${count1h}건 매수 → 50% 축소`,
+        reason: `1시간 내 ${count1h}건 매수 → 50% 축소 (Paper)`,
         count24h,
         count1h,
         sizeMultiplier: 0.5,
       };
     }
     if (count24h >= MAX_BUY_PER_24H) {
+      if (!isPaper) {
+        return {
+          allowed: false,
+          reason: `🚫 24시간 내 ${count24h}건 → 차단 (Live 다양화 강제)`,
+          count24h,
+          count1h,
+        };
+      }
       return {
         allowed: true,
-        reason: `24시간 내 ${count24h}건 → 50% 축소 (다양화)`,
+        reason: `24시간 내 ${count24h}건 → 50% 축소 (Paper)`,
         count24h,
         count1h,
         sizeMultiplier: 0.5,
@@ -77,8 +93,9 @@ export async function checkDiversification(stockCode: string, isPaper = false): 
       count1h,
     };
   } catch (e) {
-    logger.warn(`다양화 체크 실패 (${stockCode}): ${(e as Error).message}`, { component: COMP });
-    // 실패 시 통과 (가용성 우선)
-    return { allowed: true, reason: '체크 실패 — 통과', count24h: 0, count1h: 0 };
+    // v17: live=fail-closed (안전), paper=fail-open (가용성)
+    const failClosed = !isPaper;
+    logger.warn(`다양화 체크 실패 (${stockCode}): ${(e as Error).message} → ${failClosed ? 'fail-closed' : 'fail-open'}`, { component: COMP });
+    return { allowed: !failClosed, reason: failClosed ? '체크 실패 → 차단 (Live)' : '체크 실패 → 통과 (Paper)', count24h: 0, count1h: 0 };
   }
 }

@@ -15,6 +15,7 @@ import { logger } from '../utils/logger.js';
 import { getKSTNow } from '../utils/time.js';
 import { getKrMarketPhase, reportNoBuyCandidates } from './loop-mode.js';
 import { isOpeningBellCompleted } from './opening-bell-job.js';
+import { getOverride } from '../ai/ai-overrides.js';
 
 const isRunningMap = new Map<'paper' | 'live', boolean>([
   ['paper', false],
@@ -107,16 +108,22 @@ export async function runTrackBJob(): Promise<void> {
       phase === 'GOLDEN_PM' ||
       phase === 'CURSED' || // 10:20~11:30은 허용 (11:30~13:00 점심차단은 pipeline.ts isLunchBlock이 처리)
       phase === 'CLOSING_BELL'; // SWING EOD 15:00~15:20은 pipeline.ts isSwingEodBetting이 처리
+
+    // v17: 고확신 매수 게이트 — AI 오버라이드(loopBuyGate)로 매수 허용 가능
+    // 루프 모드가 시장 레짐 분석 후 minBuyScore 오버라이드를 함께 설정
+    // → 파이프라인이 이미 고임계값으로 필터링 → 통과한 건만 실행
+    // Auto Pilot 미가동/오버라이드 만료 시에도 정규 매수 구간(phase)에서는 매수 허용 — 완전 차단 방지
+    const loopBuyGateActive = getOverride<boolean>('loopBuyGate') ?? false;
     const buyActions = rawDecisions.filter((d) => d.action === 'BUY' || d.action === 'AVERAGE_DOWN');
     const sellActions = rawDecisions.filter((d) => d.action !== 'BUY' && d.action !== 'AVERAGE_DOWN');
 
     let decisions: typeof rawDecisions;
-    if (isBuyAllowedPhase) {
-      // 매수 허용 구간: pipeline.ts 세밀 가드에 위임
+    if (loopBuyGateActive || isBuyAllowedPhase) {
+      // 매수 허용: pipeline.ts 세밀 가드(minBuyScore 오버라이드 포함)에 위임
       decisions = rawDecisions;
       if (buyActions.length > 0) {
         logger.info(
-          `🟢 Track B 매수 허용 (${phase}): ${buyActions.length}건 [${buyActions.map((d) => d.stock_code).join(',')}]`,
+          `🟢 Track B 매수 허용 (${loopBuyGateActive ? 'Loop Buy Gate' : phase}): ${buyActions.length}건 [${buyActions.map((d) => d.stock_code).join(',')}]`,
           { component: 'SCHEDULER' },
         );
       }

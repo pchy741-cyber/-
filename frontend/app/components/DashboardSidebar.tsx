@@ -165,8 +165,13 @@ export function DashboardSidebar({ tab, setTab, mobileMenu, setMobileMenu, healt
           <div className="flex items-center gap-2">
             <span className="text-sm">🔍</span>
             <span className={`text-[11px] font-bold ${!qaReport ? 'text-slate-500' : qaReport.status === 'pass' ? 'text-emerald-400' : qaReport.status === 'warn' ? 'text-amber-400' : 'text-red-400'}`}>
-              QA Watchdog {!qaReport ? '대기' : qaReport.status === 'pass' ? '통과' : `${qaReport.critical + qaReport.warning}건`}
+              QA {!qaReport ? '대기' : qaReport.status === 'pass' ? '통과' : `${qaReport.critical + qaReport.warning}건`}
             </span>
+            {qaReport && (qaReport as any).score != null && (
+              <span className={`ml-auto text-[11px] font-black ${(qaReport as any).score >= 80 ? 'text-emerald-400' : (qaReport as any).score >= 50 ? 'text-amber-400' : 'text-red-400'}`}>
+                {(qaReport as any).score}
+              </span>
+            )}
           </div>
           {qaReport && (
             <div className="flex items-center gap-3 text-[10px] text-slate-500">

@@ -53,6 +53,11 @@ function KrHoldingsTab({ chains, dash, busyAction, guard, getStockName, onRefres
         const stopPct = Number(ch.stop_loss_pct) || fallbackSl;
         const pnl = ch.unrealizedPnl ?? 0;
         const pnlPct = ch.unrealizedPnlPct ?? 0;
+        // 트레일링 스탑 데이터
+        const peakPrice = Number(ch.peak_price_since_open) || 0;
+        const peakPnlPct = peakPrice > 0 && avgPrice > 0 ? ((peakPrice - avgPrice) / avgPrice) * 100 : 0;
+        const trailActive = ch.status === 'PROFIT_TAKING' || peakPnlPct > 2.5;
+        const trailDrop = peakPrice > 0 && (ch.currentPrice ?? 0) > 0 ? ((ch.currentPrice! - peakPrice) / peakPrice) * 100 : 0;
         const resolvedName = toDisplayName(ch.stock_name, ch.stock_code);
         const displayName = isUnresolvedStockName(resolvedName, ch.stock_code)
           ? getStockName(ch.stock_code) : resolvedName;
@@ -152,6 +157,11 @@ function KrHoldingsTab({ chains, dash, busyAction, guard, getStockName, onRefres
                   <span className="text-[9px] text-rose-500 tabular-nums">
                     {stopPct}% <span className="text-rose-600">({fmtWon(Math.round(avgPrice * (1 + stopPct / 100)))})</span>
                   </span>
+                  {trailActive && peakPrice > 0 && (
+                    <span className="text-[9px] text-yellow-500 font-medium">
+                      트레일 · 고점{fmtWon(peakPrice)} · {trailDrop >= 0 ? '+' : ''}{trailDrop.toFixed(1)}%
+                    </span>
+                  )}
                   <span className="text-[9px] text-emerald-500 tabular-nums">
                     +{targetPct}% <span className="text-emerald-600">({fmtWon(Math.round(avgPrice * (1 + targetPct / 100)))})</span>
                   </span>
