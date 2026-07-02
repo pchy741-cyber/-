@@ -353,6 +353,13 @@ export async function runEodMorningSell(): Promise<void> {
 
     const sellDecisions: TradeDecision[] = [];
 
+    // 대상 후보 종목 시세 일괄 조회 — 모멘텀 체크용 (CEO 지적 2026-07-02: eod-bluechip과
+    // 동일한 "무조건 강제매도" 버그가 여기도 있었음 — 갭업 후 계속 오르는 종목도 기계적으로 매도)
+    const candidateCodes = openChains
+      .filter((c) => c.strategy_mode === 'EOD_BETTING' && Number(c.total_quantity) > 0)
+      .map((c) => c.stock_code);
+    const morningPrices = candidateCodes.length > 0 ? await getBatchPrices(candidateCodes) : new Map<string, CurrentPrice>();
+
     for (const chain of openChains) {
       if (Number(chain.total_quantity) <= 0) continue;
       if (chain.strategy_mode !== 'EOD_BETTING') continue;
@@ -366,6 +373,19 @@ export async function runEodMorningSell(): Promise<void> {
       // 전일 15시 이후 매수인지 확인
       const openedH = openedKst.getUTCHours();
       if (openedH < 15) continue; // 15시 이전 매수는 종가베팅이 아님
+
+      // 모멘텀 체크: 수익권 + 시가 대비 상승 중이면 이번 사이클은 보류 (일반 관리로 전환)
+      const p = morningPrices.get(chain.stock_code);
+      const avgBuy = chain.avg_buy_price != null ? Number(chain.avg_buy_price) : null;
+      const pnlPct = p && avgBuy && avgBuy > 0 ? ((p.currentPrice - avgBuy) / avgBuy) * 100 : null;
+      const risingSinceOpen = p && p.openPrice > 0 ? p.currentPrice > p.openPrice : false;
+      if (pnlPct != null && pnlPct > 0 && risingSinceOpen) {
+        logger.info(
+          `🎰 종가베팅 익일매도 보류: ${chain.stock_code} 수익권(+${pnlPct.toFixed(1)}%)+시가대비 상승중 → 모멘텀 지속 관찰`,
+          { component: 'EOD_BETTING' },
+        );
+        continue;
+      }
 
       // 동일 종목에 EOD_BETTING 외 전략 체인이 공존 → PARTIAL_SELL로 EOD 수량만 정확히 매도
       const conflictChain = openChains.find(

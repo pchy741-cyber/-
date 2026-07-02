@@ -493,8 +493,16 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
         const holdingDays = openedMs > 0 ? Math.floor((nowMs - openedMs) / 86_400_000) : 0; // 1 day in ms
         const { h: wH, m: wM } = getKstScalpTime();
 
-        // 익일 09:00~09:10 기계적 매도 (Williams 원칙: 하루만 보유)
-        if (holdingDays >= 1 && wH === 9 && wM <= 10) {
+        // 모멘텀 체크: 수익권 + 시가 대비 상승 중이면 이번 사이클은 보류
+        // CEO 지적(2026-07-02): eod-bluechip/eod-betting과 동일한 무조건 강제매도 버그 —
+        // 갭업 후에도 계속 상승 중인 브레이크아웃 종목까지 기계적으로 매도하던 것 수정
+        const risingSinceOpen = price.openPrice > 0 ? price.currentPrice > price.openPrice : false;
+        if (pnlPct > 0 && risingSinceOpen) {
+          logger.info(
+            `📈 BREAKOUT/Williams 익일매도 보류: ${chain.stock_code} 수익권(+${pnlPct.toFixed(1)}%)+시가대비 상승중 → 모멘텀 지속 관찰`,
+            { component: 'TRACK_B' },
+          );
+        } else if (holdingDays >= 1 && wH === 9 && wM <= 10) {
           decisions.push({
             action: 'SELL',
             stock_code: chain.stock_code,
