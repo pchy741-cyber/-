@@ -160,7 +160,10 @@ export function registerManualBuyRoutes(app: Hono) {
 
     const junkPriceThreshold = isPaper ? 1000 : 5000;
     const ETF_BRANDS = ['KODEX', 'TIGER', 'KBSTAR', 'ARIRANG', 'HANARO', 'SOL', 'ACE', 'KOSEF'];
-    const isETF = ETF_BRANDS.some((b) => (priceData.stockName ?? '').toUpperCase().includes(b));
+    // ETF 이름 매칭 실패(KIS API hts_kor_isnm 공백/누락) 대비 — 화이트리스트 인버스 ETF는 코드로도 직접 인정
+    const isETF =
+      ETF_BRANDS.some((b) => (priceData.stockName ?? '').toUpperCase().includes(b)) ||
+      INVERSE_ETF_CODES.has(stock_code);
     if (curPrice < junkPriceThreshold && !isETF) {
       logger.warn(
         `🚫 HARD BLOCK: ${stock_code}(${priceData.stockName}) ${curPrice}원 < ${junkPriceThreshold}원 — 저가주 필터`,
