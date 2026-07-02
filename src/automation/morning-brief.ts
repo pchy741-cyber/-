@@ -144,6 +144,34 @@ adjustment 기준:
       collectedAt: Date.now(),
     };
 
+    // 매크로 뉴스 기반 시스템 리스크 조기경보 — 국민연금 리밸런싱 등 대형 자금이탈성
+    // 뉴스가 확산 중이면, 가격이 아직 안 움직여도 premarket_crash_level 선제 설정
+    // (2026-07-02 CEO 지적: 리밸런싱 뉴스 나왔는데도 장 초반 크래시 대응 못 잡던 공백 보완)
+    try {
+      const { assessNewsShockLevel, CRASH_LEVEL_RANK } = await import('./crash-profit.js');
+      const newsShock = assessNewsShockLevel(macroHeadlines);
+      if (newsShock.level !== 'NONE') {
+        const { getOverride, setOverride } = await import('../ai/ai-overrides.js');
+        const current = getOverride<'CAUTION' | 'CRASH' | 'PANIC'>('premarket_crash_level');
+        const currentRank = current ? CRASH_LEVEL_RANK[current] : 0;
+        if (CRASH_LEVEL_RANK[newsShock.level] > currentRank) {
+          await setOverride(
+            'signal',
+            'premarket_crash_level',
+            newsShock.level,
+            `뉴스 조기경보: ${newsShock.matchedHeadlines.join(' / ')}`,
+            180, // 3시간 TTL — 08:10~11:10 유효 (09:00~11:30 실거래 구간 커버)
+          );
+          logger.warn(
+            `🚨 [MORNING_BRIEF] 매크로 뉴스 조기경보: ${newsShock.level} (score=${newsShock.score}) — ${newsShock.matchedHeadlines.join(' / ')}`,
+            { component: 'MORNING_BRIEF' },
+          );
+        }
+      }
+    } catch (newsShockErr) {
+      logger.warn(`[MORNING_BRIEF] 뉴스 조기경보 평가 실패: ${newsShockErr}`, { component: 'MORNING_BRIEF' });
+    }
+
     logger.info(
       `✅ [MORNING_BRIEF] 완료 (${((Date.now() - t0) / 1000).toFixed(1)}초) | 리스크=${riskLevel} | ${marketSummary}`,
       { component: 'MORNING_BRIEF' },

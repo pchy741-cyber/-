@@ -342,7 +342,7 @@ export function startScheduler(): void {
       const { isTradingDay } = await import('../utils/holidays.js');
       if (!isTradingDay()) return;
       try {
-        const [{ getMacroSnapshot }, { getMacroSignal }, { assessCrashLevel }, { setOverride }, { sendTelegramMessage }] =
+        const [{ getMacroSnapshot }, { getMacroSignal }, { assessCrashLevel, CRASH_LEVEL_RANK }, { getOverride, setOverride }, { sendTelegramMessage }] =
           await Promise.all([
             import('../automation/macro-data.js'),
             import('../market/macro-signal.js'),
@@ -360,7 +360,10 @@ export function startScheduler(): void {
           fearGreedIndex: macroSnap?.fearGreedIndex ?? undefined,
           nasdaqChange1d: macroSig?.nasdaqChange1d ?? undefined,
         });
-        if (preMarketCrash.level !== 'NONE') {
+        // 08:10 모닝브리프가 뉴스 기반으로 이미 더 높은 레벨을 설정했을 수 있음 — 다운그레이드 방지
+        const existingLevel = getOverride<'CAUTION' | 'CRASH' | 'PANIC'>('premarket_crash_level');
+        const existingRank = existingLevel ? CRASH_LEVEL_RANK[existingLevel] : 0;
+        if (preMarketCrash.level !== 'NONE' && CRASH_LEVEL_RANK[preMarketCrash.level] >= existingRank) {
           await setOverride(
             'signal',
             'premarket_crash_level',
@@ -375,6 +378,11 @@ export function startScheduler(): void {
           await sendTelegramMessage(
             `🚨 장전 크래시 신호: ${preMarketCrash.level} (score=${preMarketCrash.score})\n사유: ${preMarketCrash.reasons.slice(0, 3).join(', ')}`,
           ).catch(() => {});
+        } else if (existingLevel) {
+          logger.info(
+            `✅ 장전 가격신호 정상 — 뉴스 조기경보(${existingLevel}) 유지 중`,
+            { component: 'SCHEDULER' },
+          );
         } else {
           logger.info('✅ 장전 해외 신호 정상 — 크래시 없음', { component: 'SCHEDULER' });
         }

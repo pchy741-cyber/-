@@ -181,6 +181,50 @@ export function assessCrashLevel(ctx: CrashContext): CrashSignal {
   return { level, score, reasons };
 }
 
+// ── 레벨 서열 (뉴스/가격 신호 병합 시 다운그레이드 방지용) ─────────────
+export const CRASH_LEVEL_RANK: Record<CrashSignal['level'], number> = {
+  NONE: 0,
+  CAUTION: 1,
+  CRASH: 2,
+  PANIC: 3,
+};
+
+// ── 매크로 뉴스 헤드라인 → 시스템 리스크 조기경보 ──────────────────────
+// 가격이 아직 안 움직였어도, "국민연금 리밸런싱" 류의 대형 자금이탈/시스템리스크
+// 뉴스가 확산 중이면 선제적으로 CAUTION 이상 부여 (찌라시 가능성 있어 PANIC까지는 안 감).
+const SYSTEMIC_SHOCK_KEYWORDS = [
+  '국민연금', '연기금', '리밸런싱', '대량매도', '매도폭탄', '오버행',
+  '금융위기', '시스템리스크', '신용경색', '뱅크런', '자금이탈',
+  '프로그램매매', '서킷브레이커', '사이드카', '패닉셀', '투매',
+];
+
+export interface NewsShockSignal {
+  level: 'NONE' | 'CAUTION' | 'CRASH';
+  score: number;
+  matchedHeadlines: string[];
+}
+
+/**
+ * 매크로 뉴스 헤드라인 목록에서 시스템 리스크 키워드 매칭 → 조기경보 레벨 산정
+ * 뉴스 단독으로는 최대 CRASH까지만 (PANIC은 실제 가격/VKOSPI 확인 필요 — 찌라시 방어)
+ */
+export function assessNewsShockLevel(headlines: string[]): NewsShockSignal {
+  const matched: string[] = [];
+  let hits = 0;
+  for (const h of headlines) {
+    const hitKeywords = SYSTEMIC_SHOCK_KEYWORDS.filter((kw) => h.includes(kw));
+    if (hitKeywords.length > 0) {
+      hits += hitKeywords.length;
+      matched.push(h);
+    }
+  }
+  // 조 단위 금액 언급 시 가산 (예: "50조") — 자금 규모가 클수록 파급효과 큼
+  const bigAmount = headlines.some((h) => /\d+\s*조/.test(h));
+  let score = Math.min(60, hits * 15 + (bigAmount ? 15 : 0));
+  const level: NewsShockSignal['level'] = score >= 35 ? 'CRASH' : score >= 15 ? 'CAUTION' : 'NONE';
+  return { level, score, matchedHeadlines: matched.slice(0, 3) };
+}
+
 // ── 인버스 매매 결정 ────────────────────────────────────────────────────
 
 interface InverseDecisionParams {
