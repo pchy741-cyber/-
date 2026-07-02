@@ -15,6 +15,7 @@ import { getAccountBalance, invalidateBalanceCache } from '../kis/account.js';
 import { type CurrentPrice, getBatchPrices, getVolumeRankingStocks } from '../kis/market.js';
 import { sendByPaperFlag } from '../notifications/mode-message.js';
 import { isKillSwitchActiveForMode, reportSuccess } from '../risk/kill-switch.js';
+import { getLossStreakMultiplier } from '../risk/loss-streak.js';
 import { getPaperBalance } from '../risk/paper-balance.js';
 import { tradeExecutor } from '../trading/executor.js';
 import { logger } from '../utils/logger.js';
@@ -252,11 +253,17 @@ export async function runEodBettingJob(): Promise<void> {
         : eodMaxStocks <= 8
           ? PHI_TOTAL_CAUTION // CORRECTION/경계 → 23.6%
           : PHI_TOTAL_NORMAL; // 정상 → 38.2%
-    const totalEodBudget = totalAssets * phiTotal;
+    // CEO 지적(2026-07-02): 종가베팅이 Kelly/승률/연속손실 배율 전혀 없이 flat 14.6~38.2%로
+    // 배팅해서, 승률 나빠 나머지 매매가 1~5%로 축소된 상황에도 혼자 큰 사이즈 유지 —
+    // 승률 좋은 종목별 스캘핑은 작게 이기고 종가베팅은 크게 지는 비대칭 손익의 원인 중 하나.
+    // "연패 시에도 종가베팅만 허용"이라는 원래 설계 취지는 유지하되(완전 차단 X),
+    // 연속손실 배율로 사이즈만 함께 축소.
+    const eodLossStreakMult = await getLossStreakMultiplier(isPaper);
+    const totalEodBudget = totalAssets * phiTotal * eodLossStreakMult;
     const positionKrw = Math.floor(totalEodBudget / top.length); // 균등 분할
 
     logger.info(
-      `🎰 사이징: 총자산=${totalAssets.toLocaleString()}원 한도=${phiTotal * 100}%(${Math.round(totalEodBudget).toLocaleString()}원) ${top.length}종목 → ${positionKrw.toLocaleString()}원/종목 ${isPaper ? 'PAPER' : 'LIVE'}`,
+      `🎰 사이징: 총자산=${totalAssets.toLocaleString()}원 한도=${(phiTotal * 100).toFixed(1)}%×연속손실${eodLossStreakMult}(${Math.round(totalEodBudget).toLocaleString()}원) ${top.length}종목 → ${positionKrw.toLocaleString()}원/종목 ${isPaper ? 'PAPER' : 'LIVE'}`,
       { component: 'EOD_BETTING' },
     );
 

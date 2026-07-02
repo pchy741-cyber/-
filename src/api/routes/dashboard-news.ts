@@ -4,7 +4,11 @@ import { logger } from '../../utils/logger.js';
 
 export const dashboardNewsRoutes = new Hono();
 
-let _newsSummaryCache = { summary: '', fetchedAt: 0 };
+let _newsSummaryCache: { summary: string; fetchedAt: number; source: 'gemini' | 'fallback' | '' } = {
+  summary: '',
+  fetchedAt: 0,
+  source: '',
+};
 const NEWS_SUMMARY_TTL = 120 * 60 * 1000;
 let _summaryRefreshing = false; // stale-while-revalidate 중복 방지
 
@@ -232,7 +236,7 @@ function refreshSummaryInBackground(): void {
       const { config } = await import('../../config/index.js');
       if (!config.geminiEnabled) {
         const summary = generateFreeKoreanSummary(headlineLines);
-        if (summary) _newsSummaryCache = { summary, fetchedAt: Date.now() };
+        if (summary) _newsSummaryCache = { summary, fetchedAt: Date.now(), source: 'fallback' };
         return;
       }
 
@@ -245,7 +249,7 @@ function refreshSummaryInBackground(): void {
         ),
         new Promise<string>((resolve) => setTimeout(() => resolve(''), 15000)),
       ]);
-      if (summary) _newsSummaryCache = { summary, fetchedAt: Date.now() };
+      if (summary) _newsSummaryCache = { summary, fetchedAt: Date.now(), source: 'gemini' };
     } catch (e) {
       logger.debug(`뉴스 요약 백그라운드 리프레시 실패: ${e}`, { component: 'NEWS_SUMMARY' });
     } finally {
@@ -265,19 +269,21 @@ dashboardNewsRoutes.get('/news/summary', async (c) => {
         refreshSummaryInBackground();
         return c.json({
           summary: _newsSummaryCache.summary,
-          geminiOk: true,
+          geminiOk: _newsSummaryCache.source === 'gemini',
           error: null,
           headlineCount: 0,
           cached: true,
+          stale: true,
         });
       }
       if (!isStale && !forceRefresh) {
         return c.json({
           summary: _newsSummaryCache.summary,
-          geminiOk: true,
+          geminiOk: _newsSummaryCache.source === 'gemini',
           error: null,
           headlineCount: 0,
           cached: true,
+          stale: false,
         });
       }
     }
@@ -310,8 +316,8 @@ dashboardNewsRoutes.get('/news/summary', async (c) => {
     const { config } = await import('../../config/index.js');
     if (!config.geminiEnabled) {
       const summary = generateFreeKoreanSummary(headlineLines);
-      if (summary) _newsSummaryCache = { summary, fetchedAt: Date.now() };
-      return c.json({ summary, geminiOk: false, error: null, headlineCount, cached: false });
+      if (summary) _newsSummaryCache = { summary, fetchedAt: Date.now(), source: 'fallback' };
+      return c.json({ summary, geminiOk: false, error: null, headlineCount, cached: false, stale: false });
     }
 
     const { callVertexGemini: callVertexNews } = await import('../../utils/vertex-gemini.js');
@@ -325,13 +331,14 @@ dashboardNewsRoutes.get('/news/summary', async (c) => {
       summaryPromise,
       new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout_15s')), 15000)),
     ]);
-    if (summary) _newsSummaryCache = { summary, fetchedAt: Date.now() };
+    if (summary) _newsSummaryCache = { summary, fetchedAt: Date.now(), source: 'gemini' };
     return c.json({
       summary,
       geminiOk: !!summary,
       error: summary ? null : 'gemini_empty',
       headlineCount,
       cached: false,
+      stale: false,
     });
   } catch (err) {
     const errStr = String(err);
@@ -514,7 +521,7 @@ export async function prefetchAllNews(): Promise<void> {
         const { config } = await import('../../config/index.js');
         if (!config.geminiEnabled) {
           const summary = generateFreeKoreanSummary(headlineLines);
-          if (summary) _newsSummaryCache = { summary, fetchedAt: Date.now() };
+          if (summary) _newsSummaryCache = { summary, fetchedAt: Date.now(), source: 'fallback' };
         } else {
           try {
             const headlines = headlineLines
@@ -532,7 +539,7 @@ export async function prefetchAllNews(): Promise<void> {
               ),
               new Promise<string>((resolve) => setTimeout(() => resolve(''), 12000)),
             ]);
-            if (summary) _newsSummaryCache = { summary, fetchedAt: Date.now() };
+            if (summary) _newsSummaryCache = { summary, fetchedAt: Date.now(), source: 'gemini' };
           } catch {
             /* Gemini 실패 시 무시 */
           }

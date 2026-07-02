@@ -1632,7 +1632,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     // ── 하락장 수익화 결정 주입 ─────────────────────────────────────────
     // 우선순위: ① 인버스 매수/매도 ② 패닉 긴급축소 (일반 매매 decisions 앞에 삽입)
     // NONE 레벨에서도 항상 호출 — 보유 인버스가 있으면 generateInverseDecisions가 청산 결정 생성
-    let inverseDecisions = generateInverseDecisions({
+    let inverseDecisions = await generateInverseDecisions({
       signal: crashSignal,
       openChains,
       livePrices,

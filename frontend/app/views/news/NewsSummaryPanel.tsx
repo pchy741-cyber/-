@@ -5,6 +5,7 @@ import { Panel, Button } from '@/components/ui';
 
 export function NewsSummaryPanel({
   summary, summaryError, summaryLoading, summaryRefreshing, summaryHeadlines,
+  summaryGeminiOk, summaryStale,
   aiEngineStatus, geminiTest, geminiTesting,
   testGemini, fetchSummary,
 }: {
@@ -13,24 +14,31 @@ export function NewsSummaryPanel({
   summaryLoading: boolean;
   summaryRefreshing: boolean;
   summaryHeadlines: number;
+  summaryGeminiOk: boolean;
+  summaryStale: boolean;
   aiEngineStatus: { gemini: string; claude: string; activeEngine: string } | null;
   geminiTest: { ok: boolean; latencyMs: number; model: string; error: string | null; errorDetail: string | null; rawError: string; response?: string } | null;
   geminiTesting: boolean;
   testGemini: () => void;
   fetchSummary: (force: boolean) => void;
 }) {
+  // 캐시 텍스트가 있다는 것과 "지금 Gemini가 정상 응답했다"는 것은 다름 —
+  // fallback(무료 요약) 출처거나 stale 캐시면 그렇게 명시한다.
+  const badgeLabel =
+    summaryLoading ? undefined :
+    summary && summaryGeminiOk && !summaryStale ? 'Gemini 정상' :
+    summary && summaryGeminiOk && summaryStale ? 'Gemini (캐시, 갱신중)' :
+    summary && !summaryGeminiOk ? '요약(Gemini 미사용)' :
+    summaryError === 'rss_failed' ? 'RSS 실패' :
+    summaryError === 'gemini_quota' ? 'Gemini 한도 초과' :
+    summaryError === 'no_key' ? 'API 키 없음' :
+    summaryError ? 'Gemini 오류' : undefined;
+  const badgeColorValue =
+    summaryLoading ? undefined :
+    summary && summaryGeminiOk && !summaryStale ? 'emerald' :
+    summary ? 'amber' : 'rose';
   return (
-    <Panel title="AI 시황 요약" badge={
-      summaryLoading ? undefined :
-      summary ? 'Gemini 정상' :
-      summaryError === 'rss_failed' ? 'RSS 실패' :
-      summaryError === 'gemini_quota' ? 'Gemini 한도 초과' :
-      summaryError === 'no_key' ? 'API 키 없음' :
-      summaryError ? 'Gemini 오류' : undefined
-    } badgeColor={
-      summaryLoading ? undefined :
-      summary ? 'emerald' : 'rose'
-    }>
+    <Panel title="AI 시황 요약" badge={badgeLabel} badgeColor={badgeColorValue}>
       <div className="p-4 space-y-3">
         {summaryLoading ? (
           <div className="space-y-3 animate-pulse">

@@ -32,6 +32,8 @@ function NewsView({ watchlist, setWatchlist, viewMode = 'live' }: { watchlist: W
   const [summaryHeadlines, setSummaryHeadlines] = useState(0);
   const [summaryLoading, setSummaryLoading] = useState(true);
   const [summaryRefreshing, setSummaryRefreshing] = useState(false);
+  const [summaryGeminiOk, setSummaryGeminiOk] = useState(false);
+  const [summaryStale, setSummaryStale] = useState(false);
   const [geminiTest, setGeminiTest] = useState<{ ok: boolean; latencyMs: number; model: string; error: string | null; errorDetail: string | null; rawError: string; response?: string } | null>(null);
   const [geminiTesting, setGeminiTesting] = useState(false);
   const [aiEngineStatus, setAiEngineStatus] = useState<{ gemini: string; claude: string; activeEngine: string } | null>(null);
@@ -77,12 +79,14 @@ function NewsView({ watchlist, setWatchlist, viewMode = 'live' }: { watchlist: W
     setSummaryRefreshing(force);
     if (!force) setSummaryLoading(true);
     api(`/news/summary${force ? '?refresh=1' : ''}`, { timeout: 45000 })
-      .then((data: { summary?: string; error?: string; headlineCount?: number }) => {
+      .then((data: { summary?: string; error?: string; headlineCount?: number; geminiOk?: boolean; stale?: boolean }) => {
         setSummary(typeof data?.summary === 'string' ? data.summary : '');
         setSummaryError(data?.error ?? null);
         setSummaryHeadlines(data?.headlineCount ?? 0);
+        setSummaryGeminiOk(!!data?.geminiOk);
+        setSummaryStale(!!data?.stale);
       })
-      .catch(() => { setSummary(''); setSummaryError('network'); })
+      .catch(() => { setSummary(''); setSummaryError('network'); setSummaryGeminiOk(false); setSummaryStale(false); })
       .finally(() => { setSummaryLoading(false); setSummaryRefreshing(false); });
   };
   const fetchSummary = useCallback((force: boolean) => fetchSummaryRef.current?.(force), []);
@@ -188,6 +192,7 @@ function NewsView({ watchlist, setWatchlist, viewMode = 'live' }: { watchlist: W
         <NewsSummaryPanel
           summary={summary} summaryError={summaryError} summaryLoading={summaryLoading}
           summaryRefreshing={summaryRefreshing} summaryHeadlines={summaryHeadlines}
+          summaryGeminiOk={summaryGeminiOk} summaryStale={summaryStale}
           aiEngineStatus={aiEngineStatus} geminiTest={geminiTest} geminiTesting={geminiTesting}
           testGemini={testGemini} fetchSummary={fetchSummary}
         />

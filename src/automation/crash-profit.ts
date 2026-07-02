@@ -20,6 +20,7 @@
 const PARK_STOCK_CODE = '449170'; // KODEX 미국달러SOFR금리액티브
 import { getCtxIsPaper } from '../config/context.js';
 import { getPool, isMemoryMode } from '../db/client.js';
+import { getLossStreakMultiplier } from '../risk/loss-streak.js';
 import { logger } from '../utils/logger.js';
 import type { TradeDecision, TransactionChain } from '../db/models.js';
 import type { CurrentPrice } from '../kis/market.js';
@@ -244,12 +245,19 @@ interface InverseDecisionParams {
  * - PANIC:          3종 최대 진입; panicSell로 확보한 현금 + 기존 현금 활용
  * - 배분 기준: totalAssets (포트폴리오 대비 충분한 헤지 확보), 실행은 orderableCash 한도 내
  */
-export function generateInverseDecisions(params: InverseDecisionParams): TradeDecision[] {
+export async function generateInverseDecisions(params: InverseDecisionParams): Promise<TradeDecision[]> {
   const { signal, openChains, livePrices, orderableCash, totalAssets } = params;
   const decisions: TradeDecision[] = [];
   let remainingCash = orderableCash;
   // 배분 기준: 총자산 기반 (포트폴리오 대비 충분한 헤지), 실행은 가용현금 한도 내
   const allocationBase = totalAssets > 0 ? totalAssets : orderableCash;
+  // CEO 지적(2026-07-02): 인버스 ETF 배분(22~38%)이 승률/연속손실과 무관한 flat 비율 —
+  // Paper 모드에서 KODEX 인버스 -837,768원 손실이 바로 이 사이징 때문. 다른 전략과
+  // 동일한 연속손실 배율을 적용해 연패 중엔 배분도 함께 줄어들게 함.
+  const inverseLossStreakMult = await getLossStreakMultiplier(getCtxIsPaper());
+  if (inverseLossStreakMult < 1.0) {
+    logger.info(`🔻 인버스ETF 사이징 축소: 연속손실 배율 ×${inverseLossStreakMult}`, { component: 'CRASH_PROFIT' });
+  }
 
   for (const etf of INVERSE_ETFS) {
     const holding = openChains.find((c) => c.stock_code === etf.code && c.total_quantity > 0);
@@ -316,7 +324,7 @@ export function generateInverseDecisions(params: InverseDecisionParams): TradeDe
     // CAUTION 시 1x(114800)만 사용 — 완만한 하락일에 2x 레버리지 과도 (개장 하락장 기본 대응)
     if (signal.level === 'CAUTION' && etf.code !== '114800') continue;
 
-    const allocPct = etf.alloc[signal.level];
+    const allocPct = etf.alloc[signal.level] * inverseLossStreakMult;
     if (allocPct <= 0) continue;
 
     if (!price || price.currentPrice <= 0) continue;

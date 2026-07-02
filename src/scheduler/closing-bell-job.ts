@@ -26,6 +26,7 @@ import { getAccountBalance, invalidateBalanceCache } from '../kis/account.js';
 import { getBatchPrices, getDailyChart } from '../kis/market.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
 import { isKillSwitchActiveForMode, reportSuccess } from '../risk/kill-switch.js';
+import { getLossStreakMultiplier } from '../risk/loss-streak.js';
 import { getPaperBalance } from '../risk/paper-balance.js';
 import { tradeExecutor } from '../trading/executor.js';
 import { logger } from '../utils/logger.js';
@@ -261,8 +262,12 @@ JSON만 반환 (다른 텍스트 없이):
     const balance = isPaper ? await getPaperBalance() : await getAccountBalance(true);
     const orderableCash = balance.orderableCash;
 
+    // CEO 지적(2026-07-02): 종가줍줍이 Kelly/승률/연속손실 배율 없이 maxPositionKrw×50%
+    // 고정 사이즈로 오버나이트 베팅 — 다른 전략이 연패로 사이즈 축소된 상황에도 혼자
+    // 큰 포지션을 유지해 비대칭 손익을 키우던 원인 중 하나. 연속손실 배율 추가 적용.
+    const closingBellLossStreakMult = await getLossStreakMultiplier(isPaper);
     const basePositionKrw = config.risk.maxPositionKrw;
-    const overnightPositionKrw = Math.floor(basePositionKrw * POSITION_OVERNIGHT_DISC);
+    const overnightPositionKrw = Math.floor(basePositionKrw * POSITION_OVERNIGHT_DISC * closingBellLossStreakMult);
     const cashPerStock = Math.floor((orderableCash * 0.9) / top.length);
     const effectivePositionKrw = Math.min(overnightPositionKrw, cashPerStock);
 
@@ -275,7 +280,7 @@ JSON만 반환 (다른 텍스트 없이):
     }
 
     logger.info(
-      `🎯 사이징: ${overnightPositionKrw.toLocaleString()}원/종목 (기본${basePositionKrw.toLocaleString()} × 50% 오버나이트 할인), ${top.length}종목`,
+      `🎯 사이징: ${overnightPositionKrw.toLocaleString()}원/종목 (기본${basePositionKrw.toLocaleString()} × 50% 오버나이트할인 × 연속손실${closingBellLossStreakMult}), ${top.length}종목`,
       { component: 'CLOSING_BELL' },
     );
 
