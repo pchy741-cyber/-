@@ -1632,13 +1632,25 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     // ── 하락장 수익화 결정 주입 ─────────────────────────────────────────
     // 우선순위: ① 인버스 매수/매도 ② 패닉 긴급축소 (일반 매매 decisions 앞에 삽입)
     // NONE 레벨에서도 항상 호출 — 보유 인버스가 있으면 generateInverseDecisions가 청산 결정 생성
-    const inverseDecisions = generateInverseDecisions({
+    let inverseDecisions = generateInverseDecisions({
       signal: crashSignal,
       openChains,
       livePrices,
       orderableCash,
       totalAssets,
     });
+    // Live 계좌 파생ETF 미신청(CEO 결정, 2026-07-02) — 신규 매수는 항상 KIS 거부(APBK1497)되므로
+    // Live에서는 생성 자체를 스킵. 매도/청산(기존 보유분 정리)만 통과.
+    if (!ctxIsPaper) {
+      const blockedBuyCount = inverseDecisions.filter((d) => d.action === 'BUY').length;
+      inverseDecisions = inverseDecisions.filter((d) => d.action !== 'BUY');
+      if (blockedBuyCount > 0) {
+        logger.info(
+          `🔻 인버스 매수 ${blockedBuyCount}건 스킵 (Live 계좌 파생ETF 미신청 — CEO 결정)`,
+          { component: 'CRASH_PROFIT' },
+        );
+      }
+    }
     if (inverseDecisions.length > 0) {
       logger.info(
         `🔻 인버스 결정 ${inverseDecisions.length}건: ${inverseDecisions.map((d) => `${d.action} ${d.stock_code} ×${d.quantity}`).join(', ')}`,
