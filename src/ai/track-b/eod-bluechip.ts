@@ -73,6 +73,22 @@ export function applyEodBluechipStrategy(decisions: TradeDecision[], ctx: EodCon
         (d) => d.stock_code === chain.stock_code && ['SELL', 'FORCE_CLOSE'].includes(d.action),
       );
       if (alreadySelling) continue;
+
+      // 모멘텀 체크 — CEO 지적(2026-07-02): 아모레퍼시픽 사례처럼 개장 후 계속 오르는 중인데도
+      // 무조건 강제청산해서 이후 상승분(7%+)을 놓친 문제. 수익권 + 시가 대비 상승 중이면
+      // 한 번 더 참고(이번 사이클 스킵) 일반 TP/SL/트레일링 관리로 넘김.
+      const p = livePrices.get(chain.stock_code);
+      const avgBuy = chain.avg_buy_price != null ? Number(chain.avg_buy_price) : null;
+      const pnlPct = p && avgBuy && avgBuy > 0 ? ((p.currentPrice - avgBuy) / avgBuy) * 100 : null;
+      const risingSinceOpen = p && p.openPrice > 0 ? p.currentPrice > p.openPrice : false;
+      if (pnlPct != null && pnlPct > 0 && risingSinceOpen) {
+        logger.info(
+          `🌅 EOD줍줍 강제청산 보류: ${chain.stock_code} 수익권(+${pnlPct.toFixed(1)}%)+시가대비 상승중 → 모멘텀 지속 관찰 (일반 TP/SL로 전환)`,
+          { component: 'EOD_BLUECHIP' },
+        );
+        continue;
+      }
+
       result.push({
         action: 'FORCE_CLOSE',
         stock_code: chain.stock_code,
