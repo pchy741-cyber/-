@@ -277,6 +277,8 @@ export async function filterBuyCandidates(params: TechnicalFallbackParams): Prom
         candleBonus: scoring.candleBonus,
         regimeRoute,
         smartReentrySl: smartSl,
+        atMultiDayHigh: scoring.atMultiDayHigh,
+        adjustedVolRatio: scoring.adjustedVolRatio,
       });
       continue;
     }
@@ -291,6 +293,8 @@ export async function filterBuyCandidates(params: TechnicalFallbackParams): Prom
         candleBonus: scoring.candleBonus,
         regimeRoute,
         smartReentrySl: smartSl,
+        atMultiDayHigh: scoring.atMultiDayHigh,
+        adjustedVolRatio: scoring.adjustedVolRatio,
       });
     }
   }

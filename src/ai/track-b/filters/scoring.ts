@@ -166,7 +166,7 @@ export function computeScoring(input: ScoringInput): TechScoring {
   }
 
   // ── 합산 ──
-  const effectiveTechScore =
+  let effectiveTechScore =
     tech.score +
     priorityBonus +
     candleBonus +
@@ -185,6 +185,26 @@ export function computeScoring(input: ScoringInput): TechScoring {
   const atMultiDayHigh = high5d > 0 && curPrice >= high5d * 0.995;
   const prevClose5 = candles.length >= 2 ? Number(candles[1].close) : curPrice;
   const todayChangePct = prevClose5 > 0 ? ((curPrice - prevClose5) / prevClose5) * 100 : 0;
+
+  // ── v17: 거래량 폭증 + 고모멘텀 교차 감점 — 고점 확인 매물소진을 매수로 오인 방지 ──
+  if (adjustedVolRatio >= 2.0 && tech.catMomentum > 10) {
+    const volMomPenalty = adjustedVolRatio >= 3.5 ? -15 : adjustedVolRatio >= 2.5 ? -10 : -6;
+    effectiveTechScore += volMomPenalty;
+    logger.info(
+      `  ⚠️ ${code}: 거래량폭증+고모멘텀 교차감점 ${volMomPenalty}점 (vol=${adjustedVolRatio.toFixed(1)}x mom=${tech.catMomentum})`,
+      { component: 'TRACK_B' },
+    );
+  }
+
+  // ── v17: 5일 고점 방어 — atMultiDayHigh + 거래량 동반 시 고점 추격 강력 감점 ──
+  if (atMultiDayHigh) {
+    const highPenalty = adjustedVolRatio >= 2.0 ? -15 : adjustedVolRatio >= 1.5 ? -10 : -5;
+    effectiveTechScore += highPenalty;
+    logger.info(
+      `  🔺 ${code}: 5일고점 방어 ${highPenalty}점 (vol=${adjustedVolRatio.toFixed(1)}x) — 고점 추격 억제`,
+      { component: 'TRACK_B' },
+    );
+  }
 
   // ── minTechScore ──
   const minTechScore = megaCap ? 45 : 55;

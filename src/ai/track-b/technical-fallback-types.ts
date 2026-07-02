@@ -73,6 +73,10 @@ export interface BuyCandidate {
   breakoutSignal?: import('../../analysis/breakout-detection.js').BreakoutSignal;
   /** 스마트 재진입 시 제안 SL 가격 — hard-gates에서 설정 */
   smartReentrySl?: number;
+  /** v17: 5일 고점 근처 여부 — 포지션 사이즈 축소 및 confidence 제한용 */
+  atMultiDayHigh?: boolean;
+  /** v17: 시간대 보정 거래량 배율 — 고점+거래량 폭증 판별용 */
+  adjustedVolRatio?: number;
 }
 
 /** STRATEGY_PARAMS[mode] + DB 오버라이드 병합 */

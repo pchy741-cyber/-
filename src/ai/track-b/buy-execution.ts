@@ -928,6 +928,18 @@ export async function executeBuyDecisions(
       effectivePositionSize = Math.round(effectivePositionSize * multiTfSizingMult);
     }
 
+    // ── v17: 고점 추격 포지션 축소 — 5일 고점 + 거래량 폭증 시 사이즈 40~60% 축소 ──
+    if (cand.atMultiDayHigh) {
+      const highVolRatio = cand.adjustedVolRatio ?? cand.tech.volumeRatio;
+      const highSizeMult = highVolRatio >= 2.0 ? 0.4 : highVolRatio >= 1.5 ? 0.6 : 0.8;
+      const beforeHigh = effectivePositionSize;
+      effectivePositionSize = Math.round(effectivePositionSize * highSizeMult);
+      logger.info(
+        `  🔺 ${cand.stock_code}: 고점추격 사이즈축소 ×${highSizeMult} (vol=${highVolRatio.toFixed(1)}x) ${Math.round(beforeHigh / 10000)}만→${Math.round(effectivePositionSize / 10000)}만`,
+        { component: 'TRACK_B' },
+      );
+    }
+
     // ── ATR+드로다운+연패 동적 보정 (Live 전용) ──────────────────────────
     if (!ctxPaper) {
       try {
@@ -1078,8 +1090,9 @@ export async function executeBuyDecisions(
       price_type: pullbackPriceType,
       limit_price: pullbackLimitPrice,
       reasoning: `기술적 매수: score=${cand.tech.score}(blend=${blendedScore.toFixed(0)}) cat=${cand.tech.catTrend}/${cand.tech.catMomentum}/${cand.tech.catVolatility}/${cand.tech.catVolume}(${cand.tech.catPositive}/4)${cand.candleBonus > 0 ? `+${cand.candleBonus}캔들` : ''}${idBonus !== 0 ? `${idBonus > 0 ? '+' : ''}${idBonus}분봉` : ''} RSI=${cand.tech.rsi14.toFixed(0)} MACD=${cand.tech.macdCrossover} ADX=${cand.tech.adx14.toFixed(0)}(${cand.tech.trendStrength}) vol=${cand.tech.volumeRatio.toFixed(2)}x SMA=${smaAlign}${cand.tech.goldenCross ? ' 골든크로스' : ''}${isPriority ? ' [우선테마]' : ''}${allocStr}${patternFb.scoreAdj !== 0 ? ` [패턴${patternFb.scoreAdj > 0 ? '+' : ''}${patternFb.scoreAdj}]` : ''}${winRateSummary(cand.stock_code, winRates?.get(cand.stock_code))} fp=${fpKey}${srTag}${pricePos ? ` [일중${(pricePos.pos * 100).toFixed(0)}%]` : ''}${pullbackTag}`,
+      // v17: 고점 추격 시 confidence 상한 0.70으로 제한 → position-sizer convMult 과팽창 방지
       confidence: Math.min(
-        0.95,
+        cand.atMultiDayHigh ? 0.70 : 0.95,
         Math.max(
           0.5,
           cand.tech.score / 100 +
