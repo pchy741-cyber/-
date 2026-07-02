@@ -261,20 +261,26 @@ export async function buildDefenseParkEntryDecisions(
   reason: string,
   crashSignal?: CrashSignal,
 ): Promise<TradeDecision[]> {
+  // ⛔ CEO 보류 지시 (2026-07-02): 인버스 파킹 매수 일시중단 (Paper/Live 공통) — 아래 2단계 참고.
+  // 알림 문구도 실제 동작(청산만, 인버스 매수 없음)과 일치하도록 분기.
+  const DEFENSE_PARK_BUY_PAUSED = true;
   const parkCode = INVERSE_ETFS[0].code;
   const parkName = INVERSE_ETFS[0].name;
   const scoreLabel = crashSignal ? ` (score=${crashSignal.score})` : '';
 
-  logger.warn(`🛡️ 방어 파킹 진입: ${reason} → ${parkName}${scoreLabel}`, {
-    component: 'DEFENSE_PARK',
-  });
+  logger.warn(
+    `🛡️ 방어 파킹 진입: ${reason}${DEFENSE_PARK_BUY_PAUSED ? ' → 손실포지션 청산만 (인버스 매수 보류 중)' : ` → ${parkName}${scoreLabel}`}`,
+    { component: 'DEFENSE_PARK' },
+  );
   await activateDefensePark(reason);
 
   import('../../notifications/web-push.js')
     .then((m) =>
       m.notifyAlert(
         `🛡️ DEFENSE 모드 진입`,
-        `사유: ${reason.slice(0, 80)}\n${parkName}으로 자산 이동 (인버스)`,
+        DEFENSE_PARK_BUY_PAUSED
+          ? `사유: ${reason.slice(0, 80)}\n손실 포지션 청산 (인버스 파킹은 보류 중 — CEO 재개 지시 대기)`
+          : `사유: ${reason.slice(0, 80)}\n${parkName}으로 자산 이동 (인버스)`,
       ),
     )
     .catch(() => {});
@@ -304,11 +310,7 @@ export async function buildDefenseParkEntryDecisions(
     });
   }
 
-  // 2. 파킹 자산 매수 (이미 보유 중이면 스킵)
-  // ⛔ CEO 보류 지시 (2026-07-02): "인버스 파킹은 하지마 아직" — Paper/Live 공통 일시중단.
-  // Live는 파생ETF 미등록으로 KIS가 어차피 거부(APBK1497)하고, Paper도 같이 멈춰달라는 요청.
-  // 재개 조건: CEO가 명시적으로 재개 지시 (또는 KIS 파생ETF 등록 완료 확인 후 사용자 승인).
-  const DEFENSE_PARK_BUY_PAUSED = true;
+  // 2. 파킹 자산 매수 (이미 보유 중이면 스킵) — DEFENSE_PARK_BUY_PAUSED는 위에서 선언됨
   const alreadyHasPark = openChains.some((c) => c.stock_code === parkCode);
   if (!alreadyHasPark && !DEFENSE_PARK_BUY_PAUSED) {
     const parkPrice = livePrices.get(parkCode);
