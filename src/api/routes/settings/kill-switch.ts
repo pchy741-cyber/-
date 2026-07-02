@@ -58,8 +58,7 @@ killSwitchRoutes.post('/kill-switch/deactivate', async (c) => {
     // 단순 insertSnapshot으로는 이번달 고점이 DB에 남아 Track B가 3분 후 재발동하는 루프 발생
     if (force) {
       try {
-        const { getAccountBalance } = await import('../../../kis/account.js');
-        const { getPaperBalance } = await import('../../../risk/paper-balance.js');
+        const { fetchBalance } = await import('../../../risk/account-balance.js');
         const { insertSnapshot } = await import('../../../db/client.js');
         const pool = getPool();
         // KST 월 시작일 계산
@@ -72,7 +71,7 @@ killSwitchRoutes.post('/kill-switch/deactivate', async (c) => {
             `DELETE FROM portfolio_snapshots WHERE snapshot_at >= $1 AND is_paper = $2`,
             [kstMonth.toISOString(), isPaper],
           );
-          const balance = isPaper ? await getPaperBalance() : await getAccountBalance(true);
+          const balance = await fetchBalance(isPaper);
           const totalValue = balance.totalDeposit + balance.totalEvalAmount;
           await insertSnapshot({
             total_value: totalValue,

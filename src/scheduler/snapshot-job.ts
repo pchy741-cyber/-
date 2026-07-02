@@ -2,6 +2,7 @@ import { getCtxIsPaper } from '../config/context.js';
 import { FALLBACK_FX_RATE } from '../config/constants.js';
 import { getPool, getTodayStartSnapshot, insertSnapshot } from '../db/client.js';
 import { getAccountBalance } from '../kis/account.js';
+import { fetchBalance } from '../risk/account-balance.js';
 import { getPaperBalance } from '../risk/engine.js';
 import { logger } from '../utils/logger.js';
 
@@ -63,7 +64,7 @@ export async function runSnapshotJob(): Promise<void> {
 
   // 1) 현재 서버 모드 스냅샷
   try {
-    const balance = isPaper ? await getPaperBalance() : await getAccountBalance(true);
+    const balance = await fetchBalance(isPaper);
 
     // 국내 총자산: 주문가능 + 증권시가 (nass_amt 사용 금지 — KIS 앱 불일치)
     const domesticValue = balance.orderableCash + balance.totalEvalAmount;

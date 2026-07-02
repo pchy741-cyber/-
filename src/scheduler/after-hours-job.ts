@@ -10,6 +10,7 @@ import { getBatchInvestorFlow, getBatchPrices, getDailyChart } from '../kis/mark
 import { sendByPaperFlag } from '../notifications/mode-message.js';
 import { isKillSwitchActiveForMode, reportSuccess } from '../risk/kill-switch.js';
 import { tradeExecutor } from '../trading/executor.js';
+import { getActivePositionCodes } from '../utils/chains.js';
 import { logger } from '../utils/logger.js';
 import { getKSTNow } from '../utils/time.js';
 
@@ -293,7 +294,7 @@ export async function runAfterHoursJob(): Promise<void> {
     const livePrices = await getBatchPrices(allCodes);
 
     // 1-C. 1차 필터: 하락 종목만 추출 (API 호출 최소화)
-    const heldCodes = new Set(latestChains.filter((c) => Number(c.total_quantity) > 0).map((c) => c.stock_code));
+    const heldCodes = getActivePositionCodes(latestChains);
     const dropCandidates: { code: string; price: CurrentPrice }[] = [];
 
     for (const code of allCodes) {

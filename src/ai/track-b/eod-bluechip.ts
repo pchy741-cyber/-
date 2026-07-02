@@ -2,6 +2,7 @@ import type { TradeDecision, TransactionChain } from '../../db/models.js';
 import type { CurrentPrice } from '../../kis/market.js';
 import { getCtxIsPaper } from '../../config/context.js';
 import { getLossStreakMultiplier } from '../../risk/loss-streak.js';
+import { isCodeHeld } from '../../utils/chains.js';
 import { logger } from '../../utils/logger.js';
 import { getKSTNow } from '../../utils/time.js';
 
@@ -117,7 +118,7 @@ export async function applyEodBluechipStrategy(decisions: TradeDecision[], ctx: 
       logger.info(`🌅 EOD줍줍 사이징 축소: 연속손실 배율 ×${eodLossStreakMult}`, { component: 'EOD_BLUECHIP' });
     }
     for (const code of EOD_BLUECHIP_CODES) {
-      if (openChains.some((c) => c.stock_code === code && Number(c.total_quantity) > 0)) continue;
+      if (isCodeHeld(openChains, code)) continue;
       const p = livePrices.get(code);
       if (!p || p.currentPrice <= 0) continue;
 
@@ -168,7 +169,7 @@ export async function applyEodBluechipStrategy(decisions: TradeDecision[], ctx: 
 
     for (const code of afterHoursCodes) {
       if (afterHoursBuyCount >= maxAfterHoursBuys) break;
-      if (openChains.some((c) => c.stock_code === code && Number(c.total_quantity) > 0)) continue;
+      if (isCodeHeld(openChains, code)) continue;
       const p = livePrices.get(code);
       if (!p || p.currentPrice <= 0) continue;
       // 시간외는 더 보수적: -1.5% 이상 급락만 (장중 EOD는 -0.5%)

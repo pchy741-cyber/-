@@ -1,8 +1,7 @@
 import { getCtxIsPaper } from '../config/context.js';
 import { getActiveStrategy, getActiveWatchlist, getOpenChains, logSystem } from '../db/client.js';
-import { getAccountBalance } from '../kis/account.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
-import { getPaperBalance } from '../risk/engine.js';
+import { fetchBalance } from '../risk/account-balance.js';
 import { logger } from '../utils/logger.js';
 
 /**
@@ -37,7 +36,7 @@ import { logger } from '../utils/logger.js';
  */
 export async function getPortfolioFlowStatus(isPaperOverride?: boolean) {
   const isPaper = isPaperOverride ?? getCtxIsPaper();
-  const balance = isPaper ? await getPaperBalance() : await getAccountBalance(true);
+  const balance = await fetchBalance(isPaper);
   const chains = await getOpenChains(isPaper);
   const watchlist = await getActiveWatchlist();
   const strategy = await getActiveStrategy();
@@ -172,7 +171,7 @@ export async function onModeSwitch(fromMode: string, toMode: string, isPaperOver
 
   const isPaper = isPaperOverride ?? getCtxIsPaper();
   const chains = await getOpenChains(isPaper);
-  const balance = isPaper ? await getPaperBalance() : await getAccountBalance(true);
+  const balance = await fetchBalance(isPaper);
 
   if (toMode === 'DEFENSE') {
     // 시장 나빠짐 → 기존 포지션 중 손실 종목 빠르게 정리

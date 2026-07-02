@@ -22,13 +22,14 @@ import { getCtxIsPaper } from '../config/context.js';
 import { config } from '../config/index.js';
 import { getActiveWatchlist, getLatestScores, getOpenChains, logSystem } from '../db/client.js';
 import type { TradeDecision } from '../db/models.js';
-import { getAccountBalance, invalidateBalanceCache } from '../kis/account.js';
+import { invalidateBalanceCache } from '../kis/account.js';
 import { getBatchPrices, getDailyChart } from '../kis/market.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
+import { fetchBalance } from '../risk/account-balance.js';
 import { isKillSwitchActiveForMode, reportSuccess } from '../risk/kill-switch.js';
 import { getLossStreakMultiplier } from '../risk/loss-streak.js';
-import { getPaperBalance } from '../risk/paper-balance.js';
 import { tradeExecutor } from '../trading/executor.js';
+import { getActivePositionCodes } from '../utils/chains.js';
 import { logger } from '../utils/logger.js';
 import { getKSTNow } from '../utils/time.js';
 import { callVertexGemini } from '../utils/vertex-gemini.js';
@@ -97,7 +98,7 @@ export async function runClosingBellJob(): Promise<void> {
 
     const stockCodes = watchlist.map((w) => w.stock_code);
     const livePrices = await getBatchPrices(stockCodes);
-    const heldCodes = new Set(openChains.filter((c) => Number(c.total_quantity) > 0).map((c) => c.stock_code));
+    const heldCodes = getActivePositionCodes(openChains);
     const alreadyBought = _boughtToday.get(modeKey) ?? new Set<string>();
 
     // ── STEP 2: 당일 하락률 필터 (-5% ~ -15%) ──
@@ -259,7 +260,7 @@ JSON만 반환 (다른 텍스트 없이):
 
     // ── STEP 7: 포지션 사이징 ──
     if (!isPaper) invalidateBalanceCache();
-    const balance = isPaper ? await getPaperBalance() : await getAccountBalance(true);
+    const balance = await fetchBalance(isPaper);
     const orderableCash = balance.orderableCash;
 
     // CEO 지적(2026-07-02): 종가줍줍이 Kelly/승률/연속손실 배율 없이 maxPositionKrw×50%

@@ -11,13 +11,14 @@ import { isRiskOffToday } from '../automation/market-routing.js';
 import { getCtxIsPaper } from '../config/context.js';
 import { getOpenChains, getPool, logSystem } from '../db/client.js';
 import type { TradeDecision } from '../db/models.js';
-import { getAccountBalance, invalidateBalanceCache } from '../kis/account.js';
+import { invalidateBalanceCache } from '../kis/account.js';
 import { type CurrentPrice, getBatchPrices, getVolumeRankingStocks } from '../kis/market.js';
 import { sendByPaperFlag } from '../notifications/mode-message.js';
+import { fetchBalance } from '../risk/account-balance.js';
 import { isKillSwitchActiveForMode, reportSuccess } from '../risk/kill-switch.js';
 import { getLossStreakMultiplier } from '../risk/loss-streak.js';
-import { getPaperBalance } from '../risk/paper-balance.js';
 import { tradeExecutor } from '../trading/executor.js';
+import { getActivePositionCodes } from '../utils/chains.js';
 import { logger } from '../utils/logger.js';
 import { getKSTNow } from '../utils/time.js';
 
@@ -128,7 +129,7 @@ export async function runEodBettingJob(): Promise<void> {
       const totalAssets = bal.orderableCash + bal.totalEvalAmount;
       const openChains = await getOpenChains(getCtxIsPaper());
       const { getBatchPrices } = await import('../kis/market.js');
-      const holdCodes = openChains.filter((c) => Number(c.total_quantity) > 0).map((c) => c.stock_code);
+      const holdCodes = [...getActivePositionCodes(openChains)];
       const livePrices = holdCodes.length > 0 ? await getBatchPrices(holdCodes) : new Map();
       const dailyLoss = await checkDailyLoss({ openChains, livePrices, totalAssets });
       if (dailyLoss.dailyPnlPct <= DAILY_LOSS_BLOCK_PCT) {
@@ -181,7 +182,7 @@ export async function runEodBettingJob(): Promise<void> {
 
     // 이미 보유 중인 종목 제외
     const openChains = await getOpenChains(getCtxIsPaper());
-    const heldCodes = new Set(openChains.filter((c) => Number(c.total_quantity) > 0).map((c) => c.stock_code));
+    const heldCodes = getActivePositionCodes(openChains);
 
     interface EodCandidate {
       code: string;
@@ -243,7 +244,7 @@ export async function runEodBettingJob(): Promise<void> {
 
     // ── STEP 5: 황금비율 동적 포지션 사이징 ── (캐시 무효화 → 최신 잔고로 정확한 사이징)
     if (!isPaper) invalidateBalanceCache();
-    const balance = isPaper ? await getPaperBalance() : await getAccountBalance(true);
+    const balance = await fetchBalance(isPaper);
     const totalAssets = balance.orderableCash + balance.totalEvalAmount;
 
     // 황금비율: 총 EOD 배팅 한도 (레짐 연동)

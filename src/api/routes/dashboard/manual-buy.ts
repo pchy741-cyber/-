@@ -9,10 +9,11 @@ import { config } from '../../../config/index.js';
 import { createChain, getActiveStrategy, getPool } from '../../../db/client.js';
 import { resolveRequestMode } from '../../guards/live-pin.js';
 import { getAccountBalance, invalidateBalanceCache } from '../../../kis/account.js';
+import { fetchBalance } from '../../../risk/account-balance.js';
 import { getCurrentPrice } from '../../../kis/market.js';
 import { placeOrder } from '../../../kis/order.js';
 import { notifyBuy } from '../../../notifications/web-push.js';
-import { addPaperInvestment, getPaperBalance, riskEngine } from '../../../risk/engine.js';
+import { addPaperInvestment, riskEngine } from '../../../risk/engine.js';
 import { logger } from '../../../utils/logger.js';
 import { getFxRate, hardInvalidateMode } from './helpers.js';
 
@@ -61,7 +62,7 @@ export function registerManualBuyRoutes(app: Hono) {
     const isMegaCap = MEGA_CAP_PRIORITY_CODES.has(stockCode);
 
     async function calcAmt(paper: boolean) {
-      const balance = paper ? await getPaperBalance() : await getAccountBalance(true);
+      const balance = await fetchBalance(paper);
       const overseasKrw = paper ? await getOverseasValueKrw(true) : 0;
       const totalCapital = balance.totalEvalAmount + balance.orderableCash + overseasKrw;
       // Paper: 현금 집계 지연 대응 → 총자산 기준 캡 적용 (availCash 고갈 시 소액매수 방지)
@@ -286,7 +287,7 @@ export function registerManualBuyRoutes(app: Hono) {
       let amount_krw = body.amount_krw ?? 0;
       if (amount_krw < 10000) {
         try {
-          const balance = isPaper ? await getPaperBalance() : await getAccountBalance(true);
+          const balance = await fetchBalance(isPaper);
           const overseasKrw2 = isPaper ? await getOverseasValueKrw(true) : 0;
           const totalCapital = balance.totalEvalAmount + balance.orderableCash + overseasKrw2;
           // Paper: 현금 집계 지연 대응 → 총자산 기준 캡 적용
@@ -353,7 +354,7 @@ export function registerManualBuyRoutes(app: Hono) {
       // 포지션 비중 제한: 초과 시 422 차단 대신 자동 수량 조정 (거래 차단 방지)
       // CEO 책임 모드 (ceo_override=true): cap 무시 — 사용자가 더 살 수 있음
       try {
-        const balance = isPaper ? await getPaperBalance() : await getAccountBalance(true);
+        const balance = await fetchBalance(isPaper);
         const overseasKrw3 = isPaper ? await getOverseasValueKrw(true) : 0;
         const totalCapital = balance.totalEvalAmount + balance.orderableCash + overseasKrw3;
         const CAP_PCT = 35; // getDynamicPositionSizePct 상한(35%)에 맞춤

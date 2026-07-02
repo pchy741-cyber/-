@@ -1,6 +1,5 @@
 import { getCtxIsPaper } from '../config/context.js';
 import { getOpenChains, getPool } from '../db/client.js';
-import { getAccountBalance } from '../kis/account.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
 import { callClaudeCli, isClaudeCliEnabled } from '../utils/claude-cli.js';
 import { logger } from '../utils/logger.js';
@@ -20,9 +19,9 @@ import { getDinnerMoneyStats } from './profit-withdraw.js';
  */
 export async function generateDailyReport(): Promise<void> {
   try {
-    const { getPaperBalance } = await import('../risk/engine.js');
+    const { fetchBalance } = await import('../risk/account-balance.js');
     const isPaper = getCtxIsPaper();
-    const balance = isPaper ? await getPaperBalance() : await getAccountBalance(true);
+    const balance = await fetchBalance(isPaper);
     const chains = await getOpenChains(isPaper);
     const today = getKSTNow().toISOString().split('T')[0];
     const { todayAmount: reserved } = await getDinnerMoneyStats();
