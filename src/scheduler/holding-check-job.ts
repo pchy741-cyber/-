@@ -6,6 +6,7 @@ import { getCtxIsPaper } from '../config/context.js';
 import { getActiveStrategy, getOpenChains, getPool } from '../db/client.js';
 import type { TradeDecision, TransactionChain } from '../db/models.js';
 import { getBatchPrices, getCurrentPrice, getDailyChart } from '../kis/market.js';
+import { shouldMomentumHold, resetMomentumHoldIfNewHigh } from '../ai/track-b/momentum-hold.js';
 
 /** DB SELECT tc.* 결과에는 Zod 스키마 외 컬럼도 포함됨 */
 type ChainRow = TransactionChain & {
@@ -405,6 +406,8 @@ async function checkAndUpdateTrailingStop(
       `📈 트레일링 고점 갱신: ${chain.stock_code} ${storedPeak > 0 ? storedPeak.toLocaleString() : '초기'} → ${newPeak.toLocaleString()}원 (+${pnlPct.toFixed(1)}%)`,
       { component: 'TRAILING' },
     );
+    // 신고점 갱신 시 모멘텀홀드 카운트 리셋
+    resetMomentumHoldIfNewHigh(chain.id, pnlPct).catch(() => {});
   }
 
   if (newPeak <= 0) return null;
@@ -430,6 +433,32 @@ async function checkAndUpdateTrailingStop(
   const dynamicDrop = getDynamicTrailingDrop(peakPnlPct, trailTech);
 
   if (dropFromPeak >= dynamicDrop) {
+    // 모멘텀 홀드 체크: 추세가 살아있으면 매도 유보
+    let fullTech = null;
+    try {
+      const mhCandles = await getDailyChart(chain.stock_code, 30).catch(() => []);
+      if (mhCandles.length >= 20) fullTech = analyzeTechnicals(mhCandles);
+    } catch { /* 실패 시 tech=null → shouldHold=false */ }
+
+    const mhResult = await shouldMomentumHold({
+      tech: fullTech,
+      pnlPct,
+      curPeak: peakPnlPct,
+      dropFromPeakAbs: dropFromPeak, // 이미 양수
+      chainId: chain.id,
+      stockCode: chain.stock_code,
+      isPaper: chain.is_paper ?? getCtxIsPaper(),
+      isRunner: false, // holding-check에는 러너 감지 없음 → 보수적(5/5)
+      currentPrice,
+    });
+    if (mhResult.shouldHold) {
+      logger.info(
+        `🔋 모멘텀홀드(HC): ${chain.stock_code} 트레일링 억제 (${mhResult.holdCount}/3) | ${mhResult.reason}`,
+        { component: 'MOMENTUM_HOLD' },
+      );
+      return null; // FORCE_CLOSE 스킵
+    }
+
     logger.info(
       `🎯 트레일링 스탑 발동: ${chain.stock_code} 고점 ${newPeak.toLocaleString()}원(+${peakPnlPct.toFixed(1)}%) → 현재 ${currentPrice.toLocaleString()}원(${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%) | 고점 대비 -${dropFromPeak.toFixed(1)}% (기준 -${dynamicDrop}%)`,
       { component: 'TRAILING' },

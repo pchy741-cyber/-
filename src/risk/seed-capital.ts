@@ -181,7 +181,7 @@ export const WEEKLY_LOSS_PCT_PAPER = 95;
 
 export interface DailyLossLimit {
   basis: number; // 총자산 (caller가 전달: 현금+투자 합계)
-  pct: number; // Live 25% / Paper 80%
+  pct: number; // Live 25% / Paper 50%
   limitAmount: number; // basis × pct%
 }
 

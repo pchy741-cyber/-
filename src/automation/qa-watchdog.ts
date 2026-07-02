@@ -70,7 +70,7 @@ export async function getQAReports(): Promise<QAReport[]> {
       warning: Number(r.warning),
       info: Number(r.info),
       status: r.status,
-      score: Math.max(0, 100 - Number(r.critical) * 25 - Number(r.warning) * 10 - Number(r.info) * 2),
+      score: Math.max(0, 100 - Number(r.critical) * 25 - Number(r.warning) * 10),
       actions: deriveQAActions(r.issues ?? []),
     }));
     _cacheTs = Date.now();
@@ -124,7 +124,9 @@ export async function runQAWatchdog(): Promise<void> {
     const infos = issues.filter((i) => i.severity === 'INFO');
 
     // 리포트 저장 (DB 영구 + 캐시 무효화)
-    const score = Math.max(0, 100 - critical.length * 25 - warnings.length * 10 - infos.length * 2);
+    // v21: INFO는 관찰(observation)이지 문제(issue)가 아님 → 점수 차감 없음
+    // CRITICAL(-25)과 WARNING(-10)만 품질 점수에 반영
+    const score = Math.max(0, 100 - critical.length * 25 - warnings.length * 10);
     const qaActions = deriveQAActions(issues);
     const report: QAReport = {
       runAt: getKSTNow().toISOString(),
@@ -397,8 +399,13 @@ async function checkAICostAnomaly(issues: QAIssue[]): Promise<void> {
   }
 }
 
-/** 5. 시스템 헬스 체크 */
+/** 5. 시스템 헬스 체크 — v21: 배포 그레이스 + 일시적 에러 분류 */
 async function checkSystemHealth(issues: QAIssue[]): Promise<void> {
+  // 배포 직후 15분: PROCESS/EMAIL 등 인프라 에러는 일시적 (프로세스 재시작, 연결 끊김)
+  const TRANSIENT_COMPONENTS = ['PROCESS', 'EMAIL', 'DB_POOL', 'KIS_WS', 'TELEGRAM'];
+  const uptimeMin = process.uptime() / 60;
+  const isDeployGrace = uptimeMin < 15;
+
   // 최근 1시간 에러 건수 — UPPER() 대소문자 무관 (DB: 'ERROR'/'WARN' 대문자)
   const { rows: errorRows } = await safeQuery<{ cnt: string }>(
     `SELECT COUNT(*) as cnt FROM system_log
@@ -407,27 +414,54 @@ async function checkSystemHealth(issues: QAIssue[]): Promise<void> {
   );
   const recentErrors = Number(errorRows[0]?.cnt ?? 0);
 
-  if (recentErrors >= 10) {
-    // 에러 상위 컴포넌트 파악
-    const { rows: topComponents } = await safeQuery<{ component: string; cnt: string }>(
-      `SELECT component, COUNT(*) as cnt FROM system_log
-       WHERE UPPER(level) = 'ERROR' AND timestamp >= NOW() - INTERVAL '1 hour'
-       GROUP BY component ORDER BY cnt DESC LIMIT 3`,
-      [],
-    );
-    const topStr = topComponents.map((r) => `${r.component}(${r.cnt})`).join(', ');
+  // 에러 컴포넌트 분석 (임계값 판단 전에 먼저 조회)
+  const { rows: topComponents } = await safeQuery<{ component: string; cnt: string }>(
+    `SELECT component, COUNT(*) as cnt FROM system_log
+     WHERE UPPER(level) = 'ERROR' AND timestamp >= NOW() - INTERVAL '1 hour'
+     GROUP BY component ORDER BY cnt DESC LIMIT 5`,
+    [],
+  );
+
+  // 일시적 에러 vs 실제 앱 에러 분리
+  let transientCount = 0;
+  let appErrorCount = 0;
+  for (const r of topComponents) {
+    const cnt = Number(r.cnt);
+    if (TRANSIENT_COMPONENTS.includes(r.component?.toUpperCase())) {
+      transientCount += cnt;
+    } else {
+      appErrorCount += cnt;
+    }
+  }
+
+  // 배포 그레이스: 일시적 에러 제외, 앱 에러만으로 판단
+  const effectiveErrors = isDeployGrace ? appErrorCount : recentErrors;
+  const critThreshold = isDeployGrace ? 20 : 10;
+  const warnThreshold = isDeployGrace ? 10 : 5;
+
+  const topStr = topComponents.map((r) => `${r.component}(${r.cnt})`).join(', ');
+  const graceNote = isDeployGrace ? ` (배포 ${uptimeMin.toFixed(0)}분, 일시적 ${transientCount}건 제외)` : '';
+
+  if (effectiveErrors >= critThreshold) {
     issues.push({
       severity: 'CRITICAL',
       category: '시스템',
-      title: `1시간 에러 ${recentErrors}건 — 시스템 불안정`,
-      detail: `최근 1시간 에러 급증. 주요 컴포넌트: ${topStr || '확인 필요'}`,
+      title: `1시간 앱에러 ${effectiveErrors}건 — 시스템 불안정${graceNote}`,
+      detail: `최근 1시간 에러 총 ${recentErrors}건. 주요: ${topStr || '확인 필요'}`,
     });
-  } else if (recentErrors >= 5) {
+  } else if (effectiveErrors >= warnThreshold) {
     issues.push({
       severity: 'WARNING',
       category: '시스템',
-      title: `1시간 에러 ${recentErrors}건`,
-      detail: `에러율 증가 추세. 모니터링 필요.`,
+      title: `1시간 에러 ${effectiveErrors}건${graceNote}`,
+      detail: `에러율 증가 추세. 주요: ${topStr || '확인 필요'}`,
+    });
+  } else if (transientCount > 0 && isDeployGrace) {
+    issues.push({
+      severity: 'INFO',
+      category: '시스템',
+      title: `배포 후 일시적 에러 ${transientCount}건 (정상)`,
+      detail: `서버 시작 ${uptimeMin.toFixed(0)}분, 일시적 컴포넌트: ${topStr}`,
     });
   }
 
@@ -500,11 +534,15 @@ async function checkOrderChainConsistency(issues: QAIssue[]): Promise<void> {
   }
 }
 
-/** 7. v16: 수익성 분석 — 손실 패턴 감지 */
+/** 7. v21: 수익성 분석 — 프로핏 팩터 기반 (승률만으로 판단하지 않음)
+ *
+ * 혁신: 승률이 낮아도 R:R(손익비)이 높으면 수익 전략.
+ * 예: 승률 25%라도 평균이익이 평균손실의 3배면 profit factor > 1.0 = 건강한 전략.
+ * → 승률 ALONE이 아니라 "profit factor + 누적손익"으로 판단.
+ */
 async function checkProfitability(issues: QAIssue[]): Promise<void> {
   const pool = getPool();
 
-  // 최근 7일 승률 (paper + live 각각)
   for (const isPaper of [false, true]) {
     const mode = isPaper ? 'PAPER' : 'LIVE';
     const { rows } = await pool.query(`
@@ -512,7 +550,11 @@ async function checkProfitability(issues: QAIssue[]): Promise<void> {
         COUNT(*) as total,
         COUNT(*) FILTER (WHERE pnl_pct > 0) as wins,
         COALESCE(AVG(pnl_pct), 0) as avg_pnl,
-        COALESCE(SUM(realized_pnl), 0) as total_pnl
+        COALESCE(SUM(realized_pnl), 0) as total_pnl,
+        COALESCE(SUM(realized_pnl) FILTER (WHERE realized_pnl > 0), 0) as gross_profit,
+        COALESCE(ABS(SUM(realized_pnl) FILTER (WHERE realized_pnl < 0)), 0) as gross_loss,
+        COALESCE(AVG(pnl_pct) FILTER (WHERE pnl_pct > 0), 0) as avg_win_pct,
+        COALESCE(AVG(ABS(pnl_pct)) FILTER (WHERE pnl_pct < 0), 0) as avg_loss_pct
       FROM transaction_chains
       WHERE is_paper = $1 AND status = 'CLOSED'
         AND closed_at >= NOW() - INTERVAL '7 days'
@@ -525,21 +567,55 @@ async function checkProfitability(issues: QAIssue[]): Promise<void> {
     const wr = wins / total;
     const avgPnl = Number(rows[0]?.avg_pnl ?? 0);
     const totalPnl = Number(rows[0]?.total_pnl ?? 0);
+    const grossProfit = Number(rows[0]?.gross_profit ?? 0);
+    const grossLoss = Number(rows[0]?.gross_loss ?? 0);
+    const avgWinPct = Number(rows[0]?.avg_win_pct ?? 0);
+    const avgLossPct = Number(rows[0]?.avg_loss_pct ?? 0);
 
-    if (wr < 0.25 && total >= 5) {
-      issues.push({
-        severity: 'CRITICAL',
-        category: '매매로직',
-        title: `[${mode}] 7일 승률 ${(wr * 100).toFixed(0)}% (${wins}/${total}건)`,
-        detail: `평균 PnL ${avgPnl.toFixed(2)}%, 누적 ${totalPnl.toLocaleString()}원 — 전략 재검토 필요`,
-      });
-    } else if (wr < 0.40 && total >= 5) {
-      issues.push({
-        severity: 'WARNING',
-        category: '매매로직',
-        title: `[${mode}] 7일 승률 ${(wr * 100).toFixed(0)}% (${wins}/${total}건)`,
-        detail: `평균 PnL ${avgPnl.toFixed(2)}%, 누적 ${totalPnl.toLocaleString()}원`,
-      });
+    // Profit Factor = 총이익 / 총손실 (>1.0 = 수익 전략)
+    const profitFactor = grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? 999 : 0;
+    // R:R = 평균이익% / 평균손실% (>1.0 = 이길 때 더 크게 이김)
+    const riskReward = avgLossPct > 0 ? avgWinPct / avgLossPct : 0;
+
+    const pfStr = `PF ${profitFactor.toFixed(2)}, R:R ${riskReward.toFixed(2)}`;
+
+    if (total >= 5) {
+      if (wr < 0.25) {
+        if (profitFactor >= 1.0 && totalPnl >= 0) {
+          // 승률 낮지만 수익 전략 → INFO (R:R 전략 의도)
+          issues.push({
+            severity: 'INFO',
+            category: '매매로직',
+            title: `[${mode}] 승률 ${(wr * 100).toFixed(0)}%↓ but 수익성OK (${pfStr})`,
+            detail: `${wins}/${total}건, 누적 ${totalPnl.toLocaleString()}원 — 손익비 전략 정상 작동`,
+          });
+        } else {
+          // 승률도 낮고 돈도 잃음 → CRITICAL
+          issues.push({
+            severity: 'CRITICAL',
+            category: '매매로직',
+            title: `[${mode}] 7일 승률 ${(wr * 100).toFixed(0)}% + 손실 (${pfStr})`,
+            detail: `${wins}/${total}건, 누적 ${totalPnl.toLocaleString()}원 — 승률·손익비 모두 부진`,
+          });
+        }
+      } else if (wr < 0.40) {
+        if (profitFactor >= 1.0 && totalPnl >= 0) {
+          // 승률 보통이지만 수익 → INFO
+          issues.push({
+            severity: 'INFO',
+            category: '매매로직',
+            title: `[${mode}] 승률 ${(wr * 100).toFixed(0)}% (${pfStr})`,
+            detail: `${wins}/${total}건, 누적 ${totalPnl.toLocaleString()}원 — 수익성 양호`,
+          });
+        } else {
+          issues.push({
+            severity: 'WARNING',
+            category: '매매로직',
+            title: `[${mode}] 7일 승률 ${(wr * 100).toFixed(0)}% (${pfStr})`,
+            detail: `${wins}/${total}건, 누적 ${totalPnl.toLocaleString()}원`,
+          });
+        }
+      }
     }
 
     // 연패 감지 (5연패 이상)
@@ -616,11 +692,19 @@ async function checkTradeLatency(issues: QAIssue[]): Promise<void> {
   }
 }
 
-/** 9. v17: 대형 손실 체인 감지 — SL 초과 손실 (갭 하락·SL 미작동 의심) */
+/** 9. v21: 대형 손실 체인 감지 — 갭 슬리피지 분류 (구조적 vs SL 미작동)
+ *
+ * 혁신: 한국 주식시장에서 갭 하락(전일 종가 → 당일 시가 갭)은 구조적 현상.
+ * SL을 아무리 잘 설정해도 시장이 SL 아래에서 시작하면 초과 손실 불가피.
+ * → 손실배율(|실손실|/|SL|)로 갭 슬리피지 vs SL 미작동 구분:
+ *   < 2.0x: 일반 갭 슬리피지 (INFO — 구조적, 정상)
+ *   2.0~3.0x: 주의 갭 (WARNING — 큰 갭, 모니터링)
+ *   > 3.0x: SL 미작동 의심 (CRITICAL — 시스템 점검 필요)
+ */
 async function checkLargeLoss(issues: QAIssue[]): Promise<void> {
   const pool = getPool();
 
-  // 최근 2일 내 단일 체인 손실이 SL의 1.5배 초과 → 갭 하락 슬리피지 또는 SL 미작동
+  // 최근 2일 내 SL 초과 손실 체인 (1.5배 이상 — 데이터 수집)
   const { rows } = await pool.query(`
     SELECT stock_code, is_paper, pnl_pct, stop_loss_pct, realized_pnl, closed_at
     FROM transaction_chains
@@ -638,12 +722,33 @@ async function checkLargeLoss(issues: QAIssue[]): Promise<void> {
     const pnl = Number(r.pnl_pct).toFixed(1);
     const sl = Number(r.stop_loss_pct).toFixed(1);
     const pnlAmt = Number(r.realized_pnl).toLocaleString();
-    issues.push({
-      severity: 'WARNING',
-      category: '매매로직',
-      title: `[${mode}] SL 초과 손실: ${r.stock_code} ${pnl}% (SL ${sl}%)`,
-      detail: `${pnlAmt}원 손실 — 갭 하락 슬리피지 또는 SL 미작동 의심`,
-    });
+    const ratio = Math.abs(Number(r.pnl_pct)) / Math.abs(Number(r.stop_loss_pct));
+
+    if (ratio >= 4.0) {
+      // 4배 이상: SL 시스템 미작동 의심 (시가 갭으로는 설명 불가)
+      issues.push({
+        severity: 'CRITICAL',
+        category: '매매로직',
+        title: `[${mode}] SL 미작동 의심: ${r.stock_code} ${pnl}% (SL ${sl}%, ${ratio.toFixed(1)}x)`,
+        detail: `${pnlAmt}원 손실 — SL 대비 ${ratio.toFixed(1)}배 초과, 시스템 점검 필요`,
+      });
+    } else if (ratio >= 3.0) {
+      // 3~4배: 대형 갭 (한국 시장 ±30% 제한가에서 간혹 발생)
+      issues.push({
+        severity: 'WARNING',
+        category: '매매로직',
+        title: `[${mode}] 대형 갭 손실: ${r.stock_code} ${pnl}% (SL ${sl}%, ${ratio.toFixed(1)}x)`,
+        detail: `${pnlAmt}원 손실 — 갭 하락 슬리피지 (${ratio.toFixed(1)}배)`,
+      });
+    } else {
+      // 1.5~3배: 일반 갭 슬리피지 (구조적, 한국 시장 정상 범위)
+      issues.push({
+        severity: 'INFO',
+        category: '매매로직',
+        title: `[${mode}] 갭 슬리피지: ${r.stock_code} ${pnl}% (SL ${sl}%, ${ratio.toFixed(1)}x)`,
+        detail: `${pnlAmt}원 — 갭 하락 (${ratio.toFixed(1)}x SL), 구조적 정상`,
+      });
+    }
   }
 }
 
@@ -654,22 +759,27 @@ async function checkLargeLoss(issues: QAIssue[]): Promise<void> {
 function deriveQAActions(issues: QAIssue[]): QAAction[] {
   const actions: QAAction[] = [];
   for (const issue of issues) {
+    // INFO 이슈는 관찰 사항 — 액션 불필요 (리포트에 표시만)
+    if (issue.severity === 'INFO') continue;
+
+    const level = issue.severity === 'CRITICAL' ? 'danger' as const : 'warn' as const;
+
     if (issue.category === '크로스오염') {
       actions.push({ level: 'danger', action: `${issue.title} — 모드 불일치 즉시 확인`, apiHint: 'GET /api/dashboard 로 상태 확인' });
     } else if (issue.category === '매매로직' && issue.title.includes('연패')) {
-      actions.push({ level: 'warn', action: `${issue.title} — 쿨다운 연장 고려`, apiHint: 'POST /api/ai-loop/command {"category":"cooldown_min","value":120}' });
+      actions.push({ level, action: `${issue.title} — 쿨다운 연장 고려`, apiHint: 'POST /api/ai-loop/command {"category":"cooldown_min","value":120}' });
     } else if (issue.category === '매매로직' && issue.title.includes('승률')) {
-      actions.push({ level: issue.severity === 'CRITICAL' ? 'danger' : 'warn', action: `${issue.title} — 전략 재검토 필요` });
+      actions.push({ level, action: `${issue.title} — 전략 재검토 필요` });
     } else if (issue.category === '매매로직' && issue.title.includes('즉시 반전')) {
       actions.push({ level: 'danger', action: `${issue.title} — 매매 로직 버그 확인`, apiHint: 'GET /api/qa/reports' });
     } else if (issue.category === '시스템' && issue.title.includes('Kill Switch')) {
-      actions.push({ level: 'warn', action: `${issue.title} — 정상화 시 해제 권장`, apiHint: 'POST /api/kill-switch/reset' });
+      actions.push({ level, action: `${issue.title} — 정상화 시 해제 권장`, apiHint: 'POST /api/kill-switch/reset' });
     } else if (issue.category === '시스템' && issue.title.includes('에러')) {
-      actions.push({ level: issue.severity === 'CRITICAL' ? 'danger' : 'warn', action: `${issue.title} — 시스템 로그 확인` });
+      actions.push({ level, action: `${issue.title} — 시스템 로그 확인` });
     } else if (issue.category === '정합성') {
-      actions.push({ level: issue.severity === 'CRITICAL' ? 'danger' : 'warn', action: `${issue.title} — 데이터 정합성 검증 필요` });
+      actions.push({ level, action: `${issue.title} — 데이터 정합성 검증 필요` });
     } else if (issue.category === 'AI비용') {
-      actions.push({ level: 'warn', action: `${issue.title} — AI 호출 패턴 점검` });
+      actions.push({ level, action: `${issue.title} — AI 호출 패턴 점검` });
     }
   }
   return actions;

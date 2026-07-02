@@ -17,7 +17,9 @@ export interface AllocRisk {
 
 const DEFAULTS: Record<'live' | 'paper', AllocRisk> = {
   live: { positionCapPct: 25, maxInvestedPct: 88, cashReservePct: 20, maxPositions: 12, maxDailyTrades: 8, sectorSemiconductor: 30, sectorBio: 20, sectorDefense: 25, sectorFinance: 20, sectorEtc: 30 }, // v16: maxPos 8→12, dailyTrades 5→8
-  paper: { positionCapPct: 40, maxInvestedPct: 97, cashReservePct: 3, maxPositions: 20, maxDailyTrades: 20, sectorSemiconductor: 50, sectorBio: 50, sectorDefense: 50, sectorFinance: 50, sectorEtc: 50 },
+  // Paper: Live보다 약간 관대 (데이터 축적 우선, 그러나 Live와 괴리 최소화)
+  // 이전: 종목40%/투자97%/포지션20개/섹터50% → Live(25%/88%/12개/20-30%)와 완전 괴리
+  paper: { positionCapPct: 30, maxInvestedPct: 92, cashReservePct: 8, maxPositions: 15, maxDailyTrades: 12, sectorSemiconductor: 35, sectorBio: 30, sectorDefense: 30, sectorFinance: 25, sectorEtc: 35 },
 };
 
 // ── 레짐 기반 동적 오버라이드 (장 좋으면 적극, 나쁘면 보수) ──

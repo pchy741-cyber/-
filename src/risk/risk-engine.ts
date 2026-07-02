@@ -87,16 +87,8 @@ export class RiskEngine {
       return { approved: false, reason: '🛑 Kill Switch 활성화 상태 — 국내 매수 차단 (매도는 허용)' };
     }
 
-    // 연습모드: 킬스위치 + 현금만 체크
-    if (isPaper) {
-      const drawdownCheck = await this.checkDailyDrawdown(isPaper);
-      if (!drawdownCheck.approved) return drawdownCheck;
-      const cashCheck = await this.checkCash(orderValue, isPaper);
-      if (!cashCheck.approved) return cashCheck;
-      return { approved: true, reason: '✅ 연습모드 — 손실한도+현금만 체크', sizeMultiplier: 1.0 };
-    }
-
-    // ── v16: 실전모드 소프트 사이즈 조절 ──
+    // ── v16: Paper+Live 공통 소프트 사이즈 조절 ──
+    // Paper도 동일 파이프라인 적용 (Live와 정합성 유지 — 이전: Paper 리스크 체크 전부 스킵 버그)
     // 하드블록 → 비중 축소로 전환 (킬스위치·현금부족만 하드 유지)
     let sizeMult = 1.0;
     const adj: string[] = [];
@@ -266,8 +258,7 @@ export class RiskEngine {
 
     // 총자산 = 주문가능 + 증권시가 (nass_amt 사용 금지 — KIS 앱 불일치)
     const totalAssets = (balance.orderableCash ?? 0) + (balance.totalEvalAmount ?? 0);
-    // 연습모드 — 종목당 한도 없음
-    if (isPaper) return { approved: true, reason: '연습모드 종목당 한도 없음' };
+    // Paper도 종목당 한도 적용 (이전: 면제 → 한 종목 100% 몰빵 가능했던 버그)
     // fail-closed: 총자산 0 이하면 잔고 조회 실패 → 매수 차단 (글로벌 한도 폴백 제거)
     if (totalAssets <= 0) {
       logger.warn(`⚠️ 총자산 0원 — 잔고 조회 실패 가능성, 매수 차단 (fail-closed)`, { component: 'RISK' });
@@ -525,15 +516,12 @@ export class RiskEngine {
         const targetUsPct = Number(allocRows[0]?.us_pct ?? 70);
 
         if (targetUsPct > 0) {
-          // Paper: 통합증거금 시뮬레이션 — 시드풀(90M) 기준 kr_pct 적용
-          // Live: totalPortfolio(계좌잔고) 기준
-          const { PAPER_INITIAL_CAPITAL } = await import('./paper-balance.js');
-          const PAPER_OVERSEAS_SEED = Number(process.env.PAPER_OVERSEAS_SEED_KRW) || 30_000_000;
-          const budgetBase = isPaper ? (PAPER_INITIAL_CAPITAL + PAPER_OVERSEAS_SEED) : totalPortfolio;
+          // Paper+Live 모두 실제 totalPortfolio 기준 (이전: Paper만 고정 90M → 손실 후에도 과대 배팅)
+          const budgetBase = totalPortfolio;
           const domesticInvested = balance.totalEvalAmount;
           const domesticBudgetCeil = budgetBase * (targetKrPct / 100);
-          // Paper: +30% 여유 (학습 데이터 확보), Live: +15% 여유
-          const margin = isPaper ? 1.30 : 1.15;
+          // Paper: +20% 여유 (약간 관대), Live: +15% 여유
+          const margin = isPaper ? 1.20 : 1.15;
           if (domesticInvested + orderValue > domesticBudgetCeil * margin) {
             return {
               approved: false,
@@ -659,9 +647,8 @@ export class RiskEngine {
   }
 
   private async checkMonthlyMDD(isPaper: boolean): Promise<PreTradeCheckResult> {
-    // 연습모드: 킬스위치(hard block) 없음 — MDD Guard(soft block, mdd-guard.ts)가 대신 관리
-    // MDD Guard가 config.paperRisk.mddLimit(60%)에서 minBuyScore 올려서 소프트 차단
-    if (isPaper) return { approved: true, reason: '연습모드 MDD 킬스위치 면제 (MDD Guard가 소프트 관리)' };
+    // Paper: 킬스위치 없음 — MDD Guard(soft, mdd-guard.ts)가 추가 관리
+    // 단, MDD -40% 초과 시 소프트 차단 (이전: 완전 면제 → 무한 손실)
     try {
       // 소자산 포트폴리오(20만 미만)는 월간 MDD 체크 면제
       // 외부 매도/입출금으로 잔고 급감 시 MDD가 -90%+ 되어 영구 차단되는 문제 방지
@@ -684,19 +671,24 @@ export class RiskEngine {
         return { approved: true, reason: '외부 매도/입출금 감지 — 월간 MDD 체크 면제' };
       }
 
-      // Paper는 위에서 이미 return → 여기는 Live 전용
-      const mddLimit = MDD_LIMIT.LIVE;
-      const mddWarn = MDD_LIMIT.LIVE * 0.75;
+      // Paper: 킬스위치 없이 소프트 차단 (MDD -40% 초과 시)
+      // Live: 킬스위치 발동
+      const mddLimit = isPaper ? 40 : MDD_LIMIT.LIVE;
+      const mddWarn = mddLimit * 0.75;
       if (mddPct >= mddLimit) {
-        await activateKillSwitch(
-          `월간 MDD 한도 초과: 고점 대비 -${mddPct.toFixed(1)}% (한도 -${mddLimit}%)`,
-          false,
-          'KR',
-          isPaper,
-        );
+        if (!isPaper) {
+          await activateKillSwitch(
+            `월간 MDD 한도 초과: 고점 대비 -${mddPct.toFixed(1)}% (한도 -${mddLimit}%)`,
+            false,
+            'KR',
+            isPaper,
+          );
+        }
         return {
           approved: false,
-          reason: `🛑 월간 MDD -${mddPct.toFixed(1)}% — 이달 고점 대비 ${mddLimit}% 초과 손실, Kill Switch 발동`,
+          reason: isPaper
+            ? `⚠️ Paper MDD -${mddPct.toFixed(1)}% — 한도 -${mddLimit}% 초과, 신규 매수 차단`
+            : `🛑 월간 MDD -${mddPct.toFixed(1)}% — 이달 고점 대비 ${mddLimit}% 초과 손실, Kill Switch 발동`,
         };
       }
 

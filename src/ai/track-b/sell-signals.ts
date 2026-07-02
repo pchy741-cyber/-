@@ -7,6 +7,7 @@ import type { TradeDecision } from '../../db/models.js';
 import { getTimeWeightedStop } from '../../risk/entry-timing-guard.js';
 import { logger } from '../../utils/logger.js';
 import { getOverride } from '../ai-overrides.js';
+import { shouldMomentumHold, resetMomentumHoldIfNewHigh } from './momentum-hold.js';
 import {
   buildAiScoreMap,
   getKstScalpTime,
@@ -375,6 +376,11 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
       const curPeak = Math.max(prevPeak, pnlPct);
       peakMap.set(chain.stock_code, curPeak);
 
+      // 신고점 갱신 시 모멘텀홀드 카운트 리셋
+      if (curPeak > prevPeak) {
+        resetMomentumHoldIfNewHigh(chain.id, curPeak).catch(() => {});
+      }
+
       if (curPeak >= 1.5 && chain.total_quantity > 0) {
         // 학습된 ATR 배수로 sniperType별 drop 비율 동적 조정
         // 기본 -1.0%, 학습 데이터 있으면 해당 sniperType의 최적 배수 적용
@@ -408,6 +414,25 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
 
         const dropFromPeak = pnlPct - curPeak;
         if (dropFromPeak <= trailingDrop) {
+          // 모멘텀 홀드 체크: 추세가 살아있으면 매도 유보
+          const mhResult = await shouldMomentumHold({
+            tech: getCachedTech(chain.stock_code),
+            pnlPct,
+            curPeak,
+            dropFromPeakAbs: Math.abs(dropFromPeak),
+            chainId: chain.id,
+            stockCode: chain.stock_code,
+            isPaper: chain.is_paper ?? getCtxIsPaper(),
+            isRunner,
+            currentPrice: price.currentPrice,
+          });
+          if (mhResult.shouldHold) {
+            logger.info(
+              `🔋 모멘텀홀드: ${chain.stock_code} TrailingStop 억제 (${mhResult.holdCount}/3) | 고점+${curPeak.toFixed(1)}%→현재+${pnlPct.toFixed(1)}% | ${mhResult.reason}`,
+              { component: 'MOMENTUM_HOLD' },
+            );
+            continue; // 이번 사이클 매도 스킵 → 2분 후 재평가
+          }
           const dropLabel = trailingDrop !== -1.0 ? ` (학습배수 ${(-trailingDrop).toFixed(1)}%)` : '';
           logger.info(
             `📉 TrailingStop: ${chain.stock_code} 고점 +${curPeak.toFixed(1)}% → 현재 +${pnlPct.toFixed(1)}% (${dropFromPeak.toFixed(1)}%)${dropLabel}`,
@@ -571,11 +596,17 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
     // ── 급등 즉시 익절 (Spike Sell): 매수 직후 급등 시 전량 매도 ─────────
     // "사자마자 팍 오르면 바로 팔아야지" — 급등은 빠르게 되돌림 위험 높음
     // 매수 후 60분 이내 + PnL ≥ 3% → 전량 익절 (수수료 후 순수익 ~2.8% 확보)
+    // 러너는 면제 — 폭발 모멘텀 종목을 조기에 놓치면 안 됨
     {
       const chainAge = chain.opened_at
         ? (Date.now() - new Date(chain.opened_at).getTime()) / 60_000
         : 9999;
-      if (
+      if (isRunner && chainAge <= 60 && pnlPct >= 3.0 && !processedSellChains.has(chain.id)) {
+        logger.info(
+          `🚀 러너 급등매도 면제: ${chain.stock_code} +${pnlPct.toFixed(2)}% (${chainAge.toFixed(0)}분)`,
+          { component: 'MOMENTUM_HOLD' },
+        );
+      } else if (
         chainAge <= 60 &&
         pnlPct >= 3.0 &&
         chain.total_quantity > 0 &&
