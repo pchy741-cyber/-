@@ -97,7 +97,16 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
     decisions = decisions.filter((d) => d.action !== 'BUY' && d.action !== 'AVERAGE_DOWN');
   }
 
-  // ── 0a. CEO 매수금지 종목 보유분 처리 ─────────────────────────────
+  // ── 0a. 인버스 ETF 결정 보호 (crash-profit 결정은 필터 우회) ────
+  // CEO 매수금지 필터(아래 0b)보다 반드시 먼저 실행 — 114800/252670/251340이
+  // BUY_BLOCKED_CODES에도 등재돼 있어, 순서가 바뀌면 crash-profit의 하락장 인버스
+  // 매수 결정이 전량 차단됨 (2026-07-02 실전 확인: CRASH 신호 정상 발생 + 인버스
+  // 매수 결정 생성됐으나 0a가 먼저 실행되며 전량 삭제되는 버그 있었음)
+  const { INVERSE_ETF_CODES } = await import('../../automation/crash-profit.js');
+  const inverseDecisions = decisions.filter((d) => INVERSE_ETF_CODES.has(d.stock_code));
+  decisions = decisions.filter((d) => !INVERSE_ETF_CODES.has(d.stock_code));
+
+  // ── 0b. CEO 매수금지 종목 보유분 처리 ─────────────────────────────
   //
   // CEO 지시 (2026-06-12): 강제청산 → 익절/손절 도달까지 hold 로 완화
   //   Why: ARIRANG 단기채권 사례 — 정책 추가로 강제청산 2회, -75k 손실 확정
@@ -105,7 +114,7 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
   //     - 신규 매수는 hard-gates.ts에서 이미 차단 중 (보유 0인 종목은 진입 불가)
   //     - 기존 보유분은 일반 TP/SL/트레일링 신호 따름
   //     - 단, 신규 매수/물타기 신호는 무조건 차단 (이중 안전장치)
-  //   인버스 ETF는 crash-profit.ts가 신호 기반으로 직접 관리 (별도)
+  //   인버스 ETF는 crash-profit.ts가 신호 기반으로 직접 관리 (0a에서 이미 분리됨)
   {
     const { BUY_BLOCKED_CODES } = await import('./trading-rules.js');
     const blockedBuys = decisions.filter(
@@ -124,11 +133,6 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
       );
     }
   }
-
-  // ── 0b. 인버스 ETF 결정 보호 (crash-profit 결정은 필터 우회) ────
-  const { INVERSE_ETF_CODES } = await import('../../automation/crash-profit.js');
-  const inverseDecisions = decisions.filter((d) => INVERSE_ETF_CODES.has(d.stock_code));
-  decisions = decisions.filter((d) => !INVERSE_ETF_CODES.has(d.stock_code));
 
   // ── 0c. BREAKOUT 모드: 비돌파 매수 차단 (BREAKOUT 전용 매수만 허용) ────
   if (mode === 'BREAKOUT') {

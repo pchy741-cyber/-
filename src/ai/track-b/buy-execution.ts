@@ -839,9 +839,10 @@ export async function executeBuyDecisions(
     const rawCompoundMult =
       modeScale * macroSizingMult * softBlockSizingMult * safeWinRate * safeLossStreak * safeEvMult * visionSizingMult;
     // 최종 하한: 0.10 (기존 0.25 → 0.10, per-factor 클램핑이 주력 방어)
-    // paper는 unified sizer가 macro/wr/ev 이미 반영 → compoundMult 이중적용 방지
+    // paper는 unified sizer가 macro/wr/ev/streak 이미 반영 → compoundMult 이중적용 방지
+    // (safeLossStreak도 unified sizer의 streakMult와 동일 소스라 여기선 제외)
     const compoundMultFloor = ctxPaper
-      ? Math.max(0.10, modeScale * visionSizingMult * safeLossStreak)
+      ? Math.max(0.10, modeScale * visionSizingMult)
       : Math.max(0.10, rawCompoundMult);
     if (rawCompoundMult < compoundMultFloor && !ctxPaper) {
       logger.info(
