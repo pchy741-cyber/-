@@ -305,8 +305,12 @@ export async function buildDefenseParkEntryDecisions(
   }
 
   // 2. 파킹 자산 매수 (이미 보유 중이면 스킵)
+  // ⛔ CEO 보류 지시 (2026-07-02): "인버스 파킹은 하지마 아직" — Paper/Live 공통 일시중단.
+  // Live는 파생ETF 미등록으로 KIS가 어차피 거부(APBK1497)하고, Paper도 같이 멈춰달라는 요청.
+  // 재개 조건: CEO가 명시적으로 재개 지시 (또는 KIS 파생ETF 등록 완료 확인 후 사용자 승인).
+  const DEFENSE_PARK_BUY_PAUSED = true;
   const alreadyHasPark = openChains.some((c) => c.stock_code === parkCode);
-  if (!alreadyHasPark) {
+  if (!alreadyHasPark && !DEFENSE_PARK_BUY_PAUSED) {
     const parkPrice = livePrices.get(parkCode);
     if (parkPrice && parkPrice.currentPrice > 0) {
       const minCashReserve = Math.floor(totalAssets * getCashReserveRatio(getCtxIsPaper()));
