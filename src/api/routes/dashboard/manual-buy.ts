@@ -128,9 +128,10 @@ export function registerManualBuyRoutes(app: Hono) {
     }
 
     // ===== HARD SAFETY GATES (Track B 동일 기준 — 실전 손실 방지) =====
-    // CEO 블랙리스트 — Paper/Live 공통
+    // CEO 블랙리스트 — Paper/Live 공통 (인버스 ETF는 crash-profit이 신호기반으로 관리 — 수동 헤지 매수는 예외)
     const { BUY_BLOCKED_CODES } = await import('../.././../ai/track-b/trading-rules.js');
-    if (BUY_BLOCKED_CODES.has(stock_code)) {
+    const { INVERSE_ETF_CODES } = await import('../../../automation/crash-profit.js');
+    if (BUY_BLOCKED_CODES.has(stock_code) && !INVERSE_ETF_CODES.has(stock_code)) {
       logger.warn(`🚫 HARD BLOCK: ${stock_code} — CEO 블랙리스트`, { component: 'CLAUDE_BUY' });
       return c.json({ error: '매수 차단: CEO 블랙리스트 종목' }, 403);
     }
