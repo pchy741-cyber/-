@@ -155,6 +155,7 @@ export const SECTOR_GROUP_LIMITS: Record<string, { sectors: string[]; maxWeightP
   US_EV: { sectors: ['EV', 'CRYPTO'], maxWeightPct: 20, label: 'EV+크립토' },
   JAPAN: { sectors: ['JP_AUTO', 'JP_TECH', 'JP_BANK'], maxWeightPct: 25, label: '일본 ADR' },
   TAIWAN: { sectors: ['TW_SEMI'], maxWeightPct: 15, label: '대만 반도체' },
+  LEVERAGED: { sectors: ['LEV_BULL', 'LEV_BEAR'], maxWeightPct: 20, label: '레버리지/인버스 ETF' },
 };
 
 export function checkSectorGroupLimit(params: {

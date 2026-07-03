@@ -23,7 +23,7 @@ export interface CrossMarketSignal {
   confidence: number; // 0~1
 }
 
-// ── 하드코딩 크로스마켓 페어 ──
+// ── 크로스마켓 페어 (반도체 + 자동차 + 금융) ──
 
 const CROSS_PAIRS: CrossMarketPair[] = [
   // 일본 반도체 → 미국 반도체
@@ -31,7 +31,14 @@ const CROSS_PAIRS: CrossMarketPair[] = [
   { asiaCode: '6857', asiaExchange: 'TSE', usCode: 'AMD', correlation: 0.65 },
   { asiaCode: '8035', asiaExchange: 'TSE', usCode: 'AMAT', correlation: 0.7 },
   { asiaCode: '6861', asiaExchange: 'TSE', usCode: 'KLAC', correlation: 0.65 },
-  // 대만 TSMC — KIS API 미지원 (TPE 거래소 코드 없음), TSE 도쿄일렉트론으로 대체
+  // 일본 자동차 → ADR
+  { asiaCode: '7203', asiaExchange: 'TSE', usCode: 'TM', correlation: 0.8 },
+  { asiaCode: '7267', asiaExchange: 'TSE', usCode: 'HMC', correlation: 0.7 },
+  // 일본 금융 → ADR
+  { asiaCode: '8306', asiaExchange: 'TSE', usCode: 'MUFG', correlation: 0.75 },
+  { asiaCode: '8316', asiaExchange: 'TSE', usCode: 'SMFG', correlation: 0.7 },
+  // 일본 소니 → ADR
+  { asiaCode: '6758', asiaExchange: 'TSE', usCode: 'SONY', correlation: 0.8 },
 ];
 
 // ── 캐시 (1시간 — 아시아장 종료 후 변하지 않으므로) ──

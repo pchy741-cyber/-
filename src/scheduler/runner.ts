@@ -392,6 +392,19 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
+  // 08:35 — US→Korea 여파 분석 (미국장 종목/섹터 등락 → 한국 종목 점수 보정)
+  cron.schedule(
+    '35 8 * * 1-5',
+    async () => {
+      const { isTradingDay } = await import('../utils/holidays.js');
+      if (!isTradingDay()) return;
+      import('../automation/us-ripple-effect.js')
+        .then((m) => m.runUSRippleEffect())
+        .catch((e) => logger.error(`US→KR 여파 분석 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
   // 12:00 — v16: 장중 QA Watchdog (수익성+딜레이 실시간 감시)
   cron.schedule(
     '0 12 * * 1-5',
@@ -1083,6 +1096,20 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
+  // 📊 Post-Exit Tracker — 07:35 KST (미장 마감 후, 매도 후 가격 추적)
+  cron.schedule(
+    '35 7 * * 2-6',
+    () => {
+      import('./overseas/post-exit-tracker.js')
+        .then(async (m) => {
+          await m.runPostExitTracker(true);
+          await m.runPostExitTracker(false);
+        })
+        .catch((e) => logger.error(`Post-Exit Tracker 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
   // 🎓 전략 졸업 + 강등 검사 + 성과 요약 — 평일 19:15 (Trade Tuner 후)
   cron.schedule(
     '15 19 * * 1-5',
@@ -1118,6 +1145,48 @@ export function startScheduler(): void {
       import('../automation/strategy-lab/insight-engine.js')
         .then((m) => m.generateAndStoreInsights(60))
         .catch((e) => logger.error(`전략 인사이트 갱신 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 📊 Analytics Hub — 평일 19:50 (자기학습 + 최적화 후, 통합 분석)
+  cron.schedule(
+    '50 19 * * 1-5',
+    () => {
+      import('../automation/analytics-hub.js')
+        .then(async (m) => {
+          await m.runAnalyticsHub(true);
+          await m.runAnalyticsHub(false);
+        })
+        .catch((e) => logger.error(`Analytics Hub 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 🔄 패턴 자동적용 — 평일 19:55 (Analytics Hub 후)
+  cron.schedule(
+    '55 19 * * 1-5',
+    () => {
+      import('../automation/pattern-auto-apply.js')
+        .then(async (m) => {
+          await m.runPatternAutoApply(true);
+          await m.runPatternAutoApply(false);
+        })
+        .catch((e) => logger.error(`패턴 자동적용 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 🏅 성과 마일스톤 — 평일 20:00 (일과 마무리)
+  cron.schedule(
+    '0 20 * * 1-5',
+    () => {
+      import('../notifications/smart-alerts.js')
+        .then(async (m) => {
+          await m.checkMilestoneAlerts(true);
+          await m.checkMilestoneAlerts(false);
+        })
+        .catch((e) => logger.error(`마일스톤 알림 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );

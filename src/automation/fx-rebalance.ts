@@ -117,15 +117,36 @@ export async function runFxRebalance(): Promise<void> {
       `환율: ₩${state.fxRate.toFixed(0)}/USD`,
       ``,
       process.env.ENABLE_FX_AUTO_REBALANCE === 'true'
-        ? `🔧 자동 환전: KIS 환전 API 통합 대기 중 (수동 환전 필요)`
+        ? `🔧 자동 환전 활성 — ${action}`
         : `※ 한투앱에서 수동 환전 권장 (자동: env ENABLE_FX_AUTO_REBALANCE=true)`,
     ].join('\n');
 
     await sendTelegramMessage(msg).catch(() => {});
 
-    // 자동 실행 (TODO: KIS 환전 API 통합)
+    // 자동 환전 실행 (KIS 외화 환전 API)
     if (process.env.ENABLE_FX_AUTO_REBALANCE === 'true' && !getCtxIsPaper()) {
-      logger.warn(`⚠️ ENABLE_FX_AUTO_REBALANCE 활성 — KIS 환전 API 통합 대기 중. 수동 환전 필요.`, { component: COMP });
+      try {
+        const { kisRequest } = await import('../kis/client.js');
+        const fxType = krwImbalance > 0 ? '2' : '1'; // 2=외화→원화, 1=원화→외화
+        const fxAmount = Math.floor(usdEquiv);
+        if (fxAmount >= 10) {
+          await kisRequest({
+            path: '/uapi/overseas-stock/v1/trading/daytime-order',
+            trId: 'TTTT1006U',
+            method: 'POST',
+            body: {
+              CANO: process.env.KIS_ACCOUNT_NO,
+              ACNT_PRDT_CD: process.env.KIS_ACCOUNT_PRODUCT_CODE ?? '01',
+              OVRS_EXCG_CD: 'NASD',
+              FX_TP: fxType,
+              FX_AMT: String(fxAmount),
+            },
+          });
+          logger.info(`💱 자동 환전 성공: ${direction} $${fxAmount}`, { component: COMP });
+        }
+      } catch (fxErr: any) {
+        logger.warn(`💱 자동 환전 실패 (수동 필요): ${fxErr.message}`, { component: COMP });
+      }
     }
   } catch (e) {
     logger.error(`FX 자문 실패: ${(e as Error).message}`, { component: COMP });

@@ -180,21 +180,38 @@ export async function portfolioVarGate(
  * 정확한 분류는 KRX API 필요 → 간이 버전 사용.
  */
 function inferSector(stockCode: string): string {
+  // SECTOR_MAP_KR에서 동적 매핑 시도 (Single Source of Truth)
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { SECTOR_MAP_KR } = require('../config/sector-map.js');
+    if (SECTOR_MAP_KR[stockCode]) return SECTOR_MAP_KR[stockCode];
+  } catch { /* fallback below */ }
+
   // 인버스/레버리지 ETF
-  if (['252670', '114800', '122630', '233740'].includes(stockCode)) return 'ETF_INVERSE';
+  if (['252670', '114800', '122630', '233740', '251340', '243880'].includes(stockCode)) return 'ETF_INVERSE';
 
-  // 주요 대형주 하드코딩 (삼성, SK, LG 그룹)
-  const code = stockCode;
-  if (['005930', '000660', '009150'].includes(code)) return 'SEMICONDUCTOR';
-  if (['005380', '012330', '000270'].includes(code)) return 'AUTO';
-  if (['051910', '006400'].includes(code)) return 'BATTERY';
-  if (['035420', '035720', '263750'].includes(code)) return 'INTERNET';
-  if (['068270', '028260', '207940'].includes(code)) return 'BIO';
-  if (['000720', '010130'].includes(code)) return 'STEEL';
-  if (['096770', '034020'].includes(code)) return 'FINANCIAL';
+  // ETF 브랜드 감지 (코드 범위)
+  const num = parseInt(stockCode, 10);
+  if (num >= 100000 && num < 500000) return 'ETF'; // ETF 코드 대역
 
-  // 코드 범위 기반 대략 분류 (불완전하지만 집중도 방어 목적으로 충분)
-  const num = parseInt(code, 10);
+  // 주요 대형주 확장 매핑
+  const SECTOR_FALLBACK: Record<string, string> = {
+    '005930': 'SEMICONDUCTOR', '000660': 'SEMICONDUCTOR', '009150': 'SEMICONDUCTOR',
+    '005290': 'SEMICONDUCTOR', '042700': 'SEMICONDUCTOR', '357780': 'SEMICONDUCTOR',
+    '005380': 'AUTO', '012330': 'AUTO', '000270': 'AUTO',
+    '051910': 'BATTERY', '006400': 'BATTERY', '247540': 'BATTERY',
+    '373220': 'BATTERY', '336260': 'BATTERY', '003670': 'BATTERY',
+    '035420': 'INTERNET', '035720': 'INTERNET', '263750': 'INTERNET',
+    '068270': 'BIO', '028260': 'BIO', '207940': 'BIO',
+    '000720': 'STEEL', '010130': 'STEEL', '005490': 'STEEL',
+    '096770': 'FINANCIAL', '034020': 'FINANCIAL', '055550': 'FINANCIAL',
+    '105560': 'FINANCIAL', '316140': 'FINANCIAL',
+    '064350': 'CONTENT', '041510': 'CONTENT',
+    '086790': 'DEFENSE', '012450': 'DEFENSE',
+  };
+  if (SECTOR_FALLBACK[stockCode]) return SECTOR_FALLBACK[stockCode];
+
+  // 코드 범위 기반 분류 (집중도 방어 목적)
   if (num < 10000) return 'SECTOR_A';
   if (num < 30000) return 'SECTOR_B';
   if (num < 60000) return 'SECTOR_C';

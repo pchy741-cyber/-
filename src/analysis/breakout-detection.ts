@@ -169,7 +169,7 @@ export function detect5MABreakout(candles: DailyCandle[]): BreakoutSignal {
 //
 // 규칙:
 // 1. 전일 range = high - low
-// 2. K-factor = 0.6 (기본값, 적응형은 추후)
+// 2. K-factor = 적응형 (최근 20일 돌파 성공률 기반, 0.4~0.8)
 // 3. 진입: 현재가 ≥ 당일시가 + range × K
 // 4. 청산: 익일 장시작 매도 (sell-signals에서 처리)
 

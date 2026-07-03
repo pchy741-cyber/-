@@ -65,7 +65,31 @@ export const EXTENDED_WATCHLIST = [
   { code: 'NMR', name: 'Nomura Holdings', exchange: 'NYSE', region: 'US', sector: 'JP_FINANCE' },
 ];
 
-export const GLOBAL_WATCHLIST = [...CORE_WATCHLIST, ...EXTENDED_WATCHLIST];
+// ── 레버리지/인버스 ETF (3x Bull/Bear + VIX) ──
+export const LEVERAGED_WATCHLIST = [
+  // 3x Bull
+  { code: 'TQQQ', name: 'ProShares UltraPro QQQ', exchange: 'NASDAQ', region: 'US', sector: 'LEV_BULL' },
+  { code: 'SOXL', name: 'Direxion Semi Bull 3X', exchange: 'AMEX', region: 'US', sector: 'LEV_BULL' },
+  { code: 'UPRO', name: 'ProShares UltraPro S&P500', exchange: 'AMEX', region: 'US', sector: 'LEV_BULL' },
+  { code: 'FNGU', name: 'MicroSectors FANG+ 3X', exchange: 'AMEX', region: 'US', sector: 'LEV_BULL' },
+  { code: 'TNA', name: 'Direxion SmallCap Bull 3X', exchange: 'AMEX', region: 'US', sector: 'LEV_BULL' },
+  { code: 'LABU', name: 'Direxion Biotech Bull 3X', exchange: 'AMEX', region: 'US', sector: 'LEV_BULL' },
+  // 2x Bull
+  { code: 'QLD', name: 'ProShares Ultra QQQ', exchange: 'NASDAQ', region: 'US', sector: 'LEV_BULL' },
+  // 3x Bear (인버스)
+  { code: 'SQQQ', name: 'ProShares UltraPro Short QQQ', exchange: 'NASDAQ', region: 'US', sector: 'LEV_BEAR' },
+  { code: 'SOXS', name: 'Direxion Semi Bear 3X', exchange: 'AMEX', region: 'US', sector: 'LEV_BEAR' },
+  { code: 'SPXS', name: 'Direxion S&P500 Bear 3X', exchange: 'AMEX', region: 'US', sector: 'LEV_BEAR' },
+  { code: 'FNGD', name: 'MicroSectors FANG+ -3X', exchange: 'AMEX', region: 'US', sector: 'LEV_BEAR' },
+  { code: 'TZA', name: 'Direxion SmallCap Bear 3X', exchange: 'AMEX', region: 'US', sector: 'LEV_BEAR' },
+  { code: 'LABD', name: 'Direxion Biotech Bear 3X', exchange: 'AMEX', region: 'US', sector: 'LEV_BEAR' },
+  // 2x Bear (인버스)
+  { code: 'QID', name: 'ProShares UltraShort QQQ', exchange: 'NASDAQ', region: 'US', sector: 'LEV_BEAR' },
+  // VIX
+  { code: 'UVXY', name: 'ProShares Ultra VIX', exchange: 'AMEX', region: 'US', sector: 'LEV_BEAR' },
+];
+
+export const GLOBAL_WATCHLIST = [...CORE_WATCHLIST, ...EXTENDED_WATCHLIST, ...LEVERAGED_WATCHLIST];
 
 export const WATCHLIST_BY_CODE = new Map(GLOBAL_WATCHLIST.map((w) => [w.code, w]));
 export const WATCHLIST_BY_CODE_EXCHANGE = new Map(

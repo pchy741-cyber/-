@@ -268,7 +268,21 @@ tradeRoutes.get('/withdraw/config', async (c) => {
 });
 
 tradeRoutes.put('/withdraw/config', async (c) => {
-  return c.json({ error: '용돈 이관 설정 저장 미구현 — 현재 하드코딩 (ratio=10%, min=10만)' }, 501);
+  try {
+    const body = await c.req.json();
+    const ratio = Number(body.withdraw_ratio_pct);
+    const minProfit = Number(body.min_profit);
+    if (isNaN(ratio) || ratio < 0 || ratio > 50) return c.json({ error: 'ratio는 0~50% 범위' }, 400);
+    if (isNaN(minProfit) || minProfit < 0) return c.json({ error: 'min_profit은 0 이상' }, 400);
+    await getPool().query(
+      `INSERT INTO overseas_state (key, value) VALUES ('withdraw_config', $1)
+       ON CONFLICT (key) DO UPDATE SET value = $1`,
+      [JSON.stringify({ withdraw_ratio_pct: ratio, min_profit: minProfit, updated_at: new Date().toISOString() })],
+    );
+    return c.json({ ok: true, withdraw_ratio_pct: ratio, min_profit: minProfit });
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500);
+  }
 });
 
 tradeRoutes.get('/withdraw/history', async (c) => {

@@ -50,6 +50,12 @@ interface TuneResult {
   sectorStats: SectorStats[];
   recommendations: TuneRecommendation[];
   appliedAt: string;
+  postExitSummary?: {
+    totalExits: number;
+    overallAvgMissedGainPct: number;
+    overallPositiveRate: number;
+    trailingStopMissedAvg: number;
+  };
 }
 
 interface TuneRecommendation {
@@ -106,6 +112,24 @@ export async function runTradeTuner(isPaper = true): Promise<TuneResult | null> 
     // 5. 섹터별 분석
     const sectorStats = analyzeBySector(trades);
 
+    // 5.5. Post-Exit 데이터 읽기
+    let postExitSummary: TuneResult['postExitSummary'];
+    try {
+      const peKey = isPaper ? 'post_exit_stats_paper' : 'post_exit_stats_live';
+      const peRaw = await getOverseasState(peKey);
+      if (peRaw) {
+        const pe = JSON.parse(peRaw);
+        if (pe.totalExits > 0) {
+          postExitSummary = {
+            totalExits: pe.totalExits,
+            overallAvgMissedGainPct: pe.overallAvgMissedGainPct,
+            overallPositiveRate: pe.overallPositiveRate,
+            trailingStopMissedAvg: pe.trailingStopMissedAvg,
+          };
+        }
+      }
+    } catch { /* ignore */ }
+
     // 6. 최적 파라미터 역산
     const recommendations = generateRecommendations({
       trades,
@@ -117,6 +141,7 @@ export async function runTradeTuner(isPaper = true): Promise<TuneResult | null> 
       avgPnlPct,
       avgLeakPct,
       sectorStats,
+      postExitSummary,
     });
 
     // 7. 튜닝 결과 저장
@@ -128,6 +153,7 @@ export async function runTradeTuner(isPaper = true): Promise<TuneResult | null> 
       sectorStats,
       recommendations,
       appliedAt: new Date().toISOString(),
+      postExitSummary,
     };
     await setOverseasState(isPaper ? STATE_KEY : `${STATE_KEY}_live`, JSON.stringify(result));
 
@@ -303,6 +329,7 @@ function generateRecommendations(ctx: {
   avgPnlPct: number;
   avgLeakPct: number;
   sectorStats: SectorStats[];
+  postExitSummary?: TuneResult['postExitSummary'];
 }): TuneRecommendation[] {
   const recs: TuneRecommendation[] = [];
 
@@ -428,6 +455,41 @@ function generateRecommendations(ctx: {
           });
         }
       }
+    }
+  }
+
+  // ── 8. Post-Exit 기반 추천 ──
+  if (ctx.postExitSummary) {
+    const pe = ctx.postExitSummary;
+
+    // 트레일링 스톱 매도 후 평균 잔여수익이 크면 → 트레일링 확대 권장
+    if (pe.trailingStopMissedAvg > 2.5) {
+      recs.push({
+        param: 'trail_width_pct',
+        current: 3,
+        recommended: Math.min(5, Math.round((3 + pe.trailingStopMissedAvg * 0.3) * 10) / 10),
+        reason: `📊 트레일링 스톱 매도 후 평균 +${pe.trailingStopMissedAvg.toFixed(1)}% 상승 → 활성 기준 상향`,
+      });
+    }
+
+    // 전체 평균 잔여수익이 음수 + 5건 이상 → exit 타이밍 적절
+    if (pe.overallAvgMissedGainPct < 0 && pe.totalExits >= 5) {
+      recs.push({
+        param: 'exit_timing_ok',
+        current: 0,
+        recommended: 0,
+        reason: `✅ 매도 후 평균 ${pe.overallAvgMissedGainPct.toFixed(1)}% 하락 (${pe.totalExits}건) — exit 타이밍 적절`,
+      });
+    }
+
+    // 전체 양수율이 높고(60%+) 평균 잔여수익 > 2% → 조기매도 경고
+    if (pe.overallPositiveRate >= 0.6 && pe.overallAvgMissedGainPct > 2.0 && pe.totalExits >= 3) {
+      recs.push({
+        param: 'trail_activate_pct',
+        current: 8,
+        recommended: Math.max(3, Math.round((8 - pe.overallAvgMissedGainPct * 0.5) * 10) / 10),
+        reason: `📊 매도 후 ${(pe.overallPositiveRate * 100).toFixed(0)}%가 추가 상승 (평균 +${pe.overallAvgMissedGainPct.toFixed(1)}%) → 트레일링 스톱 확대`,
+      });
     }
   }
 
@@ -600,6 +662,13 @@ function formatReport(r: TuneResult): string {
     }
   } else {
     lines.push('', '✅ 현재 파라미터 적정 — 조정 불필요');
+  }
+
+  if (r.postExitSummary) {
+    const pe = r.postExitSummary;
+    lines.push(
+      `\n📊 매도후추적: ${pe.totalExits}건 | 평균 ${pe.overallAvgMissedGainPct >= 0 ? '+' : ''}${pe.overallAvgMissedGainPct.toFixed(1)}% | 상승률 ${(pe.overallPositiveRate * 100).toFixed(0)}%`,
+    );
   }
 
   return lines.join('\n');

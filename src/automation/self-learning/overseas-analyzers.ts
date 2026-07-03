@@ -74,7 +74,7 @@ async function getOverseasTrades(days: number, isPaper: boolean): Promise<Overse
   });
 }
 
-function parseCloseReason(reasoning: string): string {
+export function parseCloseReason(reasoning: string): string {
   const lower = reasoning.toLowerCase();
   if (lower.includes('trailing') || lower.includes('트레일링') || lower.includes('trail')) return 'TRAILING_STOP';
   if (lower.includes('partial') || lower.includes('부분익절') || lower.includes('partial_tp')) return 'PARTIAL_TP';
@@ -91,7 +91,7 @@ function parseCloseReason(reasoning: string): string {
   return 'OTHER';
 }
 
-const CLOSE_REASON_KR: Record<string, string> = {
+export const CLOSE_REASON_KR: Record<string, string> = {
   TRAILING_STOP: '트레일링 스톱',
   PARTIAL_TP: '부분 익절',
   STOP_LOSS: '손절',

@@ -1,12 +1,13 @@
 // ── 섹터 분류 (매수/매도/트레일링 전역 공유) ──
 export const SECTOR_CLASS = {
-  HIGH_BETA: ['EV', 'CRYPTO', 'AI_SEMI', 'GROWTH', 'BIOTECH'] as readonly string[],
+  HIGH_BETA: ['EV', 'CRYPTO', 'AI_SEMI', 'GROWTH', 'BIOTECH', 'LEV_BULL', 'LEV_BEAR'] as readonly string[],
   MEDIUM_BETA: [
     'TECH', 'INFRA', 'INDUSTRIAL', 'CLOUD', 'HEALTH', 'FINANCE', 'FINTECH',
     'ENERGY', 'JP_AUTO', 'JP_TECH', 'JP_BANK', 'JP_FINANCE', 'TW_SEMI', 'CN_ADR',
   ] as readonly string[],
   DEFENSE: ['DEFENSE', 'REIT', 'CONSUMER', 'UTILITY'] as readonly string[],
-  DANGER_HIGH_BETA: ['AI_SEMI', 'GROWTH', 'EV', 'CRYPTO', 'BIOTECH', 'FINTECH', 'JP_AUTO', 'JP_TECH', 'CN_ADR'] as readonly string[],
+  DANGER_HIGH_BETA: ['AI_SEMI', 'GROWTH', 'EV', 'CRYPTO', 'BIOTECH', 'FINTECH', 'JP_AUTO', 'JP_TECH', 'CN_ADR', 'LEV_BULL', 'LEV_BEAR'] as readonly string[],
+  LEVERAGED: ['LEV_BULL', 'LEV_BEAR'] as readonly string[],
 } as const;
 
 // ── 국내주식 섹터 맵 (Single Source of Truth) ──

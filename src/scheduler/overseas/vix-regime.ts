@@ -33,6 +33,13 @@ export function getVixRegime(vix: number, isPaper?: boolean): RegimeAdjustment {
   } else {
     regime = vix >= crisisEntry ? 'CRISIS' : vix >= stressEntry ? 'STRESS' : 'CALM';
   }
+  // 레짐 변경 알림 (#19)
+  if (regime !== prevRegime) {
+    import('../../notifications/smart-alerts.js')
+      .then((m) => m.checkRegimeChangeAlert(regime, vix, isPaper ?? false))
+      .catch(() => {});
+  }
+
   if (modeKey) _prevRegimeByMode[modeKey] = regime;
   _prevRegime = regime;
 
