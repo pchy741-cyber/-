@@ -30,7 +30,7 @@ export async function analyzeBuyThreshold(): Promise<LearnedInsight[]> {
     // v9-fix: 데이터 스누핑 방지 — 최근 14일 데이터 제외 (holdout gap)
     // 학습 데이터(14~90일 전)와 적용 기간(최근 14일)을 분리하여 오버피팅 방지
     const { rows } = await getPool().query(
-      `SELECT entry_score, outcome, realized_pnl_pct
+      `SELECT entry_score, outcome, realized_pnl_pct, market_regime
          FROM score_accuracy
         WHERE recorded_at BETWEEN NOW() - INTERVAL '90 days' AND NOW() - INTERVAL '14 days'
           AND entry_score IS NOT NULL
@@ -41,67 +41,64 @@ export async function analyzeBuyThreshold(): Promise<LearnedInsight[]> {
 
     if (rows.length < 30) return []; // v9: 15→30 최소 샘플 강화
 
-    const below = rows.filter((r: any) => Number(r.entry_score) < currentThreshold);
-    const above = rows.filter((r: any) => Number(r.entry_score) >= currentThreshold);
-
-    if (below.length < 5 || above.length < 5) return [];
-
-    const belowWinRate = below.filter((r: any) => r.outcome === 'WIN').length / below.length;
-    const aboveWinRate = above.filter((r: any) => r.outcome === 'WIN').length / above.length;
-    const belowAvgPnl = below.reduce((s: number, r: any) => s + Number(r.realized_pnl_pct), 0) / below.length;
-
-    const totalSamples = rows.length;
-    const confidence = Math.min(0.85, 0.55 + totalSamples * 0.015);
     const insights: LearnedInsight[] = [];
 
-    if (belowWinRate < 0.38 && belowAvgPnl < 0 && aboveWinRate > belowWinRate + 0.1) {
-      let bestThreshold = currentThreshold + 5;
-      let bestAboveWinRate = 0;
-      for (let t = currentThreshold + 3; t <= Math.min(80, currentThreshold + 12); t += 3) {
-        const atOrAbove = rows.filter((r: any) => Number(r.entry_score) >= t);
-        if (atOrAbove.length < 5) break;
-        const wr = atOrAbove.filter((r: any) => r.outcome === 'WIN').length / atOrAbove.length;
-        if (wr > bestAboveWinRate) {
-          bestAboveWinRate = wr;
-          bestThreshold = t;
+    // ── 글로벌 분석 (기존 로직) ──
+    insights.push(..._analyzeThresholdForData(rows, currentThreshold, '전체'));
+
+    // ── Tier 7: 레짐별 분리 분석 ──
+    try {
+      const regimeGroups: Record<string, any[]> = { BULLISH: [], BEARISH: [], NEUTRAL: [] };
+      for (const r of rows) {
+        const regime = r.market_regime;
+        if (regime === 'BULLISH') regimeGroups.BULLISH.push(r);
+        else if (regime === 'BEARISH') regimeGroups.BEARISH.push(r);
+        else regimeGroups.NEUTRAL.push(r);
+      }
+
+      for (const [regime, data] of Object.entries(regimeGroups)) {
+        if (data.length < 15) continue; // 레짐별 최소 15건 필요
+
+        const regimeInsights = _analyzeThresholdForData(data, currentThreshold, regime);
+        for (const insight of regimeInsights) {
+          // 레짐별 인사이트로 마킹
+          insight.details = { ...insight.details, regime, perRegimeThreshold: true };
+          insight.insight = `[${regime}] ${insight.insight}`;
+        }
+        insights.push(...regimeInsights);
+      }
+
+      // 레짐별 최적 threshold 요약 저장 (런타임 사용)
+      const perRegime: Record<string, number> = {};
+      for (const [regime, data] of Object.entries(regimeGroups)) {
+        if (data.length < 15) continue;
+        const optThreshold = _findOptimalThreshold(data);
+        if (optThreshold !== null) {
+          perRegime[regime] = optThreshold;
         }
       }
 
-      insights.push({
-        category: 'WIN_PATTERN',
-        insight: `매수 임계값 자동최적화: ${currentThreshold}점 미만 실거래 승률 ${(belowWinRate * 100).toFixed(0)}% (${below.length}건, 평균손익 ${belowAvgPnl.toFixed(1)}%). 임계값 ${bestThreshold}점으로 상향하면 진입 품질 개선.`,
-        recommendation: `buy_threshold: ${currentThreshold} → ${bestThreshold} (실거래 ${totalSamples}건 분석)`,
-        paramChange: {
-          field: 'buy_threshold',
-          value: bestThreshold,
-          reason: `임계값 이하 승률 ${(belowWinRate * 100).toFixed(0)}% 개선 목적`,
-        },
-        confidence,
-        sampleCount: totalSamples,
-        lastUpdated: new Date().toISOString(),
-      });
-    }
-
-    if (belowWinRate >= 0.52 && belowAvgPnl > 0 && currentThreshold > 55 && below.length >= 8) {
-      const suggestedThreshold = Math.max(53, currentThreshold - 5);
-      insights.push({
-        category: 'WIN_PATTERN',
-        insight: `매수 임계값 자동최적화: ${currentThreshold}점 미만에서도 승률 ${(belowWinRate * 100).toFixed(0)}% (${below.length}건, 평균손익 ${belowAvgPnl.toFixed(1)}%). 임계값 ${suggestedThreshold}점 하향으로 기회 확대 가능.`,
-        recommendation: `buy_threshold: ${currentThreshold} → ${suggestedThreshold}`,
-        paramChange: {
-          field: 'buy_threshold',
-          value: suggestedThreshold,
-          reason: `임계값 이하도 수익 확인 → 기회 확대`,
-        },
-        confidence: confidence * 0.85,
-        sampleCount: totalSamples,
-        lastUpdated: new Date().toISOString(),
-      });
+      if (Object.keys(perRegime).length > 0) {
+        const key = getCtxIsPaper() ? 'p_regime_buy_thresholds' : 'l_regime_buy_thresholds';
+        await getPool().query(
+          `INSERT INTO system_state (key, value, updated_at)
+           VALUES ($1, $2, NOW())
+           ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = NOW()`,
+          [key, JSON.stringify(perRegime)],
+        );
+        logger.info(
+          `🎯 레짐별 buy_threshold: ${Object.entries(perRegime).map(([r, t]) => `${r}=${t}`).join(', ')}`,
+          { component: 'LEARN' },
+        );
+      }
+    } catch (e) {
+      // 폴백: 레짐별 분석 실패 시 글로벌 결과만 반환
+      logger.warn(`레짐별 buy_threshold 분석 실패 → 글로벌만: ${e}`, { component: 'LEARN' });
     }
 
     if (insights.length > 0) {
       logger.info(
-        `🎯 buy_threshold 분석: 현재 ${currentThreshold}점 | 이하승률 ${(belowWinRate * 100).toFixed(0)}%(${below.length}건) | 이상승률 ${(aboveWinRate * 100).toFixed(0)}%(${above.length}건) → ${insights.length}건 권장`,
+        `🎯 buy_threshold 분석 완료: ${insights.length}건 인사이트`,
         { component: 'LEARN' },
       );
     }
@@ -111,6 +108,97 @@ export async function analyzeBuyThreshold(): Promise<LearnedInsight[]> {
     logger.warn(`buy_threshold 분석 실패: ${err}`, { component: 'LEARN' });
     return [];
   }
+}
+
+/** buy_threshold 분석 내부 헬퍼 — 글로벌/레짐별 공통 */
+function _analyzeThresholdForData(
+  rows: any[],
+  currentThreshold: number,
+  label: string,
+): LearnedInsight[] {
+  if (rows.length < 15) return [];
+
+  const below = rows.filter((r: any) => Number(r.entry_score) < currentThreshold);
+  const above = rows.filter((r: any) => Number(r.entry_score) >= currentThreshold);
+
+  if (below.length < 5 || above.length < 5) return [];
+
+  const belowWinRate = below.filter((r: any) => r.outcome === 'WIN').length / below.length;
+  const aboveWinRate = above.filter((r: any) => r.outcome === 'WIN').length / above.length;
+  const belowAvgPnl = below.reduce((s: number, r: any) => s + Number(r.realized_pnl_pct), 0) / below.length;
+
+  const totalSamples = rows.length;
+  const confidence = Math.min(0.85, 0.55 + totalSamples * 0.015);
+  const insights: LearnedInsight[] = [];
+
+  if (belowWinRate < 0.38 && belowAvgPnl < 0 && aboveWinRate > belowWinRate + 0.1) {
+    let bestThreshold = currentThreshold + 5;
+    let bestAboveWinRate = 0;
+    for (let t = currentThreshold + 3; t <= Math.min(80, currentThreshold + 12); t += 3) {
+      const atOrAbove = rows.filter((r: any) => Number(r.entry_score) >= t);
+      if (atOrAbove.length < 5) break;
+      const wr = atOrAbove.filter((r: any) => r.outcome === 'WIN').length / atOrAbove.length;
+      if (wr > bestAboveWinRate) {
+        bestAboveWinRate = wr;
+        bestThreshold = t;
+      }
+    }
+
+    insights.push({
+      category: 'WIN_PATTERN',
+      insight: `매수 임계값 자동최적화 (${label}): ${currentThreshold}점 미만 실거래 승률 ${(belowWinRate * 100).toFixed(0)}% (${below.length}건, 평균손익 ${belowAvgPnl.toFixed(1)}%). 임계값 ${bestThreshold}점으로 상향하면 진입 품질 개선.`,
+      recommendation: `buy_threshold: ${currentThreshold} → ${bestThreshold} (${label} ${totalSamples}건 분석)`,
+      paramChange: label === '전체' ? {
+        field: 'buy_threshold',
+        value: bestThreshold,
+        reason: `임계값 이하 승률 ${(belowWinRate * 100).toFixed(0)}% 개선 목적`,
+      } : undefined,
+      confidence,
+      sampleCount: totalSamples,
+      lastUpdated: new Date().toISOString(),
+    });
+  }
+
+  if (belowWinRate >= 0.52 && belowAvgPnl > 0 && currentThreshold > 55 && below.length >= 8) {
+    const suggestedThreshold = Math.max(53, currentThreshold - 5);
+    insights.push({
+      category: 'WIN_PATTERN',
+      insight: `매수 임계값 자동최적화 (${label}): ${currentThreshold}점 미만에서도 승률 ${(belowWinRate * 100).toFixed(0)}% (${below.length}건, 평균손익 ${belowAvgPnl.toFixed(1)}%). 임계값 ${suggestedThreshold}점 하향으로 기회 확대 가능.`,
+      recommendation: `buy_threshold: ${currentThreshold} → ${suggestedThreshold} (${label})`,
+      paramChange: label === '전체' ? {
+        field: 'buy_threshold',
+        value: suggestedThreshold,
+        reason: `임계값 이하도 수익 확인 → 기회 확대`,
+      } : undefined,
+      confidence: confidence * 0.85,
+      sampleCount: totalSamples,
+      lastUpdated: new Date().toISOString(),
+    });
+  }
+
+  return insights;
+}
+
+/** 데이터셋에서 최적 threshold 탐색 */
+function _findOptimalThreshold(rows: any[]): number | null {
+  let bestThreshold: number | null = null;
+  let bestScore = -Infinity;
+
+  for (let t = 55; t <= 90; t += 3) {
+    const above = rows.filter((r: any) => Number(r.entry_score) >= t);
+    if (above.length < 5) continue;
+    const winRate = above.filter((r: any) => r.outcome === 'WIN').length / above.length;
+    const avgPnl = above.reduce((s: number, r: any) => s + Number(r.realized_pnl_pct), 0) / above.length;
+    // 최적화 기준: 승률 × 양수 PnL, 충분한 거래 기회 유지
+    const opportunityCost = 1.0 - above.length / rows.length; // 높은 threshold = 기회 감소
+    const score = winRate * Math.max(avgPnl, 0.01) - opportunityCost * 0.5;
+    if (score > bestScore) {
+      bestScore = score;
+      bestThreshold = t;
+    }
+  }
+
+  return bestThreshold;
 }
 
 export async function calibrateScoreTierParams(market: 'KR' | 'US' = 'KR'): Promise<void> {

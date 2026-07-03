@@ -1100,26 +1100,26 @@ export function generatePartialTpDecisions(
     // 수정: stage1=2.5%/20%, stage2=5.0%/30%, 전량은 generateSellDecisions TP에 위임
     if (chain.strategy_mode === 'SWING') {
       if (pnlPct >= 5.0) {
-        const qty = Math.ceil(chain.total_quantity * 0.30);
+        const qty = Math.ceil(chain.total_quantity * 0.50);
         if (qty > 0 && qty < chain.total_quantity) {
           decisions.push({
             action: 'PARTIAL_SELL',
             stock_code: chain.stock_code,
             quantity: qty,
             price_type: 'MARKET',
-            reasoning: `SWING 단계익절2(30%): +${pnlPct.toFixed(1)}% — 나머지 70% TP(7%) 대기`,
+            reasoning: `SWING 단계익절2(50%): +${pnlPct.toFixed(1)}% — 나머지 50% TP(7%) 대기`,
             confidence: 0.88,
           });
         }
       } else if (pnlPct >= 2.5) {
-        const qty = Math.ceil(chain.total_quantity * 0.20);
+        const qty = Math.ceil(chain.total_quantity * 0.40);
         if (qty > 0 && qty < chain.total_quantity) {
           decisions.push({
             action: 'PARTIAL_SELL',
             stock_code: chain.stock_code,
             quantity: qty,
             price_type: 'MARKET',
-            reasoning: `SWING 단계익절1(20%): +${pnlPct.toFixed(1)}% — 나머지 80% 5% 목표`,
+            reasoning: `SWING 단계익절1(40%): +${pnlPct.toFixed(1)}% — 나머지 60% 5% 목표`,
             confidence: 0.85,
           });
         }

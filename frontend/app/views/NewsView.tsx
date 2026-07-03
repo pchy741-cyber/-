@@ -9,9 +9,10 @@ import { NewsSummaryPanel } from './news/NewsSummaryPanel';
 
 import type { WatchlistItem } from '../types';
 
-interface RegimeSummary { summary: string; regime: string; score: number; recommended: string; reasons: string[] }
+interface RegimeSummary { summary: string; regime: string; score: number; recommended: string; reasons: string[]; usMarket?: { trend: string; spy: number; qqq: number; breadth: string } | null }
 interface YTVideo { title: string; link: string; channel: string; publishedAt: string; sentiment: 'bullish' | 'bearish' | 'neutral'; sentimentScore: number }
 interface StockNewsEntry { stockCode: string; items: Array<{ title: string; link?: string; publishedAt?: string }> }
+interface MacroHeadlineItem { title: string; link: string; source: string; publishedAt: string; relativeTime?: string }
 
 /** 상대 시간 (KST) */
 function relativeTime(t: string): string {
@@ -26,7 +27,7 @@ function relativeTime(t: string): string {
 
 function NewsView({ watchlist, setWatchlist, viewMode = 'live' }: { watchlist: WatchlistItem[]; setWatchlist: React.Dispatch<React.SetStateAction<WatchlistItem[]>>; viewMode?: string }) {
   const [stockNews, setStockNews] = useState<StockNewsEntry[]>([]);
-  const [macroNews, setMacroNews] = useState<string[]>([]);
+  const [macroNews, setMacroNews] = useState<MacroHeadlineItem[]>([]);
   const [summary, setSummary] = useState<string>('');
   const [summaryError, setSummaryError] = useState<string | null>(null);
   const [summaryHeadlines, setSummaryHeadlines] = useState(0);
@@ -94,11 +95,11 @@ function NewsView({ watchlist, setWatchlist, viewMode = 'live' }: { watchlist: W
   useEffect(() => {
     const loadAll = () => {
       api('/news').then((d: StockNewsEntry[]) => setStockNews(Array.isArray(d) ? d : [])).catch(() => setStockNews([])).finally(() => setLoading(false));
-      api('/news/macro').then((d: { headlines?: string[] }) => setMacroNews(Array.isArray(d?.headlines) ? d.headlines : [])).catch(() => setMacroNews([])).finally(() => setMacroLoading(false));
+      api('/news/macro').then((d: { headlines?: MacroHeadlineItem[] }) => setMacroNews(Array.isArray(d?.headlines) ? d.headlines.filter((h) => h && typeof h.title === 'string') : [])).catch(() => setMacroNews([])).finally(() => setMacroLoading(false));
       fetchSummaryRef.current?.(false);
       api('/ai-status').then((d: { gemini: string; claude: string; activeEngine: string }) => setAiEngineStatus(d)).catch(() => {});
       api('/news/theme', { timeout: 35000 }).then((d: { theme?: string; reason?: string; stocks?: Array<{ code: string; name: string; market: string }> }) => setTheme(d?.theme ? d as { theme: string; reason: string; stocks: Array<{ code: string; name: string; market: string }> } : null)).catch(() => setTheme(null)).finally(() => setThemeLoading(false));
-      api('/news/regime-summary').then((d: { summary?: string }) => setRegime(d?.summary ? d as RegimeSummary : null)).catch(() => {});
+      api('/news/regime-summary').then((d: RegimeSummary & { usMarket?: RegimeSummary['usMarket'] }) => setRegime(d?.summary ? d : null)).catch(() => {});
       api('/news/youtube').then((d: { videos?: YTVideo[] }) => setYtVideos(Array.isArray(d?.videos) ? d.videos : [])).catch(() => setYtVideos([])).finally(() => setYtLoading(false));
     };
     loadAll();
@@ -123,6 +124,21 @@ function NewsView({ watchlist, setWatchlist, viewMode = 'live' }: { watchlist: W
     regime.regime === 'BEARISH' ? '📉' :
     regime.regime === 'PANIC' ? '🚨' : '📊';
 
+  const regimeLabel = !regime ? '' :
+    regime.regime === 'BULLISH' ? '상승장' :
+    regime.regime === 'BEARISH' ? '하락장' :
+    regime.regime === 'PANIC' ? '패닉장' : '보합장';
+
+  const usMarket = regime?.usMarket;
+  const usTrendLabel = !usMarket ? '' :
+    usMarket.trend === 'BULLISH' ? '상승' :
+    usMarket.trend === 'BEARISH' ? '하락' : '보합';
+  const usTrendColor = !usMarket ? '' :
+    usMarket.trend === 'BULLISH' ? 'text-emerald-400' :
+    usMarket.trend === 'BEARISH' ? 'text-rose-400' : 'text-slate-400';
+
+  const todayStr = new Date().toLocaleDateString('ko-KR', { month: 'long', day: 'numeric', weekday: 'short' });
+
   // 센티멘트 게이지 (유튜브 기반)
   const sentimentData = (() => {
     if (ytVideos.length === 0) return null;
@@ -138,50 +154,88 @@ function NewsView({ watchlist, setWatchlist, viewMode = 'live' }: { watchlist: W
 
   return (
     <div className="space-y-4">
-      {/* ═══ 상단 장세 + 센티멘트 히어로 ═══ */}
+      {/* ═══ 상단 장세 히어로 — 국내 + 해외 ═══ */}
       {regime && (
-        <div className={`relative overflow-hidden rounded-2xl bg-gradient-to-r ${regimeGradient} border ${regimeBorder} p-5`}>
+        <div className={`relative overflow-hidden rounded-2xl bg-gradient-to-r ${regimeGradient} border ${regimeBorder}`}>
+          {/* 날짜 + 배경 아이콘 */}
           <div className="absolute top-0 right-0 w-32 h-32 opacity-10 text-7xl flex items-center justify-center pointer-events-none">
             {regimeIcon}
           </div>
-          <div className="flex items-start gap-4">
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2 mb-2">
-                <span className="text-xl">{regimeIcon}</span>
-                <span className={`text-xs font-bold px-2.5 py-1 rounded-full ${
-                  regime.regime === 'BULLISH' ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30' :
-                  regime.regime === 'BEARISH' ? 'bg-rose-500/15 text-rose-400 border border-rose-500/30' :
-                  regime.regime === 'PANIC' ? 'bg-red-500/20 text-red-400 border border-red-500/30' :
-                  'bg-slate-800 text-slate-400 border border-slate-700'
-                }`}>{regime.recommended}</span>
-                {regime.score !== 0 && (
-                  <span className="text-[10px] text-slate-500 ml-1">점수 {regime.score}</span>
-                )}
-              </div>
-              <p className="text-sm text-slate-200 leading-relaxed font-medium">{regime.summary}</p>
-              {regime.reasons.length > 0 && (
-                <div className="flex flex-wrap gap-1.5 mt-2.5">
-                  {regime.reasons.slice(0, 4).map((r, i) => (
-                    <span key={i} className="text-[10px] px-2 py-0.5 rounded-md bg-white/[0.04] text-slate-400 border border-white/[0.06]">{r}</span>
-                  ))}
-                </div>
+
+          <div className="p-5 pb-3">
+            <div className="flex items-center gap-2 mb-3">
+              <span className="text-xl">{regimeIcon}</span>
+              <span className={`text-xs font-bold px-2.5 py-1 rounded-full ${
+                regime.regime === 'BULLISH' ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30' :
+                regime.regime === 'BEARISH' ? 'bg-rose-500/15 text-rose-400 border border-rose-500/30' :
+                regime.regime === 'PANIC' ? 'bg-red-500/20 text-red-400 border border-red-500/30' :
+                'bg-slate-800 text-slate-400 border border-slate-700'
+              }`}>{regimeLabel}</span>
+              <span className="text-[10px] text-slate-500">{regime.recommended}</span>
+              {regime.score !== 0 && (
+                <span className="text-[10px] text-slate-600">({regime.score > 0 ? '+' : ''}{regime.score})</span>
               )}
+              <span className="text-[10px] text-slate-600 ml-auto">{todayStr}</span>
             </div>
+            <p className="text-sm text-slate-200 leading-relaxed font-medium">{regime.summary}</p>
+            {regime.reasons.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 mt-2.5">
+                {regime.reasons.slice(0, 5).map((r, i) => (
+                  <span key={i} className="text-[10px] px-2 py-0.5 rounded-md bg-white/[0.04] text-slate-400 border border-white/[0.06]">{r}</span>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* 국내/해외 + 센티멘트 하단 바 */}
+          <div className="border-t border-white/[0.06] px-5 py-3 flex items-center gap-4 flex-wrap">
+            {/* 국내장 */}
+            <div className="flex items-center gap-1.5">
+              <span className="text-[10px] text-slate-500 font-medium">🇰🇷 국내</span>
+              <span className={`text-[11px] font-bold ${
+                regime.regime === 'BULLISH' ? 'text-emerald-400' :
+                regime.regime === 'BEARISH' ? 'text-rose-400' :
+                regime.regime === 'PANIC' ? 'text-red-400' : 'text-slate-300'
+              }`}>{regimeLabel}</span>
+            </div>
+
+            <div className="w-px h-4 bg-white/[0.08]" />
+
+            {/* 해외장 */}
+            {usMarket ? (
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] text-slate-500 font-medium">🇺🇸 미국</span>
+                <span className={`text-[11px] font-bold ${usTrendColor}`}>{usTrendLabel}</span>
+                <span className={`text-[10px] ${usMarket.spy >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                  SPY {usMarket.spy >= 0 ? '+' : ''}{usMarket.spy.toFixed(1)}%
+                </span>
+                <span className={`text-[10px] ${usMarket.qqq >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                  QQQ {usMarket.qqq >= 0 ? '+' : ''}{usMarket.qqq.toFixed(1)}%
+                </span>
+                <span className="text-[9px] text-slate-600">({usMarket.breadth})</span>
+              </div>
+            ) : (
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] text-slate-500 font-medium">🇺🇸 미국</span>
+                <span className="text-[10px] text-slate-600">—</span>
+              </div>
+            )}
 
             {/* 센티멘트 미니 게이지 */}
             {sentimentData && (
-              <div className="shrink-0 w-24 text-center">
-                <div className="text-[9px] text-slate-500 mb-1.5 font-medium tracking-wider">SENTIMENT</div>
-                <div className="relative h-2 rounded-full bg-slate-800 overflow-hidden mb-1.5">
-                  <div className="absolute left-0 top-0 h-full bg-emerald-500/70 rounded-l-full transition-all" style={{ width: `${sentimentData.bullPct}%` }} />
-                  <div className="absolute right-0 top-0 h-full bg-rose-500/70 rounded-r-full transition-all" style={{ width: `${sentimentData.bearPct}%` }} />
+              <>
+                <div className="w-px h-4 bg-white/[0.08]" />
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] text-slate-500 font-medium">🎬 센티</span>
+                  <div className="relative w-16 h-1.5 rounded-full bg-slate-800 overflow-hidden">
+                    <div className="absolute left-0 top-0 h-full bg-emerald-500/70 rounded-l-full" style={{ width: `${sentimentData.bullPct}%` }} />
+                    <div className="absolute right-0 top-0 h-full bg-rose-500/70 rounded-r-full" style={{ width: `${sentimentData.bearPct}%` }} />
+                  </div>
+                  <span className="text-[9px] text-emerald-400 font-bold">{sentimentData.bullPct}%</span>
+                  <span className="text-[9px] text-slate-600">/</span>
+                  <span className="text-[9px] text-rose-400 font-bold">{sentimentData.bearPct}%</span>
                 </div>
-                <div className="flex justify-between text-[9px]">
-                  <span className="text-emerald-400 font-bold">{sentimentData.bullPct}%</span>
-                  <span className="text-rose-400 font-bold">{sentimentData.bearPct}%</span>
-                </div>
-                <div className="text-[9px] text-slate-600 mt-0.5">{sentimentData.total}개 영상</div>
-              </div>
+              </>
             )}
           </div>
         </div>
@@ -254,22 +308,23 @@ function NewsView({ watchlist, setWatchlist, viewMode = 'live' }: { watchlist: W
           ) : macroNews.length === 0 ? (
             <p className="text-xs text-slate-600 text-center py-3">수집된 매크로 뉴스가 없습니다</p>
           ) : (
-            <div className="space-y-1">
-              {macroNews.map((line, i) => {
-                const match = line.match(/^\[(.+?)\]\((.+?)\)(\s*—\s*(.*))?$/);
+            <div className="space-y-0.5">
+              {macroNews.map((item, i) => {
+                const timeStr = item.publishedAt ? relativeTime(item.publishedAt) : item.relativeTime ?? '';
                 return (
                   <div key={i} className="flex items-start gap-2.5 py-1.5 group">
                     <div className="w-1 h-1 rounded-full bg-blue-500/50 mt-2 shrink-0 group-hover:bg-blue-400 transition-colors" />
                     <div className="flex-1 min-w-0 text-[13px]">
-                      {match ? (
-                        <>
-                          <a href={match[2]} target="_blank" rel="noopener noreferrer"
-                            className="text-slate-300 hover:text-blue-300 hover:underline transition-colors">{match[1]}</a>
-                          {match[4] && <span className="text-slate-600 text-[11px] ml-1.5">— {match[4]}</span>}
-                        </>
+                      {item.link ? (
+                        <a href={item.link} target="_blank" rel="noopener noreferrer"
+                          className="text-slate-300 hover:text-blue-300 hover:underline transition-colors">{item.title}</a>
                       ) : (
-                        <span className="text-slate-300">{line}</span>
+                        <span className="text-slate-300">{item.title}</span>
                       )}
+                    </div>
+                    <div className="shrink-0 flex items-center gap-1.5 mt-0.5">
+                      {item.source && <span className="text-[10px] text-slate-600">{item.source}</span>}
+                      {timeStr && <span className="text-[10px] text-slate-700">{timeStr}</span>}
                     </div>
                   </div>
                 );

@@ -805,6 +805,13 @@ async function _runLearningForMode(isPaper: boolean): Promise<void> {
       calibrateScoreTierParams('KR').catch((e) => logger.warn(`티어 파라미터 보정 [KR] 실패: ${e}`, { component: 'LEARN' })),
       calibrateScoreTierParams('US').catch((e) => logger.warn(`티어 파라미터 보정 [US] 실패: ${e}`, { component: 'LEARN' })),
     ]);
+    // Tier 4: 보너스 가중치 자동 학습
+    try {
+      const { calibrateBonusWeights } = await import('./bonus-calibration.js');
+      await calibrateBonusWeights();
+    } catch (e) {
+      logger.warn(`보너스 가중치 캘리브레이션 실패: ${e}`, { component: 'LEARN' });
+    }
     // 앙상블 가중치 자동 튜닝 — 모델별 실거래 성과 기반
     await autoTuneEnsembleWeights().catch((e) => logger.warn(`앙상블 가중치 튜닝 실패: ${e}`, { component: 'LEARN' }));
     // 적용된 인사이트 효과 평가 → 악화 시 자동 롤백

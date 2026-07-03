@@ -33,6 +33,29 @@ export interface MarketRegime {
   reasons: string[];
 }
 
+// ── ⑧ AI 뉴스 분석 → regime 스코어 (v22.1 하이브리드) ──
+// FinBERT + Gemini 분석 결과를 regime 점수로 변환
+// 기존 키워드 매칭 대신 AI가 판단한 regimeAdjustment 직접 사용
+async function assessNewsShockForRegime(): Promise<{ score: number; reasons: string[] }> {
+  try {
+    const { analyzeNewsHeadlines, getCachedNewsAnalysis } = await import('./news-analyzer.js');
+
+    // 캐시 우선 (30분 TTL)
+    let analysis = getCachedNewsAnalysis();
+    if (!analysis) {
+      analysis = await analyzeNewsHeadlines();
+    }
+
+    if (analysis.regimeAdjustment === 0) return { score: 0, reasons: [] };
+
+    const src = analysis.analysisSource === 'hybrid' ? 'AI' : analysis.analysisSource === 'finbert_only' ? 'FinBERT' : '키워드';
+    const reason = `뉴스${src}: ${analysis.marketImpactSummary || `조정 ${analysis.regimeAdjustment}`}`;
+    return { score: analysis.regimeAdjustment, reasons: [reason] };
+  } catch {
+    return { score: 0, reasons: [] };
+  }
+}
+
 // ── KOSPI 최근 5일 종가 (Naver) ──
 async function fetchKospiHistory(): Promise<number[]> {
   try {
@@ -122,13 +145,14 @@ async function fetchKospi200Change(): Promise<number> {
 export async function detectMarketRegime(): Promise<MarketRegime> {
   const reasons: string[] = [];
 
-  // 병렬 데이터 수집 (FRED 매크로 추가 — Gemini 미관여, 독립 신호)
-  const [macro, kospiHistory, foreignNet, kospi200Change, fredAdj] = await Promise.all([
+  // 병렬 데이터 수집 (FRED 매크로 + 뉴스 충격 — Gemini 미관여, 독립 신호)
+  const [macro, kospiHistory, foreignNet, kospi200Change, fredAdj, newsShockAdj] = await Promise.all([
     getMacroSnapshot().catch(() => null),
     fetchKospiHistory(),
     fetchMarketForeignNet(),
     fetchKospi200Change(),
     import('../market/fred-macro.js').then((m) => m.getFredMacroAdjustment()).catch(() => ({ score: 0, reasons: [] })),
+    assessNewsShockForRegime().catch(() => ({ score: 0, reasons: [] as string[] })),
   ]);
 
   const kospiChange = macro?.kospiChange ?? 0;
@@ -228,6 +252,13 @@ export async function detectMarketRegime(): Promise<MarketRegime> {
   if (fredAdj.score !== 0) {
     score += fredAdj.score;
     for (const r of fredAdj.reasons) reasons.push(`FRED: ${r}`);
+  }
+
+  // ⑧ 매크로 뉴스 충격 (v22: 국민연금·금리인상·전쟁 등 대형 이벤트)
+  // 가격이 아직 안 움직여도 뉴스가 확산 중이면 선제 감점 (최대 -4점)
+  if (newsShockAdj.score !== 0) {
+    score += newsShockAdj.score;
+    for (const r of newsShockAdj.reasons) reasons.push(r);
   }
 
   // ── 체제 판단 ──

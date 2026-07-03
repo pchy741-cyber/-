@@ -6,10 +6,30 @@
  */
 
 import { detectStructuralPatterns, volumeProfile } from '../../../analysis/indicators.js';
+import { analyzeSequencePatterns } from '../../../analysis/sequence-patterns.js';
+import type { BonusWeights } from '../../../automation/self-learning/bonus-calibration.js';
 import { logger } from '../../../utils/logger.js';
 import { getKSTNow } from '../../../utils/time.js';
 import { PRIORITY_SECTOR_CODES } from '../trading-rules.js';
 import type { ScoringInput, SignalData, TechScoring } from './types.js';
+
+// ── Tier 4: 보너스 가중치 캐시 (비동기 로드 → 동기 적용) ──
+let _bonusWeights: BonusWeights | null = null;
+let _bonusWeightsLoadedAt = 0;
+const BONUS_WEIGHTS_TTL = 30 * 60 * 1000; // 30분
+
+/** 보너스 가중치 비동기 갱신 (fire-and-forget) */
+function refreshBonusWeightsIfStale(): void {
+  if (_bonusWeights && Date.now() - _bonusWeightsLoadedAt < BONUS_WEIGHTS_TTL) return;
+  import('../../../automation/self-learning/bonus-calibration.js')
+    .then((m) => m.getBonusWeights())
+    .then((w) => { _bonusWeights = w; _bonusWeightsLoadedAt = Date.now(); })
+    .catch(() => { /* 실패 시 기본값 유지 */ });
+}
+
+function bw(key: keyof BonusWeights): number {
+  return _bonusWeights?.[key] ?? 1.0;
+}
 
 /** KIS 시그널에서 필요한 값만 추출 */
 function extractSignals(signals: ScoringInput['signals']): SignalData {
@@ -64,6 +84,9 @@ export function computeScoring(input: ScoringInput): TechScoring {
   const { stock, tech, candles, price, signals, mode, megaCap } = input;
   const code = stock.stock_code;
   const curPrice = price.currentPrice;
+
+  // Tier 4: 보너스 가중치 비동기 갱신 트리거
+  refreshBonusWeightsIfStale();
 
   // ── 캔들 패턴 ──
   const hasBullishCandle = tech.candlePatterns.some((p) => p.bullish && p.strength === 'STRONG');
@@ -165,19 +188,35 @@ export function computeScoring(input: ScoringInput): TechScoring {
     });
   }
 
-  // ── 합산 ──
+  // ── Tier 5: 시퀀스 패턴 보너스 ──
+  let sequenceBonus = 0;
+  try {
+    const seqResult = analyzeSequencePatterns(candles);
+    sequenceBonus = seqResult.bonus;
+    if (sequenceBonus !== 0) {
+      logger.info(
+        `  🔢 ${code}: 시퀀스 ${sequenceBonus > 0 ? '+' : ''}${sequenceBonus}점 [${seqResult.details.join(', ')}]`,
+        { component: 'TRACK_B' },
+      );
+    }
+  } catch {
+    // 폴백: sequenceBonus = 0
+  }
+
+  // ── 합산 (Tier 4: 보너스 가중치 적용) ──
   let effectiveTechScore =
     tech.score +
-    priorityBonus +
-    candleBonus +
-    structBonus +
-    vpBonus +
-    pullbackBonus +
-    fibBonus +
-    signalBonus +
-    rsiDivBonus +
-    bbSqueezeBonus +
-    volumeClimaxPenalty;
+    Math.round(priorityBonus * bw('priorityBonus')) +
+    Math.round(candleBonus * bw('candleBonus')) +
+    Math.round(structBonus * bw('structBonus')) +
+    Math.round(vpBonus * bw('vpBonus')) +
+    Math.round(pullbackBonus * bw('pullbackBonus')) +
+    Math.round(fibBonus * bw('fibBonus')) +
+    Math.round(signalBonus * bw('signalBonus')) +
+    Math.round(rsiDivBonus * bw('rsiDivBonus')) +
+    Math.round(bbSqueezeBonus * bw('bbSqueezeBonus')) +
+    Math.round(volumeClimaxPenalty * bw('volumeBonus')) +
+    Math.round(sequenceBonus * bw('sequenceBonus'));
   const isFibSupport = fibBonus >= 10 && tech.macdCrossover !== 'BEARISH';
 
   // ── 5일 고점/금일 변화율 ──
@@ -205,6 +244,38 @@ export function computeScoring(input: ScoringInput): TechScoring {
       { component: 'TRACK_B' },
     );
   }
+
+  // ── v22: 모멘텀 품질 체크 — RSI 방향 + 거래량 동반 = 진짜 모멘텀 ──
+  // RSI 하락 중 + 거래량 부족 = 가짜 시그널 → 감점
+  // RSI 상승 중 + 적정 거래량 = 진짜 모멘텀 → 가점
+  let momentumQualityAdj = 0;
+  try {
+    if (candles.length >= 3) {
+      const rsi0 = tech.rsi14; // 현재 RSI
+      // RSI 추세 판단 (최근 캔들 기반)
+      const rsiRising = rsi0 >= 40 && rsi0 <= 70 && tech.catMomentum > 0;
+      const rsiFalling = rsi0 > 60 && tech.catMomentum < -5;
+
+      if (rsiRising && adjustedVolRatio >= 1.0 && adjustedVolRatio <= 3.0) {
+        // RSI 적정 구간에서 상승 + 거래량 동반 = 양질의 모멘텀
+        momentumQualityAdj = +8;
+      } else if (rsiFalling && adjustedVolRatio < 0.8) {
+        // RSI 하락 + 거래량 감소 = 매도 분위기
+        momentumQualityAdj = -10;
+      } else if (rsi0 > 75 && adjustedVolRatio >= 2.0) {
+        // RSI 과매수 + 거래량 폭증 = 고점 소진
+        momentumQualityAdj = -12;
+      }
+
+      if (momentumQualityAdj !== 0) {
+        effectiveTechScore += momentumQualityAdj;
+        logger.info(
+          `  📈 ${code}: 모멘텀품질 ${momentumQualityAdj > 0 ? '+' : ''}${momentumQualityAdj}점 (RSI=${rsi0.toFixed(0)} mom=${tech.catMomentum} vol=${adjustedVolRatio.toFixed(1)}x)`,
+          { component: 'TRACK_B' },
+        );
+      }
+    }
+  } catch { /* 폴백: adj=0 */ }
 
   // ── minTechScore ──
   const minTechScore = megaCap ? 45 : 55;

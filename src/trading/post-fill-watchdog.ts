@@ -20,6 +20,7 @@ import { OrderType, type StrategyMode } from '../config/constants.js';
 import { adjustToTickSize } from '../utils/money.js';
 import { logger } from '../utils/logger.js';
 import { getCachedPriceMemory } from '../cache/memory.js';
+import { calculateATR } from '../automation/position-sizer.js';
 
 // ── Types ──
 
@@ -34,6 +35,9 @@ interface WatchdogEntry {
   startedAt: number;
   isPaper: boolean;
   strategyMode: StrategyMode;
+  // v23: Chandelier Exit 트레일링 (근거: 승률 51.3%, PF 1.61 — stratbase.ai backtest)
+  peakPrice: number; // 진입 후 최고가 추적
+  atrValue: number; // ATR(14) 값 (원) — 진입 시 계산
 }
 
 // ── State ──
@@ -89,8 +93,18 @@ export async function startWatchdog(params: {
     }
   }
 
-  // 2. 상태 저장
-  const entry: WatchdogEntry = { ...params, tpOrderNo, startedAt: Date.now() };
+  // 2. v23: Chandelier Exit용 ATR 계산 + 고점 초기화
+  let atrValue = 0;
+  try {
+    atrValue = await calculateATR(params.stockCode);
+  } catch { /* ATR 실패 시 0 → Chandelier 비활성, 기존 SL만 사용 */ }
+  const entry: WatchdogEntry = {
+    ...params,
+    tpOrderNo,
+    startedAt: Date.now(),
+    peakPrice: params.avgBuyPrice,
+    atrValue,
+  };
   await saveState(entry);
 
   // 3. 폴링 타이머 시작
@@ -142,6 +156,9 @@ export async function recoverWatchdogs(): Promise<void> {
     for (const row of rows) {
       try {
         const entry = JSON.parse(row.value) as WatchdogEntry;
+        // v23: 이전 형식 호환 (peakPrice/atrValue 없는 기존 상태)
+        if (entry.peakPrice == null) entry.peakPrice = entry.avgBuyPrice;
+        if (entry.atrValue == null) entry.atrValue = 0;
         const elapsed = Date.now() - entry.startedAt;
 
         if (elapsed >= TOTAL_MS) {
@@ -221,6 +238,26 @@ async function checkSL(entry: WatchdogEntry): Promise<void> {
     }
 
     const pnlPct = ((currentPrice - entry.avgBuyPrice) / entry.avgBuyPrice) * 100;
+
+    // v23: Chandelier Exit 트레일링 — 고점 갱신 + ATR 3x 동적 SL
+    // 근거: Chandelier Exit 승률 51.3%, PF 1.61 (stratbase.ai backtest)
+    if (currentPrice > entry.peakPrice) {
+      entry.peakPrice = currentPrice;
+    }
+    if (entry.atrValue > 0 && entry.peakPrice > entry.avgBuyPrice) {
+      const chandelierStop = entry.peakPrice - 3.0 * entry.atrValue;
+      const chandelierPct = ((chandelierStop - entry.avgBuyPrice) / entry.avgBuyPrice) * 100;
+      // SL은 위로만 이동 (더 타이트하게만 조정 — 기존 SL보다 높을 때만)
+      if (chandelierPct > entry.stopLossPct) {
+        const oldSl = entry.stopLossPct;
+        entry.stopLossPct = chandelierPct;
+        await saveState(entry);
+        logger.info(
+          `🛡️ Chandelier 트레일링: ${entry.stockCode} SL ${oldSl.toFixed(1)}%→${chandelierPct.toFixed(1)}% (peak=${entry.peakPrice.toLocaleString()}, ATR=${entry.atrValue.toFixed(0)})`,
+          { component: 'WATCHDOG' },
+        );
+      }
+    }
 
     // SL 트리거
     if (pnlPct <= entry.stopLossPct) {

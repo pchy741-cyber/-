@@ -125,6 +125,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       recentlySoldCodes,
       balance,
       lossHistory,
+      repeatLoserCodes,
       ctxIsPaper,
       pendingPreMarketCodes,
     } = await loadPipelineData();
@@ -160,7 +161,8 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     const dbMode = (strategy?.mode ?? 'SWING') as StrategyMode;
     // ── 장초반 09:00-09:30 신규 매수 차단 (매도는 허용) ──
     // SNIPER/DEFENSE는 개장벨에도 모드 유지 (SNIPER는 CEO가 명시적으로 설정한 집중 전략)
-    const isOpeningVolatility = kstH === 9 && kstM < 20 && !getCtxIsPaper(); // v10.5: 09:40→09:20
+    // v21: 09:20→09:30 (실전 14일: 개장 30분 변동성 흡수 후 안정적 진입)
+    const isOpeningVolatility = kstH === 9 && kstM < 30 && !getCtxIsPaper();
     const mode: StrategyMode = dbMode;
 
     // ── 방어 파킹 시스템 ──────────────────────────────────────────────
@@ -368,9 +370,11 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       /* cache optional */
     }
 
-    // ── 차트 데이터 수집 (동일 상위 35 + 보유종목 기준) ─────────────────
+    // ── 차트 데이터 수집 (워치리스트 + 보유종목 + 손실이력 종목) ─────────────────
+    // v23: 손실이력 종목도 차트 로딩 → "차트 데이터 부족" 28개 일괄차단 해소
     const chartData = new Map<string, import('../../kis/market.js').DailyCandle[]>();
-    const allCodesForChart = [...new Set([...sortedWatchlistCodes, ...openChains.map((c) => c.stock_code)])];
+    const lossHistoryCodes = lossHistory ? [...lossHistory.keys()] : [];
+    const allCodesForChart = [...new Set([...sortedWatchlistCodes, ...openChains.map((c) => c.stock_code), ...lossHistoryCodes])];
     // v10.11: 모든 배치 동시 발사 (기존: 순차 배치 → 2+초 대기. rate limiter가 내부 큐 관리)
     const CHART_BATCH = 12;
     const chartDays = mode === 'BREAKOUT' ? 252 : 65;
@@ -387,7 +391,8 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       const results = allBatchResults[b];
       for (let j = 0; j < batch.length; j++) {
         const r = results[j];
-        if (r.status === 'fulfilled' && r.value.length >= 40) {
+        // v23: 40→25 (smart-reentry.ts 최소 25개와 일치)
+        if (r.status === 'fulfilled' && r.value.length >= 25) {
           chartData.set(batch[j], r.value);
         } else if (r.status === 'rejected') {
           logger.warn(`차트 조회 실패: ${batch[j]} - ${r.reason}`, { component: 'TRACK_B' });
@@ -716,6 +721,17 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
         }
       } catch {
         /* 동기화 실패해도 파이프라인 계속 */
+      }
+
+      // v22: 매수 후보 없으면 장중 실시간 발굴 (2시간 쿨다운, 10:00~14:30)
+      if (!hasBuyCandidates) {
+        try {
+          const { runMidDayDiscovery } = await import('../../automation/watchlist-rotation.js');
+          const discovered = await runMidDayDiscovery();
+          if (discovered.length > 0) {
+            logger.info(`🔎 장중 발굴 ${discovered.length}종목 → 다음 사이클에 AI 스코어링 적용`, { component: 'TRACK_B' });
+          }
+        } catch { /* 발굴 실패해도 계속 */ }
       }
     }
 
@@ -1480,6 +1496,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       macroSizingMult,
       softBlockSizingMult,
       lossHistory,
+      repeatLoserCodes,
       kospiBoost: kospiRegime.boost,
       allocationTarget: allocCfg
         ? {
@@ -1529,6 +1546,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
           macroSizingMult,
           softBlockSizingMult,
           lossHistory,
+          repeatLoserCodes,
           kospiBoost: kospiRegime.boost,
           allocationTarget: null,
           currentStockValue,

@@ -202,3 +202,43 @@ export async function getTodayRepeatStopCodes(minStops = 2): Promise<Set<string>
     return new Set();
   }
 }
+
+/**
+ * v21: 최근 14일 내 2회 이상 손절된 종목 → 7일 자동 블랙리스트
+ * 금호타이어(3연패 -66K), 한솔테크닉스(2연패 -35K) 패턴 원천 차단
+ *
+ * 로직: 14일 내 손절 2회+ AND 마지막 손절이 7일 이내 → 차단
+ */
+let _repeatLoserCache: Set<string> | null = null;
+let _repeatLoserCacheTs = 0;
+const REPEAT_LOSER_CACHE_TTL = 5 * 60 * 1000; // 5분
+
+export async function getRepeatLoserBlacklist(): Promise<Set<string>> {
+  if (isMemoryMode()) return new Set();
+
+  // 캐시 히트
+  if (_repeatLoserCache && Date.now() - _repeatLoserCacheTs < REPEAT_LOSER_CACHE_TTL) {
+    return _repeatLoserCache;
+  }
+
+  try {
+    const { rows } = await queryWithRetry(
+      `SELECT stock_code, COUNT(*) AS loss_count, MAX(closed_at) AS last_loss_at
+         FROM transaction_chains
+        WHERE status = 'CLOSED'
+          AND pnl_pct < 0
+          AND is_paper = $1
+          AND closed_at > NOW() - INTERVAL '14 days'
+        GROUP BY stock_code
+       HAVING COUNT(*) >= 2
+          AND MAX(closed_at) > NOW() - INTERVAL '7 days'`,
+      [getCtxIsPaper()],
+    );
+    const result = new Set(rows.map((r: { stock_code: string }) => r.stock_code));
+    _repeatLoserCache = result;
+    _repeatLoserCacheTs = Date.now();
+    return result;
+  } catch {
+    return _repeatLoserCache ?? new Set();
+  }
+}

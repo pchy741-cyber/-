@@ -221,10 +221,25 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
     // ── 환율 1회 조회 — 사이클 전체에서 동일 환율 사용 (환율 drift 방지) ──
     const cycleFxRate = await fetchExchangeRate();
 
+    // ── US 섹터 시그널 로깅 (US 세션일 때만) ──
+    const isUSSession = openRegions.has('US') || isUSExtended;
+    if (isUSSession) {
+      try {
+        const { getUSSectorSignals, getWeakSectors } = await import('../market/us-sector-signals.js');
+        const sectorSnap = await getUSSectorSignals();
+        const weakSectors = getWeakSectors(sectorSnap);
+        if (weakSectors.length > 0) {
+          logger.info(`📉 약세 섹터: ${weakSectors.join(', ')} — 해당 섹터 buyThreshold 상향 적용`, { component: 'OVERSEAS' });
+        }
+        logger.info(`📊 US 시장: ${sectorSnap.marketTrend} | breadth=${sectorSnap.bullishCount}/${sectorSnap.totalCount}`, { component: 'OVERSEAS' });
+      } catch (err) {
+        logger.debug(`US 섹터 시그널 로깅 실패: ${err}`, { component: 'OVERSEAS' });
+      }
+    }
+
     const allActiveStocks = GLOBAL_WATCHLIST.filter(
       (stock) => openRegions.has(stock.region) || (isUSExtended && stock.region === 'US'),
     );
-    const isUSSession = openRegions.has('US') || isUSExtended;
     const _isAsiaSession = openRegions.has('JP') || openRegions.has('TW');
     const regionFlags = isUSExtended ? '🌙' : openRegions.has('US') ? '🇺🇸' : '🌏';
 

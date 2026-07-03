@@ -7,6 +7,7 @@ import { getAIGeneratedInsights } from '../../ai/overseas/insights-generator.js'
 import { getOverseasInsightsForPrompt } from '../../automation/self-learning/overseas-analyzers.js';
 import { getPool } from '../../db/client.js';
 import { getFearGreedIndex } from '../../market/external-signals.js';
+import { formatSectorSignalsForPrompt, getUSSectorSignals } from '../../market/us-sector-signals.js';
 import { sendTelegramMessage } from '../../notifications/telegram.js';
 import { logger } from '../../utils/logger.js';
 import { callVertexGemini } from '../../utils/vertex-gemini.js';
@@ -100,8 +101,8 @@ export async function generateSessionBrief(): Promise<SessionStrategyBrief | nul
   try {
     _sessionId = `sess_${Date.now()}`;
 
-    // 병렬 데이터 수집
-    const [sentiment, holdings, cashPaper, cashLive, kelly, patterns, perfSummary, aiInsights] = await Promise.all([
+    // 병렬 데이터 수집 (US 섹터 시그널 포함)
+    const [sentiment, holdings, cashPaper, cashLive, kelly, patterns, perfSummary, aiInsights, sectorSnapshot] = await Promise.all([
       getFearGreedIndex().catch(() => null),
       getHoldings().catch(() => new Map()),
       getCash(true).catch(() => 0),
@@ -117,6 +118,7 @@ export async function generateSessionBrief(): Promise<SessionStrategyBrief | nul
       extractTradingPatterns().catch(() => []),
       getRecentPerfSummary().catch(() => ''),
       getAIGeneratedInsights().catch(() => ''),
+      getUSSectorSignals().catch(() => null),
     ]);
 
     // 보유 종목 코드 추출
@@ -148,10 +150,15 @@ export async function generateSessionBrief(): Promise<SessionStrategyBrief | nul
 
     const patternsSummary = patterns.map((p) => `- ${p.pattern}: ${p.evidence}`).join('\n') || '패턴 없음';
 
+    // US 섹터 시그널을 AI 프롬프트에 추가
+    const sectorPromptBlock = sectorSnapshot ? formatSectorSignalsForPrompt(sectorSnapshot) : '';
+
     const userMessage = [
       `【시장 상황】`,
       `Fear&Greed: ${fgScore} (${sentiment?.fearGreedLabel ?? 'N/A'})`,
       `VIX: ${vixValue.toFixed(1)} (레짐: ${vixRegime.regime})`,
+      '',
+      sectorPromptBlock,
       '',
       `【포트폴리오】`,
       `Paper 현금: $${cashPaper.toFixed(0)} | Live 현금: $${cashLive.toFixed(0)}`,

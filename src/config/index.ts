@@ -69,7 +69,7 @@ const envSchema = z.object({
   RISK_MAX_POSITION_KRW: z.coerce.number().default(10_000_000), // 종목당 최대 1천만원 (실제 사이징은 totalAssets×25% 동적 계산이 먼저 적용됨, 이건 절대 상한)
   RISK_MAX_TOTAL_INVESTED_PCT: z.coerce.number().default(88), // 최대 88% 투자 (적극 모드)
   RISK_MAX_CONCURRENT_POSITIONS: z.coerce.number().default(12), // 동시 12종목 (v11: 8→12)
-  RISK_MAX_DAILY_TRADES: z.coerce.number().default(8), // v11: 3→8건 (실전 수익 기회 확대)
+  RISK_MAX_DAILY_TRADES: z.coerce.number().default(5), // v21: 8→5건 (과매매 억제 — 실전 14일 분석)
 });
 
 // ── 파싱 & Export ──

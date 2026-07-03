@@ -489,6 +489,7 @@ export class TradeExecutor {
       // 호가 진입 타이밍 — ask2 이하일 때만 매수 (ETF 파킹/바닥낚시 제외 — 시간외 단일가는 호가 무의미)
       // v10: 예약매수 — bid1~ask1 중간가 지정가 주문 (기존 ask1 → mid 가격으로 개선)
       // v16.3: 고확신 모멘텀 종목은 시장가 유지 (스마트매수 지정가 변환 시 체결률 저하 방지)
+      // v18: Paper 모드도 지지선매수 적용 (단순 시장가 → 스마트 진입)
       const isHighConviction = (aiScore ?? 0) >= 85 && (tpSlHints?.confidence ?? 0) >= 0.7;
       let smartBuyPrice: number | undefined;
       if (!skipGates) {
@@ -499,12 +500,21 @@ export class TradeExecutor {
           const bid1 = book[0]?.bidPrice ?? 0;
           if (ask1 > 0 && ask2 > 0 && estimatedPrice > ask2) {
             if (isHighConviction) {
-              // 고확신 모멘텀: ask2 초과해도 수량 50% 축소 후 시장가 진입
+              // 고확신 모멘텀: ask2 초과해도 수량 50% 축소 후 지지선 매수 (v18: 시장가→지지선)
               gatedQuantity = Math.max(1, Math.floor(gatedQuantity * 0.5));
-              logger.info(
-                `🚀 모멘텀 진입: ${stockCode} 현재가 ${estimatedPrice} > ask2 ${ask2} — 수량 50% 축소(${gatedQuantity}주), 시장가`,
-                { component: 'EXECUTOR' },
-              );
+              if (bid1 > 0) {
+                const support = await calcSupportBuyPrice(stockCode, estimatedPrice, bid1, ask1);
+                smartBuyPrice = support.price;
+                logger.info(
+                  `🚀 모멘텀 지지선진입: ${stockCode} 현재가 ${estimatedPrice} > ask2 ${ask2} — 수량 50%→${gatedQuantity}주, 지지선=${smartBuyPrice.toLocaleString()} [${support.reasoning}]`,
+                  { component: 'EXECUTOR' },
+                );
+              } else {
+                logger.info(
+                  `🚀 모멘텀 진입: ${stockCode} 현재가 ${estimatedPrice} > ask2 ${ask2} — 수량 50% 축소(${gatedQuantity}주), 시장가`,
+                  { component: 'EXECUTOR' },
+                );
+              }
             } else {
               releaseBuyIntent(stockCode);
               logger.warn(`⏸️ 호가 진입 보류: ${stockCode} 현재가 ${estimatedPrice} > ask2 ${ask2} — 스킵`, {
@@ -513,24 +523,20 @@ export class TradeExecutor {
               this._logFire('WARN', 'EXECUTOR', `호가 진입 보류: ${stockCode} 현재가=${estimatedPrice} ask2=${ask2}`);
               return;
             }
-          } else if (!isHighConviction) {
-            // v11: 지지선 기반 지정가 매수 (BB+Fib+VP+SMA20 가중 지지선)
-            // 체결 안 되면 confirmFill 타임아웃(~30s)에서 자동 취소 → 다음 사이클에서 재시도
-            if (bid1 > 0 && ask1 > 0) {
-              const support = await calcSupportBuyPrice(stockCode, estimatedPrice, bid1, ask1);
-              smartBuyPrice = support.price;
-              logger.info(
-                `💰 지지선매수: ${stockCode} bid1=${bid1.toLocaleString()} support=${smartBuyPrice.toLocaleString()} ask1=${ask1.toLocaleString()} [${support.reasoning}]`,
-                { component: 'EXECUTOR' },
-              );
-            } else if (ask1 > 0) {
-              smartBuyPrice = ask1;
-              logger.info(`💰 스마트 매수: ${stockCode} ask1=${ask1.toLocaleString()} → 지정가 폴백`, {
-                component: 'EXECUTOR',
-              });
-            }
+          } else if (bid1 > 0 && ask1 > 0) {
+            // v18: 모든 종목에 지지선 매수 적용 (고확신 포함 — 더 좋은 진입가 확보)
+            const support = await calcSupportBuyPrice(stockCode, estimatedPrice, bid1, ask1);
+            smartBuyPrice = support.price;
+            logger.info(
+              `💰 지지선매수: ${stockCode} bid1=${bid1.toLocaleString()} support=${smartBuyPrice.toLocaleString()} ask1=${ask1.toLocaleString()} [${support.reasoning}]`,
+              { component: 'EXECUTOR' },
+            );
+          } else if (ask1 > 0) {
+            smartBuyPrice = ask1;
+            logger.info(`💰 스마트 매수: ${stockCode} ask1=${ask1.toLocaleString()} → 지정가 폴백`, {
+              component: 'EXECUTOR',
+            });
           }
-          // 고확신 모멘텀 + ask2 이하: 시장가 유지 (smartBuyPrice undefined → 시장가)
         } catch (e) {
           logger.warn(`호가 조회 실패 → 시장가 폴백: ${stockCode} ${(e as Error).message}`, { component: 'EXECUTOR' });
         }
@@ -598,9 +604,11 @@ export class TradeExecutor {
         try {
           const atr = await calculateATR(stockCode);
           if (atr > 0 && fill.filledPrice > 0) {
-            const atrStopPct = -((atr * 2.0) / fill.filledPrice) * 100;
-            // 전략 설정(stopLossPct)보다 넓어지는 것 방지: -2% ~ stopLossPct 범위
-            stopLossPct = Math.max(stopLossPct, Math.min(-2, atrStopPct));
+            // v23: Chandelier Exit 방식 — ATR 3x (근거: 승률 51.3%, PF 1.61 vs ATR 2x 43%/1.34)
+            // 출처: stratbase.ai Chandelier Exit backtest, arxiv:2604.27150
+            const atrStopPct = -((atr * 3.0) / fill.filledPrice) * 100;
+            // v23: SL 바닥 -4.5% (한국 중소형주 일중 변동 3-5%, -3.5%도 노이즈에 걸림)
+            stopLossPct = Math.max(stopLossPct, Math.min(-4.5, atrStopPct));
             logger.info(`ATR 동적 손절: ${stockCode} ATR=${atr.toFixed(0)} → 손절 ${stopLossPct.toFixed(1)}%`, {
               component: 'EXECUTOR',
             });
@@ -821,6 +829,21 @@ export class TradeExecutor {
       if (await this._checkDailyCircuitBreaker()) {
         logger.warn(`🛑 ScaleIn 차단: ${stockCode} 서킷브레이커 발동`, { component: 'EXECUTOR' });
         return;
+      }
+      // v18: ScaleIn 가격 체크 — 매수 평단가 대비 -1% 이상 하락 시 추가 투입 취소 (손실 포지션 확대 방지)
+      const avgBuy = Number(chain.avg_buy_price ?? 0);
+      if (avgBuy > 0) {
+        const curPrice = await getCurrentPrice(stockCode).catch(() => ({ currentPrice: 0 }));
+        if (curPrice.currentPrice > 0) {
+          const pnlPctNow = ((curPrice.currentPrice - avgBuy) / avgBuy) * 100;
+          if (pnlPctNow < -1.0) {
+            logger.warn(
+              `🛑 ScaleIn 가격차단: ${stockCode} PnL=${pnlPctNow.toFixed(1)}% (평단 ${avgBuy} → 현재 ${curPrice.currentPrice}) → 추가 투입 취소`,
+              { component: 'EXECUTOR' },
+            );
+            return;
+          }
+        }
       }
     }
 
@@ -1320,7 +1343,7 @@ export class TradeExecutor {
       const pnlPct = avgBuy > 0 ? ((fill.filledPrice - avgBuy) / avgBuy) * 100 : 0;
       if (soldQty >= chain.total_quantity) {
         await chainManager.closeChain(chain.id, fill.filledPrice, chain, closeReason);
-        recordSellForCooldown(stockCode, isPaperSnapshot); // v10.4: 인메모리 재진입 쿨다운
+        recordSellForCooldown(stockCode, isPaperSnapshot, pnlPct < 0); // v21: 손절 시 isStopLoss=true → 4h 쿨다운
       } else {
         await chainManager.partialProfit(chain.id, soldQty, fill.filledPrice, chain);
         // v10.9.4: FORCE_CLOSE 부분체결 → 잔여 수량 즉시 시장가 재매도 (잔여 포지션 방치 방지)
@@ -1343,7 +1366,7 @@ export class TradeExecutor {
                 const updatedChain = await chainManager.findOpenChain(stockCode, isPaperSnapshot);
                 if (updatedChain) {
                   await chainManager.closeChain(updatedChain.id, retryFill.filledPrice, updatedChain, `${closeReason} (잔여 재매도)`);
-                  recordSellForCooldown(stockCode, isPaperSnapshot);
+                  recordSellForCooldown(stockCode, isPaperSnapshot, pnlPct < 0);
                 }
               }
             }

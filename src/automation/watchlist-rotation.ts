@@ -429,3 +429,138 @@ export async function runDailyMarketScan(): Promise<void> {
     logger.error(`일일 시장 발굴 실패: ${error}`, { component: 'DAILY_MARKET_SCAN' });
   }
 }
+
+// ── v22: 장중 실시간 발굴 — Track B에서 매수 후보 없을 때 호출 ──
+// 2시간 쿨다운, 장중(10:00~14:30)만 실행, 최대 5종목 편입
+let _lastMidDayScanAt = 0;
+const MIDDAY_SCAN_COOLDOWN_MS = 2 * 60 * 60_000; // 2시간
+
+export async function runMidDayDiscovery(): Promise<string[]> {
+  const now = Date.now();
+  if (now - _lastMidDayScanAt < MIDDAY_SCAN_COOLDOWN_MS) return [];
+
+  // 장중 시간 체크 (10:00~14:30 KST)
+  const kst = new Date(now + 9 * 60 * 60_000);
+  const hhmm = kst.getUTCHours() * 100 + kst.getUTCMinutes();
+  if (hhmm < 1000 || hhmm > 1430) return [];
+
+  _lastMidDayScanAt = now;
+  logger.info('🔎 장중 실시간 발굴 시작 (매수 후보 부족)', { component: 'MIDDAY_DISCOVERY' });
+
+  try {
+    const pool = getPool();
+
+    // 현재 활성 워치리스트
+    const { rows: wRows } = await pool.query(`SELECT stock_code FROM watchlist WHERE is_active = true`);
+    const activeSet = new Set(wRows.map((r: Record<string, unknown>) => String(r.stock_code)));
+
+    // 보유 종목
+    const { rows: holdRows } = await pool.query(
+      `SELECT DISTINCT stock_code FROM transaction_chains WHERE status = 'OPEN' AND total_quantity > 0`,
+    );
+    const holdingSet = new Set(holdRows.map((r: Record<string, unknown>) => String(r.stock_code)));
+
+    // 거래량+급등 상위 (KRX 실시간)
+    const [kospiVol, kosdaqVol, kospiChg, kosdaqChg] = await Promise.all([
+      getVolumeRankingStocks('J', 30).catch(() => []),
+      getVolumeRankingStocks('Q', 30).catch(() => []),
+      getChangeRankingStocks(20, 'J').catch(() => []),
+      getChangeRankingStocks(20, 'Q').catch(() => []),
+    ]);
+
+    const allStocks = [...kospiVol, ...kosdaqVol, ...kospiChg, ...kosdaqChg];
+    const seen = new Set<string>();
+    const candidates: { stock_code: string; stock_name: string }[] = [];
+
+    for (const s of allStocks) {
+      if (!s.stock_code || seen.has(s.stock_code)) continue;
+      if (activeSet.has(s.stock_code) || holdingSet.has(s.stock_code)) continue;
+      seen.add(s.stock_code);
+      candidates.push(s);
+    }
+
+    if (candidates.length === 0) {
+      logger.info('장중 발굴: 신규 후보 없음', { component: 'MIDDAY_DISCOVERY' });
+      return [];
+    }
+
+    // 수급 + 가격 + 잡주 필터 (최대 20개 검사)
+    const checkList = candidates.slice(0, 20);
+    const scored: { stock_code: string; stock_name: string; score: number; reason: string }[] = [];
+
+    const PHARMA_KEYWORDS = ['제약', '약품', '바이오', '셀', '젠', '팜', '메디', '헬스케어', 'pharm', 'bio'];
+
+    await Promise.allSettled(
+      checkList.map(async (s) => {
+        try {
+          const [price, flow] = await Promise.all([
+            getCurrentPrice(s.stock_code).catch(() => null),
+            getInvestorFlow(s.stock_code, 3).catch(() => null),
+          ]);
+
+          if (!price || price.currentPrice < 3000 || price.currentPrice > 500000) return; // v22: 3000원 미만 잡주 제외
+          const sName = (s.stock_name || price.stockName || '').toLowerCase();
+          if (PHARMA_KEYWORDS.some(kw => sName.includes(kw))) return;
+
+          // 당일 등락률 체크 — 이미 +8% 이상 급등한 종목은 추격 금지
+          if (price.changePct && price.changePct > 8.0) return;
+
+          let supplyScore = 0;
+          const reasons: string[] = [];
+
+          if (flow) {
+            if (flow.institutionNet > 0 && flow.foreignNet > 0) {
+              supplyScore += 3;
+              reasons.push('기관+외국인 동시순매수');
+            } else if (flow.institutionNet > 0) {
+              supplyScore += 1;
+              reasons.push('기관순매수');
+            } else if (flow.foreignNet > 0) {
+              supplyScore += 1;
+              reasons.push('외국인순매수');
+            }
+            if (flow.foreignStreak >= 3) {
+              supplyScore += 2;
+              reasons.push(`외국인연속${flow.foreignStreak}일`);
+            }
+            // 개인만 순매수 = 불안정
+            if (flow.institutionNet <= 0 && flow.foreignNet <= 0 && flow.retailNet > 0) {
+              supplyScore -= 2;
+            }
+          }
+
+          if (supplyScore < 1) return;
+
+          scored.push({ stock_code: s.stock_code, stock_name: s.stock_name, score: supplyScore, reason: reasons.join(', ') });
+        } catch { /* skip */ }
+      }),
+    );
+
+    // 상위 5개만 편입
+    scored.sort((a, b) => b.score - a.score);
+    const toAdd = scored.slice(0, 5);
+    const added: string[] = [];
+
+    for (const item of toAdd) {
+      await pool.query(
+        `INSERT INTO watchlist (stock_code, stock_name, market, is_active, source)
+         VALUES ($1, $2, 'KOSPI', true, 'MIDDAY')
+         ON CONFLICT (stock_code) DO UPDATE SET is_active = true, stock_name = EXCLUDED.stock_name, source = 'MIDDAY'`,
+        [item.stock_code, item.stock_name || item.stock_code],
+      );
+      added.push(item.stock_code);
+      logger.info(`🔎 장중 발굴 편입: ${item.stock_code}(${item.stock_name}) — ${item.reason}`, {
+        component: 'MIDDAY_DISCOVERY',
+      });
+    }
+
+    if (added.length > 0) {
+      await sendTelegramMessage(`🔎 장중 발굴 ${added.length}종목: ${toAdd.map(t => `${t.stock_code}(${t.stock_name})`).join(', ')}`).catch(() => {});
+    }
+
+    return added;
+  } catch (error) {
+    logger.error(`장중 실시간 발굴 실패: ${error}`, { component: 'MIDDAY_DISCOVERY' });
+    return [];
+  }
+}

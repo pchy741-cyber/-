@@ -16,7 +16,7 @@ export interface AllocRisk {
 }
 
 const DEFAULTS: Record<'live' | 'paper', AllocRisk> = {
-  live: { positionCapPct: 25, maxInvestedPct: 88, cashReservePct: 20, maxPositions: 12, maxDailyTrades: 8, sectorSemiconductor: 30, sectorBio: 20, sectorDefense: 25, sectorFinance: 20, sectorEtc: 30 }, // v16: maxPos 8→12, dailyTrades 5→8
+  live: { positionCapPct: 25, maxInvestedPct: 88, cashReservePct: 20, maxPositions: 12, maxDailyTrades: 5, sectorSemiconductor: 30, sectorBio: 20, sectorDefense: 25, sectorFinance: 20, sectorEtc: 30 }, // v21: dailyTrades 8→5 (과매매 억제)
   // Paper: Live보다 약간 관대 (데이터 축적 우선, 그러나 Live와 괴리 최소화)
   // 이전: 종목40%/투자97%/포지션20개/섹터50% → Live(25%/88%/12개/20-30%)와 완전 괴리
   paper: { positionCapPct: 30, maxInvestedPct: 92, cashReservePct: 8, maxPositions: 15, maxDailyTrades: 12, sectorSemiconductor: 35, sectorBio: 30, sectorDefense: 30, sectorFinance: 25, sectorEtc: 35 },
@@ -28,7 +28,7 @@ const DEFAULTS: Record<'live' | 'paper', AllocRisk> = {
 // penalty=1 (조정): 축소
 // penalty=2 (약세): 대폭 축소
 const REGIME_OVERRIDES: Record<string, Partial<AllocRisk>> = {
-  bull:    { maxPositions: 12, maxDailyTrades: 12, maxInvestedPct: 95, cashReservePct: 5, positionCapPct: 30 },
+  bull:    { maxPositions: 12, maxDailyTrades: 6, maxInvestedPct: 95, cashReservePct: 5, positionCapPct: 30 }, // v21: 12→6 (강세장에서도 과매매 억제)
   neutral: {}, // DB 설정값 유지
   correction: { maxPositions: 6, maxDailyTrades: 4, maxInvestedPct: 75, cashReservePct: 25, positionCapPct: 20 },
   bear:    { maxPositions: 4, maxDailyTrades: 3, maxInvestedPct: 60, cashReservePct: 35, positionCapPct: 15 },

@@ -123,9 +123,12 @@ export function calcTotalAssets(i: TotalAssetInputs): TotalAssetOutputs {
     ? i.kisPurchaseCost
     : (i.totalChainInvested > 0 ? i.totalChainInvested : safe(i.kisDomEval));
 
-  const domesticMarketValue = i.kisDomEval > 0
-    ? i.kisDomEval
-    : i.totalChainInvested + i.totalChainPnl;
+  // Paper: builder 체인 기반 시가 우선 (getPaperPositions와 builder의 가격소스 불일치 방지)
+  // Live: KIS API 시가(kisDomEval) 우선
+  const chainBasedMV = i.totalChainInvested + i.totalChainPnl;
+  const domesticMarketValue = i.viewIsPaper
+    ? (chainBasedMV > 0 ? chainBasedMV : safe(i.kisDomEval))
+    : (i.kisDomEval > 0 ? i.kisDomEval : chainBasedMV);
 
   // ─── 3. 총자산 ───
   const rawCashSafe = safe(i.rawCash);
@@ -151,16 +154,11 @@ export function calcTotalAssets(i: TotalAssetInputs): TotalAssetOutputs {
       logger.warn('⚠️ Live 총자산 0원 — KIS API 실패 또는 미연결', { component: 'CALC' });
     }
   } else {
-    // Paper: 통합증거금 시뮬레이션 — 시드풀(국내+해외) 기준 총자산
-    // 별도 풀 합산(60M+63M=123M) → 시드풀(90M)+PnL로 정정
+    // Paper: 국내현금 + 국내시가 + 해외시가 + 해외현금 (실제 값 그대로)
+    // v21: 90M 캡 제거 — 트레이딩 수익으로 포트폴리오가 성장하면 실제 값 표시
+    // (이전: 시드풀 90M+PnL 캡 → 비중 143%, 전일비 0%, 현금 0% 버그 유발)
     freeDomesticCash = rawCashSafe;
-    const rawGrandTotal = freeDomesticCash + safeDomestic + safeOverseasMV + safeOverseasCashKrw;
-    const PAPER_OVERSEAS_SEED = Number(process.env.PAPER_OVERSEAS_SEED_KRW) || 30_000_000;
-    const unifiedPool = i.paperInitialCapital + PAPER_OVERSEAS_SEED; // 90M
-    // 시드풀 초과 시 (getEffectivePaperSeedKrw 인플레이션) 캡 적용
-    grandTotalValue = rawGrandTotal > unifiedPool * 1.1
-      ? unifiedPool + (safeDomestic - safe(i.totalChainInvested)) + (overseasMarketValueKrw - overseasInvestedKrw)
-      : rawGrandTotal;
+    grandTotalValue = freeDomesticCash + safeDomestic + safeOverseasMV + safeOverseasCashKrw;
     calcMethod = 'paper_cash';
   }
 
@@ -225,8 +223,8 @@ export function calcTotalAssets(i: TotalAssetInputs): TotalAssetOutputs {
       : 0;
   }
   // 해외자산 신규 편입, 입금 등으로 전일 스냅샷과 현재가 큰 차이를 보이면 클리핑
-  // Paper: ±10% 이상은 이상치 (자산 편입/시드 추가 영향), Live: ±100% (기존)
-  const maxDailyPct = i.viewIsPaper ? 10 : 100;
+  // v21: Paper ±30% (이전 ±10%는 정상 손실도 은폐), Live ±100%
+  const maxDailyPct = i.viewIsPaper ? 30 : 100;
   const dailyChangePct = Math.abs(rawDailyChangePct) > maxDailyPct ? 0 : rawDailyChangePct;
 
   logger.info(`📊 calcTotalAssets [${i.viewIsPaper ? 'PAPER' : 'LIVE'}] method=${calcMethod} | netAsset=${safe(i.netAsset)} rawCash=${safe(i.rawCash)} kisDomEval=${safe(i.kisDomEval)} kisPurchaseCost=${safe(i.kisPurchaseCost)} | overseasMV_usd=${safe(i.overseasMarketValueUsd)} overseasCash=${rawOverseasCash} | grandTotal=${Math.round(grandTotalValue)} freeCash=${Math.round(freeDomesticCash)} domMV=${Math.round(domesticMarketValue)} overseasMV_krw=${Math.round(overseasMarketValueKrw)}`, { component: 'CALC' });

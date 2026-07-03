@@ -8,7 +8,8 @@
 import { isCommunityPumpBlocked } from '../../../automation/community-sentinel.js';
 import { logger } from '../../../utils/logger.js';
 import { getOverride } from '../../ai-overrides.js';
-import { BUY_BLOCKED_CODES } from '../trading-rules.js';
+import { isDailyStopLossBlocked } from '../sell-cooldown.js';
+import { BUY_BLOCKED_CODES, MEGA_CAP_PRIORITY_CODES } from '../trading-rules.js';
 import { checkSmartReentry } from './smart-reentry.js';
 import type { HardGateInput } from './types.js';
 
@@ -52,9 +53,10 @@ export function isHardBlocked(input: HardGateInput): boolean {
   }
 
   // ── 스마트 재진입: 손실 이력이 있는 종목에 대해 조건 기반 재진입 판단 ──
-  // Paper 모드: 손실 블로킹 완전 bypass (적극적 데이터 수집)
+  // v22.3: 대형주는 차트 데이터 부족 시에도 재진입 허용 (봇 성능 문제지 종목 문제 아님)
   const lossRecord = lossHistory?.get(code);
-  if (lossRecord && !isPaper) {
+  const isMegaCap = MEGA_CAP_PRIORITY_CODES.has(code);
+  if (lossRecord) {
     const allowRebuy = getOverride<boolean>(`${code}_allowRebuy`);
     if (allowRebuy) {
       logger.info(`  🔓 ${code}(${name}): allowRebuy override로 손실 차단 해제`, { component: 'TRACK_B' });
@@ -63,16 +65,25 @@ export function isHardBlocked(input: HardGateInput): boolean {
       const tv = tradingValues?.get(code) ?? 0;
       const reentry = checkSmartReentry(lossRecord, candles, tv);
       if (!reentry.allowed) {
-        logger.info(
-          `  🚫 ${code}(${name}): 손실${lossRecord.lossPct.toFixed(1)}% 재진입 차단 — ${reentry.reason}`,
-          { component: 'TRACK_B' },
-        );
-        return true;
-      }
-      // 스마트 재진입 허용 — suggestedSl은 input에 기록 (buy-execution에서 참조)
-      logger.info(`  🔓 ${code}(${name}): ${reentry.reason}`, { component: 'TRACK_B' });
-      if (reentry.suggestedSl) {
-        input._smartReentrySl = reentry.suggestedSl;
+        // v22.3: 대형주는 "차트 데이터 부족" 시 재진입 허용 (스마트재진입 면제)
+        if (isMegaCap && reentry.reason.includes('차트 데이터 부족')) {
+          logger.info(`  ⚠️ ${code}(${name}): 대형주 차트 미로딩 → 재진입 허용 (손실${lossRecord.lossPct.toFixed(1)}%)`, { component: 'TRACK_B' });
+        } else if (isMegaCap && lossRecord.lossPct > -5) {
+          // 대형주 손실 -5% 미만이면 기술적 조건 미충족이어도 재진입 허용 (타이밍 문제)
+          logger.info(`  ⚠️ ${code}(${name}): 대형주 소폭손실(${lossRecord.lossPct.toFixed(1)}%) → 재진입 허용`, { component: 'TRACK_B' });
+        } else {
+          logger.info(
+            `  🚫 ${code}(${name}): 손실${lossRecord.lossPct.toFixed(1)}% 재진입 차단 — ${reentry.reason}`,
+            { component: 'TRACK_B' },
+          );
+          return true;
+        }
+      } else {
+        // 스마트 재진입 허용 — suggestedSl은 input에 기록 (buy-execution에서 참조)
+        logger.info(`  🔓 ${code}(${name}): ${reentry.reason}`, { component: 'TRACK_B' });
+        if (reentry.suggestedSl) {
+          input._smartReentrySl = reentry.suggestedSl;
+        }
       }
     }
   }
@@ -103,18 +114,36 @@ export function isHardBlocked(input: HardGateInput): boolean {
     return true;
   }
 
-  // v15 Hyper: 국내 매도 후 쿨다운 2h (기존 4h → 빠른 재진입 허용, 수수료0.21%)
-  if (recentlySoldCodes?.has(code) && !isPaper) {
-    logger.info(`  🕐 ${code}(${name}): 매도 후 2h 쿨다운 — 재진입 대기`, { component: 'TRACK_B' });
+  // v21: 당일 동일 종목 2회 손절 → 재진입 완전 차단 (금호타이어/한솔테크닉스 같은 반복 손절 패턴 원천 차단)
+  if (isDailyStopLossBlocked(code, isPaper ?? false)) {
+    logger.info(`  🚫 ${code}(${name}): 당일 2회 손절 — 재진입 완전 차단`, { component: 'TRACK_B' });
     return true;
   }
 
-  // ── 잡주/저품질 종목 필터 (3중 게이트) ──
+  // v22: 매도 후 쿨다운 — Paper 모드에도 적용 (반복매매=적자 주범)
+  if (recentlySoldCodes?.has(code)) {
+    logger.info(`  🕐 ${code}(${name}): 매도 후 쿨다운 — 재진입 대기`, { component: 'TRACK_B' });
+    return true;
+  }
+
+  // ── 잡주/저품질 종목 필터 ──
+
+  // v22.3: 거래대금 필터 — 극저유동성만 차단 (ETF 제외)
+  // 15억→ 한국 중소형 우량주도 거래대금 15-30억 구간 많음, 너무 높으면 좋은 종목 차단
+  const ETF_BRANDS: readonly string[] = ['KODEX', 'TIGER', 'KBSTAR', 'ARIRANG', 'HANARO', 'SOL', 'ACE', 'KOSEF'];
+  const isETF = ETF_BRANDS.some((b) => name.toUpperCase().includes(b));
+  const tv = tradingValues?.get(code) ?? 0;
+  const minTradingValue = isPaper ? 3_0000_0000 : 15_0000_0000; // Paper: 3억, Live: 15억
+  if (tv > 0 && tv < minTradingValue && !isETF) {
+    logger.info(
+      `  🗑️ ${code}(${name}): 거래대금 부족(${(tv / 1_0000_0000).toFixed(0)}억 < ${minTradingValue / 1_0000_0000}억) — 유동성 필터`,
+      { component: 'TRACK_B' },
+    );
+    return true;
+  }
 
   // 1) 저가주: Live 5,000원 미만, Paper 1,000원 미만 (ETF 제외)
   // v10.4: Live 2000→5000, Paper 500→1000 (저가 잡주 거래 방지)
-  const ETF_BRANDS: readonly string[] = ['KODEX', 'TIGER', 'KBSTAR', 'ARIRANG', 'HANARO', 'SOL', 'ACE', 'KOSEF'];
-  const isETF = ETF_BRANDS.some((b) => name.toUpperCase().includes(b));
   const earlyPrice = livePrices.get(code);
   const junkPriceThreshold = isPaper ? 1000 : 5000;
   if (earlyPrice && earlyPrice.currentPrice > 0 && earlyPrice.currentPrice < junkPriceThreshold && !isETF) {
@@ -130,15 +159,32 @@ export function isHardBlocked(input: HardGateInput): boolean {
     return true;
   }
 
-  // 3) 구조적 패배 종목: 90일 내 승률 < 25%, 5건 이상 (Paper: 15%로 완화)
+  // 3) 구조적 패배 종목: 90일 내 승률 < 25%, 5건 이상 — 대형주 면제
   const stockWr = winRates?.get(code);
   const minWinRate = isPaper ? 0.15 : 0.25;
   if (stockWr && stockWr.sampleCount >= 5 && stockWr.winRate < minWinRate) {
-    logger.info(
-      `  🗑️ ${code}(${name}): 패배 이력 승률=${(stockWr.winRate * 100).toFixed(0)}%(${stockWr.sampleCount}건) — 잡주 필터`,
-      { component: 'TRACK_B' },
-    );
-    return true;
+    // v22.3: 대형주는 봇 성능 문제이지 종목 문제 아님 → 면제
+    if (!MEGA_CAP_PRIORITY_CODES.has(code)) {
+      logger.info(
+        `  🗑️ ${code}(${name}): 패배 이력 승률=${(stockWr.winRate * 100).toFixed(0)}%(${stockWr.sampleCount}건) — 잡주 필터`,
+        { component: 'TRACK_B' },
+      );
+      return true;
+    }
+  }
+
+  // v22.3: 14일 내 2회+ 손절 블랙리스트 — 대형주/우량주는 면제 (스마트 재진입으로 대체)
+  // 잡주 = 상폐위험/작전주/개미피해 종목. 삼성전자/현대로템 등은 진입타이밍 문제이지 종목 문제 아님
+  if (input.repeatLoserCodes?.has(code)) {
+    const isBluechip = MEGA_CAP_PRIORITY_CODES.has(code);
+    const highTv = (tradingValues?.get(code) ?? 0) >= 100_0000_0000; // 거래대금 100억+ = 주도주
+    if (isBluechip || highTv) {
+      // 우량주는 블랙리스트 대신 스마트 재진입 체크에 맡김 (위에서 이미 처리됨)
+      logger.info(`  ⚠️ ${code}(${name}): 반복손절이지만 우량주 → 블랙리스트 면제 (스마트재진입 의존)`, { component: 'TRACK_B' });
+    } else {
+      logger.info(`  🚫 ${code}(${name}): 14일 내 2회+ 손절 — 7일 자동 블랙리스트`, { component: 'TRACK_B' });
+      return true;
+    }
   }
 
   return false; // 통과

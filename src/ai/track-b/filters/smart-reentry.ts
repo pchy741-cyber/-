@@ -189,7 +189,21 @@ export function checkSmartReentry(
   candles: DailyCandle[] | undefined,
   tradingValue: number,
 ): SmartReentryResult {
+  // v23: 차트 데이터 부족 시 시간 기반 쿨다운 폴백
+  // 기존: 차트 없으면 무조건 차단 → 28개 종목 일괄 차단 (기술적 버그)
+  // 변경: 손실 크기별 쿨다운 기간 경과 시 재진입 허용 (트레이더 판단 기준)
+  // 근거: 소폭 손실(-5% 미만)은 일중 노이즈, 차트 없어도 3일 후 재진입 합리적
   if (!candles || candles.length < 25) {
+    if (lossRecord?.closedAt) {
+      const daysSinceLoss = (Date.now() - new Date(lossRecord.closedAt).getTime()) / (1000 * 60 * 60 * 24);
+      const lossPct = lossRecord.lossPct;
+      // 소폭 손실(-5% 미만): 3일 쿨다운, 중폭(-5%~-10%): 7일, 대폭(-10%+): 14일
+      const cooldownDays = lossPct > -5 ? 3 : lossPct > -10 ? 7 : 14;
+      if (daysSinceLoss >= cooldownDays) {
+        return { allowed: true, reason: `시간기반재진입: 차트미로딩+손실${lossPct.toFixed(1)}%, ${Math.floor(daysSinceLoss)}일 경과(>${cooldownDays}일)` };
+      }
+      return { allowed: false, reason: `차트 데이터 부족 + 쿨다운 대기(${Math.floor(daysSinceLoss)}/${cooldownDays}일)` };
+    }
     return { allowed: false, reason: '차트 데이터 부족' };
   }
 

@@ -9,6 +9,7 @@
  */
 
 import { getActiveWatchlist } from '../db/client.js';
+import { getUSSectorSignals, type USSectorSnapshot } from '../market/us-sector-signals.js';
 import { logger } from '../utils/logger.js';
 import { callVertexGemini } from '../utils/vertex-gemini.js';
 import { getMacroSnapshot } from './macro-data.js';
@@ -41,12 +42,13 @@ export async function runMorningBrief(): Promise<void> {
   const t0 = Date.now();
 
   try {
-    // 1. 매크로 + 뉴스 병렬 수집
-    const [macro, _macroNewsText, _watchlistNewsText, watchlist] = await Promise.all([
+    // 1. 매크로 + 뉴스 + US 지수 병렬 수집
+    const [macro, _macroNewsText, _watchlistNewsText, watchlist, usSectors] = await Promise.all([
       getMacroSnapshot(),
       collectMacroNews(),
       collectWatchlistNews(),
       getActiveWatchlist(),
+      getUSSectorSignals().catch(() => null as USSectorSnapshot | null),
     ]);
 
     // 2. 종목별 뉴스 읽기
@@ -61,7 +63,7 @@ export async function runMorningBrief(): Promise<void> {
 
     // 5. Gemini로 종목별 센티멘트 보정 + 시장 요약 생성
     const stockSentiments = new Map<string, number>();
-    let marketSummary = buildFallbackSummary(macro, riskLevel);
+    let marketSummary = buildFallbackSummary(macro, riskLevel, usSectors);
 
     try {
       const { config: appCfg } = await import('../config/index.js');
@@ -75,6 +77,14 @@ export async function runMorningBrief(): Promise<void> {
           })
           .slice(0, 15); // 최대 15종목
 
+        // v21: US 지수 데이터 포맷
+        const spyChange = usSectors?.indices?.find((i) => i.symbol === 'SPY')?.changePct ?? null;
+        const qqqChange = usSectors?.indices?.find((i) => i.symbol === 'QQQ')?.changePct ?? null;
+        const iwmChange = usSectors?.indices?.find((i) => i.symbol === 'IWM')?.changePct ?? null;
+        const usBlock = spyChange != null
+          ? `\n## 미국 시장 (전일 종가 기준)\n- S&P 500(SPY): ${spyChange > 0 ? '+' : ''}${spyChange.toFixed(2)}%\n- Nasdaq 100(QQQ): ${qqqChange != null ? (qqqChange > 0 ? '+' : '') + qqqChange.toFixed(2) + '%' : 'N/A'}\n- Russell 2000(IWM): ${iwmChange != null ? (iwmChange > 0 ? '+' : '') + iwmChange.toFixed(2) + '%' : 'N/A'}\n- US 시장 분위기: ${usSectors?.marketTrend ?? 'N/A'} (${usSectors?.bullishCount ?? 0}/${usSectors?.totalCount ?? 11} 섹터 상승)`
+          : '';
+
         const prompt = `당신은 한국 주식시장 전문 애널리스트입니다.
 오늘 장 시작 전 시장 상황과 종목별 뉴스를 분석해서 간결한 브리프를 작성하세요.
 
@@ -84,6 +94,7 @@ export async function runMorningBrief(): Promise<void> {
 - KOSPI 전일 등락: ${macro.kospiChange > 0 ? '+' : ''}${macro.kospiChange.toFixed(2)}%
 - Fear&Greed: ${macro.fearGreedIndex.toFixed(0)} (0=극공포, 100=극탐욕)
 - 시장체제: ${macro.regime}
+${usBlock}
 
 ## 주요 매크로 뉴스 헤드라인
 ${macroHeadlines.slice(0, 5).join('\n') || '수집된 헤드라인 없음'}
@@ -172,6 +183,14 @@ adjustment 기준:
       logger.warn(`[MORNING_BRIEF] 뉴스 조기경보 평가 실패: ${newsShockErr}`, { component: 'MORNING_BRIEF' });
     }
 
+    // v22.1: AI 뉴스 분석 캐시 워밍 (FinBERT + Gemini 하이브리드)
+    try {
+      const { analyzeNewsHeadlines } = await import('./news-analyzer.js');
+      await analyzeNewsHeadlines();
+    } catch (aiErr) {
+      logger.debug(`[MORNING_BRIEF] AI 뉴스 분석 실패 (무시): ${aiErr}`, { component: 'MORNING_BRIEF' });
+    }
+
     logger.info(
       `✅ [MORNING_BRIEF] 완료 (${((Date.now() - t0) / 1000).toFixed(1)}초) | 리스크=${riskLevel} | ${marketSummary}`,
       { component: 'MORNING_BRIEF' },
@@ -193,9 +212,13 @@ function assessRiskLevel(vkospi: number, fearGreed: number, kospiChange: number)
 function buildFallbackSummary(
   macro: Awaited<ReturnType<typeof getMacroSnapshot>>,
   riskLevel: MorningBriefContext['riskLevel'],
+  usSectors?: USSectorSnapshot | null,
 ): string {
   const riskLabel = { LOW: '안정', NEUTRAL: '중립', HIGH: '주의', EXTREME: '극공포' }[riskLevel];
-  return `VKOSPI=${macro.vkospi.toFixed(0)} USD/KRW=${macro.usdKrw.toFixed(0)} F&G=${macro.fearGreedIndex.toFixed(0)} — ${riskLabel} 장세`;
+  const spy = usSectors?.indices?.find((i) => i.symbol === 'SPY')?.changePct;
+  const qqq = usSectors?.indices?.find((i) => i.symbol === 'QQQ')?.changePct;
+  const usInfo = spy != null ? ` SPY${spy > 0 ? '+' : ''}${spy.toFixed(1)}% QQQ${qqq != null ? (qqq > 0 ? '+' : '') + qqq.toFixed(1) + '%' : ''}` : '';
+  return `VKOSPI=${macro.vkospi.toFixed(0)} USD/KRW=${macro.usdKrw.toFixed(0)} F&G=${macro.fearGreedIndex.toFixed(0)}${usInfo} — ${riskLabel} 장세`;
 }
 
 function extractHeadlines(newsText: string, maxCount: number): string[] {

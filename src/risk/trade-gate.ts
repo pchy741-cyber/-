@@ -146,6 +146,20 @@ export async function runTradeGates(input: GateInput): Promise<GateResult> {
   }
   results.push(ev);
 
+  // 4.5 Tier 1: 포트폴리오 VaR + 섹터 집중도 + Kelly 합계
+  try {
+    const { portfolioVarGate } = await import('./portfolio-var.js');
+    const portfolioVar = await portfolioVarGate(input.stockCode, input.budgetKrw * 10); // budgetKrw × 10 ≈ 총자산 추정
+    if (!portfolioVar.passed) {
+      logger.debug(`🚦 [포트폴리오VaR] ${input.stockCode}: ${portfolioVar.reason}`, { component: 'TRADE_GATE' });
+      return portfolioVar;
+    }
+    results.push(portfolioVar);
+  } catch (err) {
+    // 폴백: fail-open (포트폴리오 VaR 실패 시 기존 게이트만 통과)
+    logger.warn(`포트폴리오 VaR 게이트 실패 → 스킵: ${err}`, { component: 'TRADE_GATE' });
+  }
+
   // 5. 변동성 사이징
   const sizing = volatilitySizing(input);
   if (!sizing.passed) {

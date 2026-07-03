@@ -40,48 +40,48 @@ export function getKrPartialTpStages(stockCode: string, adx?: number, bearMode?:
 
   let stages: PartialTpStage[];
 
+  // v18: Stage 1 sellRatio 상향 (30→40%) — 이익 조기 확정으로 손익비 개선
   // 반도체/IT — 변동성 높은 대형주
   if (['반도체', 'IT', '전기전자'].includes(sector)) {
     stages = [
-      { stage: 1, triggerPct: accel ? 2.0 : 1.0, sellRatio: 0.30 },
+      { stage: 1, triggerPct: accel ? 2.0 : 1.0, sellRatio: 0.40 },
       { stage: 2, triggerPct: 3.0, sellRatio: 0.25 },
       { stage: 3, triggerPct: 5.5, sellRatio: 0.20 },
       { stage: 4, triggerPct: 9.0, sellRatio: 0.15 },
-      { stage: 5, triggerPct: 14.0, sellRatio: 0.10 },
     ];
   } else if (['방산', '조선', '에너지', '화학', '철강'].includes(sector)) {
     // 방산/조선/에너지 — 중간 변동성
     stages = [
-      { stage: 1, triggerPct: accel ? 2.5 : 1.2, sellRatio: 0.30 },
+      { stage: 1, triggerPct: accel ? 2.5 : 1.2, sellRatio: 0.40 },
       { stage: 2, triggerPct: 3.5, sellRatio: 0.25 },
-      { stage: 3, triggerPct: 6.0, sellRatio: 0.25 },
-      { stage: 4, triggerPct: 10.0, sellRatio: 0.20 },
+      { stage: 3, triggerPct: 6.0, sellRatio: 0.20 },
+      { stage: 4, triggerPct: 10.0, sellRatio: 0.15 },
     ];
   } else if (['바이오', '제약'].includes(sector)) {
     // 바이오 — 고변동성
     stages = [
-      { stage: 1, triggerPct: accel ? 3.0 : 1.5, sellRatio: 0.25 },
-      { stage: 2, triggerPct: 4.5, sellRatio: 0.20 },
+      { stage: 1, triggerPct: accel ? 3.0 : 1.5, sellRatio: 0.35 },
+      { stage: 2, triggerPct: 4.5, sellRatio: 0.25 },
       { stage: 3, triggerPct: 8.0, sellRatio: 0.20 },
-      { stage: 4, triggerPct: 13.0, sellRatio: 0.20 },
-      { stage: 5, triggerPct: 20.0, sellRatio: 0.15 },
+      { stage: 4, triggerPct: 13.0, sellRatio: 0.15 },
+      { stage: 5, triggerPct: 20.0, sellRatio: 0.05 },
     ];
   } else if (['금융', '은행', '보험', '유틸리티', '통신'].includes(sector)) {
     // 금융/유틸리티 — 저변동성
     stages = [
-      { stage: 1, triggerPct: accel ? 1.5 : 1.0, sellRatio: 0.30 },
+      { stage: 1, triggerPct: accel ? 1.5 : 1.0, sellRatio: 0.40 },
       { stage: 2, triggerPct: 2.0, sellRatio: 0.25 },
-      { stage: 3, triggerPct: 4.0, sellRatio: 0.25 },
+      { stage: 3, triggerPct: 4.0, sellRatio: 0.20 },
       { stage: 4, triggerPct: 7.0, sellRatio: 0.15 },
     ];
   } else {
     // 기본 (자동차, 건설 등)
     stages = [
-      { stage: 1, triggerPct: accel ? 2.0 : 1.0, sellRatio: 0.30 },
+      { stage: 1, triggerPct: accel ? 2.0 : 1.0, sellRatio: 0.40 },
       { stage: 2, triggerPct: 3.0, sellRatio: 0.25 },
       { stage: 3, triggerPct: 5.5, sellRatio: 0.20 },
-      { stage: 4, triggerPct: 8.5, sellRatio: 0.15 },
-      { stage: 5, triggerPct: 12.0, sellRatio: 0.10 },
+      { stage: 4, triggerPct: 8.5, sellRatio: 0.10 },
+      { stage: 5, triggerPct: 12.0, sellRatio: 0.05 },
     ];
   }
 

@@ -17,6 +17,7 @@ import { getCtxIsPaper } from '../../config/context.js';
 import { logger } from '../../utils/logger.js';
 import { tryFinalEntry, tryRegimeRouterEntry } from './filters/entry-decision.js';
 // ── 필터 모듈 (각각 독립, 크로스 import 없음) ──
+import { computeAdaptiveScore } from './filters/adaptive-scoring.js';
 import { isHardBlocked } from './filters/hard-gates.js';
 import { checkQualityGates } from './filters/quality-gates.js';
 import { checkRiskGates, isBreakoutBlocked } from './filters/risk-gates.js';
@@ -50,6 +51,7 @@ export async function filterBuyCandidates(params: TechnicalFallbackParams): Prom
     winRates,
     marketSignals,
     lossHistory,
+    repeatLoserCodes,
   } = params;
 
   const strategyParams = resolveStrategyParams(mode, params);
@@ -88,6 +90,7 @@ export async function filterBuyCandidates(params: TechnicalFallbackParams): Prom
         lossHistory,
         chartData,
         tradingValues,
+        repeatLoserCodes,
       };
       if (isHardBlocked(hardGateInput)) continue;
 
@@ -137,6 +140,7 @@ export async function filterBuyCandidates(params: TechnicalFallbackParams): Prom
       lossHistory,
       chartData,
       tradingValues,
+      repeatLoserCodes,
     };
     if (isHardBlocked(hardGateInput)) continue;
 
@@ -203,7 +207,7 @@ export async function filterBuyCandidates(params: TechnicalFallbackParams): Prom
 
     const noAiForStock = noAiScores || aiScore === 0;
 
-    // ━━━ 3단계: 품질 게이트 ━━━
+    // ━━━ 3단계: 품질 게이트 + Tier 3 적응형 시그모이드 ━━━
     const quality = checkQualityGates({
       tech,
       scoring,
@@ -217,12 +221,29 @@ export async function filterBuyCandidates(params: TechnicalFallbackParams): Prom
       isRallyDay: params.kospiBoost,
     });
     if (!quality.passed) {
-      const d = quality.details;
-      logger.info(
-        `  🔍 ${stock.stock_code}: 품질게이트 ${quality.count}/${quality.min} 미달 [vol=${d.vol} trend=${d.trend} dir=${d.dir} rsi=${d.rsi} cf=${d.cf} sig=${d.sig}] → 스킵`,
-        { component: 'TRACK_B' },
-      );
-      continue;
+      // Tier 3: 시그모이드 오버레이 — 이진 게이트 실패해도 confluencyScore > 0.55면 통과
+      let adaptiveBypass = false;
+      try {
+        const adaptive = computeAdaptiveScore(tech, scoring.adjustedVolRatio);
+        if (adaptive.passed) {
+          adaptiveBypass = true;
+          logger.info(
+            `  🔬 ${stock.stock_code}: 적응형 통과 (conf=${adaptive.confluencyScore.toFixed(2)}) [RSI=${adaptive.details.rsiScore} Vol=${adaptive.details.volumeScore} Trend=${adaptive.details.trendScore} Mom=${adaptive.details.momentumScore}]`,
+            { component: 'TRACK_B' },
+          );
+        }
+      } catch {
+        // 폴백: 기존 이진 게이트 결과만 사용
+      }
+
+      if (!adaptiveBypass) {
+        const d = quality.details;
+        logger.info(
+          `  🔍 ${stock.stock_code}: 품질게이트 ${quality.count}/${quality.min} 미달 [vol=${d.vol} trend=${d.trend} dir=${d.dir} rsi=${d.rsi} cf=${d.cf} sig=${d.sig}] → 스킵`,
+          { component: 'TRACK_B' },
+        );
+        continue;
+      }
     }
 
     // ━━━ 4단계: 리스크 게이트 ━━━

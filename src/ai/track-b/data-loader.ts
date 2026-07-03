@@ -17,6 +17,7 @@ import {
   getRecentLossStocks,
   getRecentlySoldStocks,
   getRecentManuallySoldStocks,
+  getRepeatLoserBlacklist,
   getTodayRepeatStopCodes,
 } from '../../db/client.js';
 import { getAccountBalance } from '../../kis/account.js';
@@ -35,6 +36,8 @@ export interface PipelineData {
   recentlySoldCodes: Awaited<ReturnType<typeof getRecentlySoldStocks>>;
   balance: any;
   lossHistory: Awaited<ReturnType<typeof getLossHistory>>;
+  /** v21: 14일 내 2회+ 손절 종목 → 7일 자동 블랙리스트 */
+  repeatLoserCodes: Set<string>;
   ctxIsPaper: boolean;
   /** 동시호가 PENDING 주문 종목 — Track B 중복매수 방지 */
   pendingPreMarketCodes: Set<string>;
@@ -76,7 +79,7 @@ export async function loadPipelineData(): Promise<PipelineData> {
           getActiveWatchlist(),
           getOpenChains(getCtxIsPaper()),
           getActiveStrategy(),
-          getRecentLossStocks(getCtxIsPaper() ? 1 : 5), // Paper: 1일 쿨다운
+          getRecentLossStocks(getCtxIsPaper() ? 3 : 5), // Paper: 3일 쿨다운 (v22: 1일→3일, 반복손절 데이터 수집에도 최소 보호 필요)
           getRecentManuallySoldStocks(24),
         ]);
       }
@@ -88,8 +91,8 @@ export async function loadPipelineData(): Promise<PipelineData> {
   const ctxIsPaper = getCtxIsPaper();
 
   // ── 2차 쿼리 병렬 실행 ──
-  const [todayRepeatStopCodes, bigLossBlocked, recentlySoldCodes, balanceRaw, lossHistory, pendingPreMarketCodes] = await Promise.all([
-    getTodayRepeatStopCodes(ctxIsPaper ? 3 : 1),  // paper: 3회 이상만 차단 (오전 손절→오후 회복 재진입 허용)
+  const [todayRepeatStopCodes, bigLossBlocked, recentlySoldCodes, balanceRaw, lossHistory, pendingPreMarketCodes, repeatLoserCodes] = await Promise.all([
+    getTodayRepeatStopCodes(ctxIsPaper ? 2 : 1),  // v22: paper도 2회(3→2)로 강화, 005950처럼 4회 손절 방지
     getBigLossBlockedStocks(),        // -5% 초과 손실 → 30일 절대 차단 (레거시 폴백)
     getRecentlySoldStocks(4),          // v10.3: 최근 4시간 매도 → 재진입 쿨다운 (반복매매=적자 주범)
     ctxIsPaper ? getPaperBalance() : getAccountBalance(true),
@@ -102,12 +105,14 @@ export async function loadPipelineData(): Promise<PipelineData> {
        `,
       [ctxIsPaper],
     ).then(({ rows }) => new Set(rows.map((r: any) => r.stock_code as string))).catch(() => new Set<string>()),
+    getRepeatLoserBlacklist(),        // v21: 14일 내 2회+ 손절 → 7일 블랙리스트
   ]);
 
   // v10.4: 인메모리 쿨다운 병합 (DB 반영 전 매도도 차단)
   for (const code of getMemoryCooldownCodes(ctxIsPaper)) recentlySoldCodes.add(code);
-  // 인버스 ETF는 쿨다운 예외 — 하락장 지속 시 즉시 재진입 가능해야 함
-  for (const code of INVERSE_ETF_CODES) recentlySoldCodes.delete(code);
+  // v22: 인버스 ETF 쿨다운 예외 제거 — 114800 반복손실 -236K원 방지
+  // 하락장이라도 손절 후 최소 쿨다운 필요 (4시간)
+  // for (const code of INVERSE_ETF_CODES) recentlySoldCodes.delete(code);
   if (todayRepeatStopCodes.size > 0) {
     logger.warn(`🚫 당일 반복손절 재진입 차단: ${[...todayRepeatStopCodes].join(', ')}`, { component: 'TRACK_B' });
   }
@@ -123,6 +128,7 @@ export async function loadPipelineData(): Promise<PipelineData> {
     recentlySoldCodes,
     balance: balanceRaw as any,
     lossHistory,
+    repeatLoserCodes,
     ctxIsPaper,
     pendingPreMarketCodes,
   };

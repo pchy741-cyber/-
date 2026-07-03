@@ -234,6 +234,30 @@ export async function getDynamicPositionSize(
     logger.warn(`종목별 손익 이력 계산 실패 → 스킵: ${stockCode}`, { component: 'SIZER', error: err });
   }
 
+  // ── Tier 6: VKOSPI 블렌딩 (전방 변동성) ──
+  // ATR(후행) + VKOSPI(선행) 블렌딩으로 사이징 보정
+  try {
+    const { getKrxOptionsSignal } = await import('../market/krx-options.js');
+    const optSignal = await getKrxOptionsSignal();
+    if (optSignal.vkospi !== null) {
+      let vkospiMult = 1.0;
+      if (optSignal.vkospi >= 30) {
+        vkospiMult = 0.6; // 극공포 시 사이즈 대폭 축소
+      } else if (optSignal.vkospi >= 25) {
+        vkospiMult = 0.8; // 공포 시 축소
+      } else if (optSignal.vkospi < 18) {
+        vkospiMult = 1.1; // 안정기 약간 확대
+      }
+      if (vkospiMult !== 1.0) {
+        finalMultiplier *= vkospiMult;
+        reasons.push(`VKOSPI ${optSignal.vkospi.toFixed(1)} x${vkospiMult}`);
+      }
+    }
+  } catch (err) {
+    // 폴백: ATR 단독 사이징 (기존과 동일)
+    logger.warn(`VKOSPI 블렌딩 실패 → ATR 단독: ${err}`, { component: 'SIZER' });
+  }
+
   // 최소/최대 클램핑 (최소 0.3x — 너무 작으면 최소 주문금액 미달)
   finalMultiplier = Math.max(0.3, Math.min(1.5, finalMultiplier));
 

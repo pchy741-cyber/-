@@ -57,6 +57,8 @@ export interface TechnicalFallbackParams {
   softBlockSizingMult?: number;
   /** 손실 이력 (스마트 재진입용) — pipeline에서 getLossHistory() 로딩 */
   lossHistory?: Map<string, import('../../db/client.js').LossRecord>;
+  /** v21: 14일 내 2회+ 손절 종목 → 7일 자동 블랙리스트 */
+  repeatLoserCodes?: Set<string>;
   /** 장기보유(LTH) 종목 코드 — 일반 SL/TP 무시, 하락장에서만 매도 후 재매수 허용 */
   longTermHoldCodes?: Set<string>;
 }

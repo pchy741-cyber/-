@@ -48,6 +48,7 @@ export {
   getRecentLossStocks,
   getRecentManuallySoldStocks,
   getRecentlySoldStocks,
+  getRepeatLoserBlacklist,
   getTodayRepeatStopCodes,
 } from './repo/cooldowns.js';
 export type { LossRecord } from './repo/cooldowns.js';

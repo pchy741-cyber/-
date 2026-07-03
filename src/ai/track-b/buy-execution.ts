@@ -208,7 +208,33 @@ export async function executeBuyDecisions(
     recentStreak: undefined, // TODO: 연승/연패 추적 추가 시 연결
     portfolioUtil,
   });
-  strategyParams.buyThreshold = adaptiveBuyThreshold;
+  // v23: 시간대별 buyThreshold 조정 — KOSPI MIM 논문 근거
+  // 출처: MDPI 2022 "Market Intraday Momentum with New Measures for Trading Cost: Evidence from KOSPI Index"
+  // - 첫 30분은 정보 소화 기간(극심한 노이즈) → 진입 억제
+  // - 장중 U자형 거래량 패턴: 11:00~14:00 저유동성 → 불리한 체결
+  // - 14:00~15:20 스프레드 축소 + 모멘텀 빌드업 → 최적 진입 시간대
+  const kstNow = new Date(Date.now() + 9 * 60 * 60_000);
+  const kstHH = kstNow.getUTCHours();
+  const kstMM = kstNow.getUTCMinutes();
+  let timeAdj = 0;
+  let timeLabel = '';
+  if (kstHH === 9 && kstMM < 30) {
+    timeAdj = +10; timeLabel = '개장30분 노이즈';
+  } else if (kstHH === 9) {
+    timeAdj = +5; timeLabel = '장초반 변동성';
+  } else if (kstHH >= 11 && kstHH < 14) {
+    timeAdj = +3; timeLabel = '장중 U자형 저유동성';
+  } else if (kstHH === 14) {
+    timeAdj = -3; timeLabel = '오후 모멘텀 빌드업';
+  } else if (kstHH === 15 && kstMM < 20) {
+    timeAdj = -2; timeLabel = '마감전 MIM 시그널';
+  }
+  strategyParams.buyThreshold = adaptiveBuyThreshold + timeAdj;
+  if (timeAdj !== 0) {
+    logger.info(`🕐 시간대 보정: buyThreshold ${adaptiveBuyThreshold}→${strategyParams.buyThreshold} (${kstHH}:${String(kstMM).padStart(2, '0')} ${timeLabel})`, { component: 'TRACK_B' });
+  } else {
+    strategyParams.buyThreshold = adaptiveBuyThreshold;
+  }
 
   const aiScoreMap = buildAiScoreMap(params.aiScores);
   const noAiScores = hasNoAiScores(params.aiScores);
@@ -805,8 +831,13 @@ export async function executeBuyDecisions(
     // AI 확신도 기반 포지션 배율: 고득점 → 집중도 상한 확대
     const aiPosMultiplier = aiScore >= 85 ? 1.5 : aiScore >= 70 ? 1.2 : 1.0;
 
-    // 연속손실 배율 — 2연속 손실 시 0.7x, 3+연속 시 0.5x
+    // 연속손실 배율 — 2연속 손실 시 0.8x, 3+연속 시 0.65x, 5+연속 0.4x, 8+연속 HALT
     const lossStreakMult = await getLossStreakMultiplier(getCtxIsPaper());
+    // v22: 회로차단기 — HALT(0x) 시 실제 매수 차단 (기존: Math.max(0.4) 로 무력화됨)
+    if (lossStreakMult <= 0) {
+      logger.warn(`  🛑 ${cand.stock_code}: 연속손실 HALT → 매수 차단`, { component: 'TRACK_B' });
+      continue;
+    }
     if (lossStreakMult < 1.0) {
       logger.info(`  ⚠️ ${cand.stock_code}: 연속손실 배율 ×${lossStreakMult} → 포지션 축소`, { component: 'TRACK_B' });
     }
@@ -893,8 +924,8 @@ export async function executeBuyDecisions(
       );
     }
 
-    // AI 고확신 포지션 한도: 90점+ 시장좋으면 40%까지, 그 외 25%
-    const _concPct = blendedScore >= 90 && _mktMult >= 1.0 ? 0.40 : 0.25;
+    // AI 고확신 포지션 한도: 90점+ 시장좋으면 30%까지, 그 외 20% (v18: 40/25→30/20 집중도 제한)
+    const _concPct = blendedScore >= 90 && _mktMult >= 1.0 ? 0.30 : 0.20;
     const concentrationCap = !canDiversify3
       ? totalAssets
         ? totalAssets * 0.8

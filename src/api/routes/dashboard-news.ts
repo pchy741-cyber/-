@@ -55,6 +55,22 @@ const BULL_KW = [
 ];
 const BEAR_KW = ['폭락', '하락장', '공포', '위기', '매도', '급락', '붕괴', '추락', '침체', '위험', '악재', '하락'];
 
+// ── 상대시간 포맷 (v22: "방금", "2시간 전", "어제") ──
+function formatRelativeTime(pubMs: number, nowMs: number): string {
+  if (!pubMs || isNaN(pubMs)) return '';
+  const diffMs = nowMs - pubMs;
+  if (diffMs < 0) return '방금';
+  const mins = Math.floor(diffMs / 60_000);
+  if (mins < 1) return '방금';
+  if (mins < 60) return `${mins}분 전`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}시간 전`;
+  const days = Math.floor(hours / 24);
+  if (days === 1) return '어제';
+  if (days < 7) return `${days}일 전`;
+  return `${Math.floor(days / 7)}주 전`;
+}
+
 // ── 한글 뉴스 요약 (Gemini OFF 폴백) ──
 function generateFreeKoreanSummary(headlineLines: string[]): string {
   const koreanLines = headlineLines.filter((l) => /[\u3131-\uD7A3]/.test(l));
@@ -142,19 +158,31 @@ dashboardNewsRoutes.get('/macro', async (c) => {
   }
 });
 
-// ── 오늘 수집된 뉴스 피드 ──
+// ── 오늘 수집된 뉴스 피드 (v22: 날짜 포함 + 최신순) ──
 dashboardNewsRoutes.get('/news', async (c) => {
   try {
     const { getTodayNews } = await import('../../automation/news-collector.js');
     const newsMap = getTodayNews();
+    const now = Date.now();
     const result: Array<{
       stockCode: string;
       stockName?: string;
-      items: Array<{ title: string; link: string; publishedAt?: string }>;
+      items: Array<{ title: string; link: string; publishedAt: string; relativeTime: string }>;
     }> = [];
     for (const [stockCode, items] of newsMap.entries()) {
       if (items.length > 0) {
-        result.push({ stockCode, items: items.slice(0, 10) });
+        const mapped = items.slice(0, 10).map((item) => {
+          const pubMs = new Date(item.publishedAt).getTime();
+          return {
+            title: item.title,
+            link: item.link,
+            publishedAt: item.publishedAt,
+            relativeTime: formatRelativeTime(pubMs, now),
+          };
+        });
+        // 종목 내 최신순
+        mapped.sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime());
+        result.push({ stockCode, items: mapped });
       }
     }
     result.sort((a, b) => b.items.length - a.items.length);
@@ -164,21 +192,33 @@ dashboardNewsRoutes.get('/news', async (c) => {
   }
 });
 
-// ── 매크로 뉴스 피드 ──
+// ── 매크로 뉴스 피드 (v22: 날짜 포함 구조체) ──
 dashboardNewsRoutes.get('/news/macro', async (c) => {
   try {
-    const { collectMacroNews } = await import('../../automation/news-collector.js');
-    const raw = await Promise.race([
-      collectMacroNews(),
-      new Promise<string>((resolve) => setTimeout(() => resolve(''), 8000)),
+    const { getMacroHeadlines } = await import('../../automation/news-collector.js');
+    const headlines = await Promise.race([
+      getMacroHeadlines(),
+      new Promise<Array<{ title: string; link: string; source: string; publishedAt: string }>>((resolve) =>
+        setTimeout(() => resolve([]), 8000),
+      ),
     ]);
-    const lines = raw
-      .split('\n')
-      .filter((l) => l.startsWith('- ['))
-      .map((l) => l.replace(/^- /, ''));
-    return c.json({ headlines: lines });
+    // 구조체 반환: title, link, source, publishedAt, relativeTime
+    const now = Date.now();
+    const result = headlines.map((h) => {
+      const pubMs = new Date(h.publishedAt).getTime();
+      return {
+        title: h.title,
+        link: h.link,
+        source: h.source,
+        publishedAt: h.publishedAt,
+        relativeTime: formatRelativeTime(pubMs, now),
+      };
+    });
+    // 최신순 정렬
+    result.sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime());
+    return c.json({ headlines: result, fetchedAt: new Date().toISOString() });
   } catch {
-    return c.json({ headlines: [] });
+    return c.json({ headlines: [], fetchedAt: new Date().toISOString() });
   }
 });
 
@@ -187,15 +227,72 @@ dashboardNewsRoutes.get('/news/regime-summary', async (c) => {
   try {
     const { detectMarketRegime, generateMarketSummaryKorean } = await import('../../automation/market-regime.js');
     const regime = await detectMarketRegime();
+
+    // v21: US 시장 분위기 추가
+    let usMarket: { trend: string; spy: number; qqq: number; breadth: string } | null = null;
+    try {
+      const { getUSSectorSignals } = await import('../../market/us-sector-signals.js');
+      const snap = await getUSSectorSignals();
+      usMarket = {
+        trend: snap.marketTrend,
+        spy: snap.indices.find((i) => i.symbol === 'SPY')?.changePct ?? 0,
+        qqq: snap.indices.find((i) => i.symbol === 'QQQ')?.changePct ?? 0,
+        breadth: `${snap.bullishCount}/${snap.totalCount}`,
+      };
+    } catch { /* US 데이터 실패 시 무시 */ }
+
     return c.json({
       summary: generateMarketSummaryKorean(regime),
       regime: regime.regime,
       score: regime.score,
       recommended: regime.recommendedMode,
       reasons: regime.reasons,
+      usMarket,
     });
   } catch {
-    return c.json({ summary: '', regime: 'NEUTRAL', score: 0, recommended: 'SWING', reasons: [] });
+    return c.json({ summary: '', regime: 'NEUTRAL', score: 0, recommended: 'SWING', reasons: [], usMarket: null });
+  }
+});
+
+// ── AI 뉴스 분석 (v22.1: FinBERT+Gemini 하이브리드) ──
+dashboardNewsRoutes.get('/news/ai-analysis', async (c) => {
+  try {
+    const { analyzeNewsHeadlines, getCachedNewsAnalysis } = await import('../../automation/news-analyzer.js');
+
+    // 캐시 우선
+    let analysis = getCachedNewsAnalysis();
+    if (!analysis) {
+      analysis = await analyzeNewsHeadlines();
+    }
+
+    return c.json({
+      overallSentiment: analysis.overallSentiment,
+      regimeAdjustment: analysis.regimeAdjustment,
+      marketImpactSummary: analysis.marketImpactSummary,
+      analysisSource: analysis.analysisSource,
+      headlineCount: analysis.headlines.length,
+      headlines: analysis.headlines.map((h) => ({
+        title: h.title,
+        sentiment: h.sentiment,
+        impact: h.impact,
+        category: h.category,
+        summary: h.summary,
+        isSystemicRisk: h.isSystemicRisk,
+        source: h.source,
+      })),
+      analyzedAt: new Date(analysis.analyzedAt).toISOString(),
+    });
+  } catch (err) {
+    logger.error(`AI 뉴스 분석 API 실패: ${err}`, { component: 'NEWS_AI' });
+    return c.json({
+      overallSentiment: 0,
+      regimeAdjustment: 0,
+      marketImpactSummary: '',
+      analysisSource: 'error',
+      headlineCount: 0,
+      headlines: [],
+      analyzedAt: null,
+    });
   }
 });
 

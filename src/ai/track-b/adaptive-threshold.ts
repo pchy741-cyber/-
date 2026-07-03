@@ -97,6 +97,30 @@ export function getAdaptiveBuyThreshold(input: AdaptiveThresholdInput): number {
     }
   }
 
+  // ── Tier 7: 레짐별 학습된 threshold 오버라이드 ──
+  try {
+    if (regime) {
+      const regimeThresholds = _getRegimeThresholds();
+      // RegimeV2 → 학습 레짐 매핑
+      const regimeKey =
+        regime === 'TREND_BULL' || regime === 'BREAKOUT' ? 'BULLISH' :
+        regime === 'TREND_BEAR' || regime === 'DISTRIBUTION' ? 'BEARISH' :
+        'NEUTRAL';
+      const learnedThreshold = regimeThresholds?.[regimeKey];
+      if (learnedThreshold != null) {
+        // 학습된 threshold와 현재 base+adj 블렌딩 (50:50)
+        const blended = Math.round((base + adj + learnedThreshold) / 2);
+        const diff = blended - (base + adj);
+        if (diff !== 0) {
+          adj += diff;
+          tags.push(`레짐학습(${regimeKey}=${learnedThreshold}:${diff > 0 ? '+' : ''}${diff})`);
+        }
+      }
+    }
+  } catch {
+    // 폴백: 레짐별 학습 미적용
+  }
+
   // Clamp: [base - 12, base + 20]
   const result = Math.max(base - 12, Math.min(base + 20, base + adj));
 
@@ -108,4 +132,38 @@ export function getAdaptiveBuyThreshold(input: AdaptiveThresholdInput): number {
   }
 
   return result;
+}
+
+// ── Tier 7: 레짐별 threshold 캐시 (동기 접근) ──
+let _regimeThresholdCache: { data: Record<string, number> | null; expiresAt: number; isPaper: boolean } | null = null;
+
+function _getRegimeThresholds(): Record<string, number> | null {
+  try {
+    const { getCtxIsPaper } = require('../../config/context.js');
+    const isPaper = getCtxIsPaper();
+    if (_regimeThresholdCache && _regimeThresholdCache.isPaper === isPaper && Date.now() < _regimeThresholdCache.expiresAt) {
+      return _regimeThresholdCache.data;
+    }
+    // 비동기 로드 트리거 (fire-and-forget)
+    _loadRegimeThresholds(isPaper).catch(() => {});
+    return _regimeThresholdCache?.data ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function _loadRegimeThresholds(isPaper: boolean): Promise<void> {
+  try {
+    const { getPool } = await import('../../db/client.js');
+    const key = isPaper ? 'p_regime_buy_thresholds' : 'l_regime_buy_thresholds';
+    const { rows } = await getPool().query(`SELECT value FROM system_state WHERE key = $1`, [key]);
+    if (rows.length > 0 && rows[0].value) {
+      const data = typeof rows[0].value === 'string' ? JSON.parse(rows[0].value) : rows[0].value;
+      _regimeThresholdCache = { data, expiresAt: Date.now() + 30 * 60 * 1000, isPaper };
+    } else {
+      _regimeThresholdCache = { data: null, expiresAt: Date.now() + 30 * 60 * 1000, isPaper };
+    }
+  } catch {
+    _regimeThresholdCache = { data: null, expiresAt: Date.now() + 5 * 60 * 1000, isPaper };
+  }
 }

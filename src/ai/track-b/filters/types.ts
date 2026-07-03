@@ -46,6 +46,8 @@ export interface HardGateInput {
   chartData?: Map<string, DailyCandle[]>;
   /** 실시간 거래대금 = volume × currentPrice (주도주 필터용) */
   tradingValues?: Map<string, number>;
+  /** v21: 14일 내 2회+ 손절 → 7일 자동 블랙리스트 대상 종목 */
+  repeatLoserCodes?: Set<string>;
   /** [출력] 스마트 재진입 시 제안 SL 가격 — hard-gates에서 설정, buy-execution에서 참조 */
   _smartReentrySl?: number;
 }

@@ -232,14 +232,31 @@ function mergeScores(modelResults: ModelResult[], config: EnsembleConfig): Scori
     const stdDev = Math.sqrt(variance);
     // stdDev 0 → confidence 0.9, stdDev 20+ → confidence 0.5
     const agreementBonus = Math.max(0, AGREEMENT_WEIGHT * (1 - Math.min(1, stdDev / STD_DEV_NORMALIZER)));
-    const confidence = Math.min(MAX_CONFIDENCE, BASE_CONFIDENCE + agreementBonus);
+    let confidence = Math.min(MAX_CONFIDENCE, BASE_CONFIDENCE + agreementBonus);
+
+    // ── Tier 2: 앙상블 불일치 감지 ──
+    // 모델간 편차가 크면 confidence 캡, 합의 시 보너스
+    let disagreementTag = '';
+    try {
+      if (stdDev > 15) {
+        // 모델간 불일치가 크면 신뢰도 제한 (과신 방지)
+        confidence = Math.min(confidence, 0.60);
+        disagreementTag = ' ⚠불일치';
+      } else if (stdDev < 5 && entries.length >= 2) {
+        // 2개+ 모델이 합의하면 신뢰도 보너스
+        confidence = Math.min(MAX_CONFIDENCE, confidence + 0.05);
+        disagreementTag = ' ✓합의';
+      }
+    } catch {
+      // 폴백: 원래 confidence 유지
+    }
 
     // reasoning: 각 모델 점수 투명 표시
     const parts = entries.map((e) => {
       const label = e.model === 'gemini' ? 'G' : e.model === 'gpt' ? 'GPT' : e.model === 'claude' ? 'C' : 'RSS';
       return `${label}:${e.score.composite_score}`;
     });
-    const reasoning = `[앙상블:${config.strategy}] ${parts.join(' ')} → ${composite} (σ=${stdDev.toFixed(1)}, ${entries.length}모델)`;
+    const reasoning = `[앙상블:${config.strategy}] ${parts.join(' ')} → ${composite} (σ=${stdDev.toFixed(1)}, ${entries.length}모델${disagreementTag})`;
 
     merged.push({
       stock_code: stockCode,

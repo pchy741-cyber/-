@@ -92,7 +92,7 @@ export const GPT_DEFENSE_ADDON = `
 ## [하락장 감점]
 Gemini가 시장을 "bearish" 또는 "panic"으로 판정한 경우:
 - 모든 종목 최종 점수에서 -30점 강제 감점
-- 매수 임계치 85점으로 상향 (정말 확실한 것만)
+- 매수 임계치 80점으로 상향 (buyThreshold=80 기준, 감점 적용 후 80점 이상만 매수)
 - reasoning에 "하락장 감점 -30점 적용" 명시`;
 
 // ── 레짐별 스코어링 보정 (Phase 5) ──
