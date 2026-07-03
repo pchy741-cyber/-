@@ -427,8 +427,9 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
             currentPrice: price.currentPrice,
           });
           if (mhResult.shouldHold) {
+            const _mhMax = curPeak >= 10 ? 6 : curPeak >= 5 ? 5 : 3;
             logger.info(
-              `🔋 모멘텀홀드: ${chain.stock_code} TrailingStop 억제 (${mhResult.holdCount}/3) | 고점+${curPeak.toFixed(1)}%→현재+${pnlPct.toFixed(1)}% | ${mhResult.reason}`,
+              `🔋 모멘텀홀드: ${chain.stock_code} TrailingStop 억제 (${mhResult.holdCount}/${_mhMax}) | 고점+${curPeak.toFixed(1)}%→현재+${pnlPct.toFixed(1)}% | ${mhResult.reason}`,
               { component: 'MOMENTUM_HOLD' },
             );
             continue; // 이번 사이클 매도 스킵 → 2분 후 재평가

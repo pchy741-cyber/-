@@ -16,8 +16,9 @@ import { logger } from './logger.js';
 import { logTokenUsage, calcGeminiVertexCost, calcGeminiStudioCost } from './ai-token-logger.js';
 
 // ── 모델 설정 ──
-const FREE_MODEL = 'gemini-2.5-flash';
-const GROUNDED_MODEL = 'gemini-2.5-flash'; // Vertex AI grounding 지원 모델 (2.0-flash-001은 2026-06-01 서비스 종료)
+const FREE_MODEL = 'gemini-2.5-flash';           // AI Studio 무료 티어 (thinking OK — 무료이므로)
+const VERTEX_MODEL = 'gemini-2.0-flash';          // Vertex 비그라운딩 호출 — thinking 토큰 없음 ($0.40/1M output vs $3.50/1M thinking)
+const GROUNDED_MODEL = 'gemini-2.5-flash';        // Vertex 그라운딩 전용 — 검색 결과 해석 품질 필요
 const VERTEX_LOCATION = 'us-central1';
 
 export interface GeminiCallOptions {
@@ -113,7 +114,7 @@ const _recentCalls: CallRecord[] = [];
 export function getAiCostSummary() {
   resetDailyIfNeeded();
   return {
-    model: `AI Studio FREE (${FREE_MODEL}) + Vertex Grounded (${GROUNDED_MODEL})`,
+    model: `AI Studio FREE (${FREE_MODEL}) + Vertex (${VERTEX_MODEL}) + Grounded (${GROUNDED_MODEL})`,
     today: {
       calls: _dailyTotals.calls,
       vertexCalls: _dailyTotals.vertexCalls,
@@ -156,6 +157,7 @@ function getVertexAI(): VertexAI {
 
 /**
  * Vertex AI SDK — 비용 절약형 (Google Search Grounding 없음)
+ * gemini-2.0-flash 사용 — thinking 토큰 없어서 ~85% 저렴
  * AI Studio 일 250콜 한도 소진 시 자동 폴백으로 사용
  */
 async function callVertexUngrounded(
@@ -165,7 +167,7 @@ async function callVertexUngrounded(
 ): Promise<{ text: string; inputTokens: number; outputTokens: number }> {
   const vertexAI = getVertexAI();
   const model = vertexAI.getGenerativeModel({
-    model: GROUNDED_MODEL,
+    model: VERTEX_MODEL,
     generationConfig: {
       temperature: opts.temperature ?? 0.2,
       maxOutputTokens: opts.maxOutputTokens ?? 8192,
@@ -276,8 +278,8 @@ export async function callVertexGemini(
       const durationMs = Date.now() - startMs;
       _recentCalls.push({ label, inputTokens, outputTokens, at: new Date().toISOString(), durationMs, isGrounded: false, costUsd });
       if (_recentCalls.length > 20) _recentCalls.shift();
-      logTokenUsage({ provider: 'gemini', model: GROUNDED_MODEL, inputTokens, outputTokens, costUsd, label });
-      logger.info(`⚡ Vertex Direct [${label}]: ${inputTokens}+${outputTokens}tok $${costUsd.toFixed(5)}`, { component: 'AI_COST' });
+      logTokenUsage({ provider: 'gemini', model: VERTEX_MODEL, inputTokens, outputTokens, costUsd, label });
+      logger.info(`⚡ Vertex Direct [${label}]: ${inputTokens}+${outputTokens}tok $${costUsd.toFixed(5)} (${VERTEX_MODEL})`, { component: 'AI_COST' });
       return text;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -291,7 +293,7 @@ export async function callVertexGemini(
       const { text, inputTokens, outputTokens } = await callVertexGrounded(systemPrompt, userMessage, opts);
       const durationMs = Date.now() - startMs;
 
-      // 비용 추정: Gemini 2.5 Flash $0.1/1M input + $0.4/1M output + Search grounding $0.035/query
+      // 비용 추정: Gemini 2.5 Flash $0.15/1M input + $0.60/1M output + thinking $3.50/1M + Search grounding $0.035/query
       const costUsd = calcGeminiVertexCost(inputTokens, outputTokens, true);
 
       _dailyTotals.vertexCalls++;
@@ -340,8 +342,8 @@ export async function callVertexGemini(
       const durationMs = Date.now() - startMs;
       _recentCalls.push({ label, inputTokens, outputTokens, at: new Date().toISOString(), durationMs, isGrounded: false, costUsd });
       if (_recentCalls.length > 20) _recentCalls.shift();
-      logTokenUsage({ provider: 'gemini', model: GROUNDED_MODEL, inputTokens, outputTokens, costUsd, label });
-      logger.info(`⚡ Vertex Fallback [${label}]: ${inputTokens}+${outputTokens}tok $${costUsd.toFixed(5)}`, { component: 'AI_COST' });
+      logTokenUsage({ provider: 'gemini', model: VERTEX_MODEL, inputTokens, outputTokens, costUsd, label });
+      logger.info(`⚡ Vertex Fallback [${label}]: ${inputTokens}+${outputTokens}tok $${costUsd.toFixed(5)} (${VERTEX_MODEL})`, { component: 'AI_COST' });
       return text;
     } catch (vErr) {
       const vMsg = vErr instanceof Error ? vErr.message : String(vErr);
@@ -410,8 +412,8 @@ export async function callVertexGemini(
         const durationMs = Date.now() - startMs;
         _recentCalls.push({ label, inputTokens, outputTokens, at: new Date().toISOString(), durationMs, isGrounded: false, costUsd });
         if (_recentCalls.length > 20) _recentCalls.shift();
-        logTokenUsage({ provider: 'gemini', model: GROUNDED_MODEL, inputTokens, outputTokens, costUsd, label });
-        logger.info(`⚡ Vertex 429-Fallback [${label}]: ${inputTokens}+${outputTokens}tok $${costUsd.toFixed(5)}`, { component: 'AI_COST' });
+        logTokenUsage({ provider: 'gemini', model: VERTEX_MODEL, inputTokens, outputTokens, costUsd, label });
+        logger.info(`⚡ Vertex 429-Fallback [${label}]: ${inputTokens}+${outputTokens}tok $${costUsd.toFixed(5)} (${VERTEX_MODEL})`, { component: 'AI_COST' });
         return text;
       } catch (vErr) {
         const vMsg = vErr instanceof Error ? vErr.message : String(vErr);

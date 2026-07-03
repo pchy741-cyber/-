@@ -245,7 +245,7 @@ dashboardNewsRoutes.get('/news/summary', async (c) => {
     const summaryPromise = callVertexNews(
       '당신은 주식 투자 전문가입니다. 뉴스를 투자자 관점에서 간결하게 요약합니다.',
       `아래는 오늘 글로벌 금융 뉴스 헤드라인입니다. 주식 투자에 영향을 미치는 핵심 내용만 뽑아서 한국어로 자연스럽게 2~3문장으로 요약해 주세요. 투자자 관점에서 오늘 시장 분위기와 주요 이슈를 간결하게 서술하세요.\n\n${headlines}`,
-      { temperature: 0.2, useVertex: true, label: '뉴스-요약' },
+      { temperature: 0.2, label: '뉴스-요약' },
     );
 
     const summary = await Promise.race([

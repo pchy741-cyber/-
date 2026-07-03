@@ -34,7 +34,8 @@ export interface MomentumHoldResult {
  * 모멘텀이 유지되는지 판단하여 트레일링 스탑 매도를 유보할지 결정
  *
  * 안전 한도 (force sell — 모멘텀 무시):
- * 1. holdCount >= 3 → 3회 유보 후 반드시 매도 (2분 사이클 × 3 = 6분 추가)
+ * 1. holdCount >= maxHold → 동적 한도 초과 시 반드시 매도
+ *    curPeak >= 10%: 6회(12분), >= 5%: 5회(10분), 기본: 3회(6분)
  * 2. pnlPct < 0.5% → 수익 거의 소진 → 본절 방어 우선
  * 3. curPeak >= 15% && dropFromPeakAbs >= 5% → 대형 고점 이탈 = 진짜 반전
  *
@@ -45,8 +46,9 @@ export interface MomentumHoldResult {
  * 4. 현재가 > SMA20 (중기 추세 위)
  * 5. 거래량비율 >= 0.6 (볼륨 사망 아님)
  *
- * 비러너: 5/5 전부 충족
- * 러너: 4/5 충족 (1개 실패 허용 — 더 관대)
+ * 러너: 3/5 충족 (2개 실패 허용 — 폭발 모멘텀 보호)
+ * 고점 8%+ 비러너: 4/5 충족 (1개 실패 허용 — 이미 검증된 추세)
+ * 기본 비러너: 5/5 전부 충족
  */
 export async function shouldMomentumHold(input: MomentumHoldInput): Promise<MomentumHoldResult> {
   const { tech, pnlPct, curPeak, dropFromPeakAbs, chainId, stockCode, isRunner } = input;
@@ -66,13 +68,14 @@ export async function shouldMomentumHold(input: MomentumHoldInput): Promise<Mome
 
   // ── 안전 한도 체크 (force sell) ──
 
-  // 1. 최대 홀드 횟수 초과
-  if (meta.holdCount >= 3) {
+  // 1. 최대 홀드 횟수 초과 (고점이 높을수록 pullback 구간 길어짐 → 추가 관찰)
+  const maxHold = curPeak >= 10 ? 6 : curPeak >= 5 ? 5 : 3;
+  if (meta.holdCount >= maxHold) {
     logger.info(
-      `🔋→📉 모멘텀홀드 해제: ${stockCode} 최대 횟수(${meta.holdCount}/3) 도달 → 매도 진행`,
+      `🔋→📉 모멘텀홀드 해제: ${stockCode} 최대 횟수(${meta.holdCount}/${maxHold}) 도달 → 매도 진행`,
       { component: 'MOMENTUM_HOLD' },
     );
-    return { ...noHold, reason: `max hold count ${meta.holdCount}`, holdCount: meta.holdCount };
+    return { ...noHold, reason: `max hold count ${meta.holdCount}/${maxHold}`, holdCount: meta.holdCount };
   }
 
   // 2. 수익 거의 소진 → 본절 방어 우선
@@ -132,8 +135,8 @@ export async function shouldMomentumHold(input: MomentumHoldInput): Promise<Mome
     failReasons.push(`vol=${tech.volumeRatio.toFixed(1)}<0.6`);
   }
 
-  // 비러너: 5/5 전부 충족, 러너: 4/5 충족 (1개 실패 허용)
-  const requiredPass = isRunner ? 4 : 5;
+  // 러너: 3/5 (폭발 모멘텀 보호), 고점8%+ 비러너: 4/5 (검증된 추세), 기본: 5/5
+  const requiredPass = isRunner ? 3 : curPeak >= 8 ? 4 : 5;
   if (passCount < requiredPass) {
     logger.info(
       `🔋→📉 모멘텀홀드 해제: ${stockCode} 조건 미충족 ${passCount}/${requiredPass} [${failReasons.join(', ')}] → 매도 진행`,

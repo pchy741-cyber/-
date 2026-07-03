@@ -36,7 +36,6 @@ ${JSON.stringify(stocks, null, 2)}
     temperature: 0.2,
     maxOutputTokens: 6000, // v15: 70개 종목 JSON ~2-3KB, 16384 과다 → 비용 절감
     label: 'TrackA-스코어링',
-    useVertex: true,
   });
 
   // Resilient JSON parsing — 잘린 응답에서도 개별 스코어 복구

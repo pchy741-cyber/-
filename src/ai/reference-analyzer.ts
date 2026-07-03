@@ -83,7 +83,7 @@ export async function analyzeTextReference(content: string): Promise<ReferenceAn
   const { config } = await import('../config/index.js');
   if (!config.geminiEnabled) throw new Error('Gemini OFF — 레퍼런스 분석 불가');
   logger.info(`[Reference] 텍스트 분석 시작 (${content.length}자)`, { component: 'REFERENCE' });
-  const response = await callVertexGemini(SYSTEM_PROMPT, content, { maxOutputTokens: 1024, label: 'reference-text', useVertex: true });
+  const response = await callVertexGemini(SYSTEM_PROMPT, content, { maxOutputTokens: 1024, label: 'reference-text' });
   return parseAnalysis(response);
 }
 

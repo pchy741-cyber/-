@@ -408,7 +408,7 @@ ${additionalContext ? `\n## 추가 컨텍스트\n${additionalContext.slice(0, 15
     try {
       const text = await callVertexGemini(ANALYSIS_SYSTEM, userMsg, {
         label: `dart-research:${financial.stockCode}`,
-        grounded: true, // GenAI App Builder 크레딧 소모 (Google Search Grounding)
+        // grounded 제거: DART API에서 재무 데이터 이미 확보 → Google Search 불필요 ($0.035/call 절감)
         temperature: attempt === 0 ? 0.2 : 0.5,
         maxOutputTokens: 8192,
       });

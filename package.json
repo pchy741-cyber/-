@@ -1,6 +1,6 @@
 {
   "name": "ai-auto-bot",
-  "version": "0.2.0",
+  "version": "23.0.0",
   "description": "AI 기반 완전 자동매매 시스템",
   "private": true,
   "type": "module",

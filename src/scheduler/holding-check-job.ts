@@ -290,7 +290,7 @@ async function checkAndUpdateTrailingStop(
   // 🛡️ 본절 방어: 한때 트레일링 활성화됐다가 수익이 0%대로 복귀 → 즉시 청산
   // NYC 데이트레이더 원칙: +1.5% 찍고 0% 복귀는 손실과 동일
   const hadTrailingActivation = storedPeak >= avgBuy * (1 + TRAILING_ACTIVATE_PCT / 100);
-  const breakEvenThreshold = partialSoldAlready ? -0.5 : 0.3;
+  const breakEvenThreshold = partialSoldAlready ? -0.5 : 0.0;
   if (hadTrailingActivation && pnlPct < breakEvenThreshold) {
     const peakPnlPct = ((storedPeak - avgBuy) / avgBuy) * 100;
     logger.info(
@@ -432,13 +432,30 @@ async function checkAndUpdateTrailingStop(
 
   const dynamicDrop = getDynamicTrailingDrop(peakPnlPct, trailTech);
 
-  if (dropFromPeak >= dynamicDrop) {
+  // 모멘텀 보너스: 고점이 높은 종목은 숨고르기(pullback) 허용폭 확대
+  const momentumBonus = peakPnlPct >= 15 ? 5.0 : peakPnlPct >= 10 ? 3.0 : peakPnlPct >= 5 ? 1.5 : 0;
+  const adjustedDrop = dynamicDrop + momentumBonus;
+
+  if (dropFromPeak >= adjustedDrop) {
     // 모멘텀 홀드 체크: 추세가 살아있으면 매도 유보
     let fullTech = null;
     try {
       const mhCandles = await getDailyChart(chain.stock_code, 30).catch(() => []);
       if (mhCandles.length >= 20) fullTech = analyzeTechnicals(mhCandles);
     } catch { /* 실패 시 tech=null → shouldHold=false */ }
+
+    // v16.1 러너 감지 미러링 (sell-signals.ts와 기능 패리티)
+    const isRunner = (() => {
+      if (!fullTech || peakPnlPct < 5) return false; // HC는 보수적: peakPnl 5%+ 필요
+      let s = 0;
+      if (fullTech.volumeRatio >= 2.0) s++;
+      if (fullTech.volumeRatio >= 3.0) s++;
+      if (fullTech.adx14 >= 25) s++;
+      if (fullTech.rsi14 >= 45 && fullTech.rsi14 <= 75) s++;
+      if (currentPrice > fullTech.sma5 && fullTech.sma5 > fullTech.sma20) s++;
+      if (fullTech.macdCrossover === 'BULLISH') s++;
+      return s >= 2;
+    })();
 
     const mhResult = await shouldMomentumHold({
       tech: fullTech,
@@ -448,19 +465,21 @@ async function checkAndUpdateTrailingStop(
       chainId: chain.id,
       stockCode: chain.stock_code,
       isPaper: chain.is_paper ?? getCtxIsPaper(),
-      isRunner: false, // holding-check에는 러너 감지 없음 → 보수적(5/5)
+      isRunner,
       currentPrice,
     });
+    const maxHold = peakPnlPct >= 10 ? 6 : peakPnlPct >= 5 ? 5 : 3;
     if (mhResult.shouldHold) {
       logger.info(
-        `🔋 모멘텀홀드(HC): ${chain.stock_code} 트레일링 억제 (${mhResult.holdCount}/3) | ${mhResult.reason}`,
+        `🔋 모멘텀홀드(HC): ${chain.stock_code} 트레일링 억제 (${mhResult.holdCount}/${maxHold}${isRunner ? '/러너' : ''}) | ${mhResult.reason}`,
         { component: 'MOMENTUM_HOLD' },
       );
       return null; // FORCE_CLOSE 스킵
     }
 
+    const bonusLabel = momentumBonus > 0 ? ` +bonus${momentumBonus.toFixed(1)}%` : '';
     logger.info(
-      `🎯 트레일링 스탑 발동: ${chain.stock_code} 고점 ${newPeak.toLocaleString()}원(+${peakPnlPct.toFixed(1)}%) → 현재 ${currentPrice.toLocaleString()}원(${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%) | 고점 대비 -${dropFromPeak.toFixed(1)}% (기준 -${dynamicDrop}%)`,
+      `🎯 트레일링 스탑 발동: ${chain.stock_code} 고점 ${newPeak.toLocaleString()}원(+${peakPnlPct.toFixed(1)}%) → 현재 ${currentPrice.toLocaleString()}원(${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%) | 고점 대비 -${dropFromPeak.toFixed(1)}% (기준 -${adjustedDrop.toFixed(1)}%${bonusLabel})`,
       { component: 'TRAILING' },
     );
     return {
@@ -468,13 +487,13 @@ async function checkAndUpdateTrailingStop(
       stock_code: chain.stock_code,
       quantity: chain.total_quantity,
       price_type: 'MARKET',
-      reasoning: `트레일링 스탑: 고점 +${peakPnlPct.toFixed(1)}% → 현재 ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}% (고점 대비 -${dropFromPeak.toFixed(1)}% > 기준 -${dynamicDrop}%)`,
+      reasoning: `트레일링 스탑: 고점 +${peakPnlPct.toFixed(1)}% → 현재 ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}% (고점 대비 -${dropFromPeak.toFixed(1)}% > 기준 -${adjustedDrop.toFixed(1)}%${bonusLabel})`,
       confidence: 1.0,
     };
   }
 
   logger.info(
-    `⏳ 트레일링 추적 중: ${chain.stock_code} +${pnlPct.toFixed(1)}% | 고점 ${newPeak.toLocaleString()}원(+${peakPnlPct.toFixed(1)}%) 대비 -${dropFromPeak.toFixed(1)}% (발동까지 ${(dynamicDrop - dropFromPeak).toFixed(1)}% 남음, 기준 -${dynamicDrop}%)`,
+    `⏳ 트레일링 추적 중: ${chain.stock_code} +${pnlPct.toFixed(1)}% | 고점 ${newPeak.toLocaleString()}원(+${peakPnlPct.toFixed(1)}%) 대비 -${dropFromPeak.toFixed(1)}% (발동까지 ${(adjustedDrop - dropFromPeak).toFixed(1)}% 남음, 기준 -${adjustedDrop.toFixed(1)}%${momentumBonus > 0 ? ` +bonus${momentumBonus.toFixed(1)}%` : ''})`,
     { component: 'TRAILING' },
   );
   return null;
