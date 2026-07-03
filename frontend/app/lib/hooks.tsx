@@ -35,11 +35,11 @@ export function useToast() {
   const [toasts, setToasts] = useState<
     Array<{ id: number; msg: string; type: 'ok' | 'err' | 'info'; mode?: ToastMode }>
   >([]);
-  const show = (msg: string, type: 'ok' | 'err' | 'info' = 'ok', mode?: ToastMode) => {
+  const show = useCallback((msg: string, type: 'ok' | 'err' | 'info' = 'ok', mode?: ToastMode) => {
     const id = Date.now();
     setToasts((prev) => [...prev, { id, msg, type, mode }]);
     setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 3000);
-  };
+  }, []);
   const ToastContainer = () => (
     <div className="fixed top-4 right-4 z-[999] space-y-2 pointer-events-none">
       {toasts.map((t) => {

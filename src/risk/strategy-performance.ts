@@ -61,6 +61,7 @@ export async function getStrategyPerformance(
       AND tc.strategy_mode = $1
       AND tc.closed_at >= NOW() - ($2 * INTERVAL '1 day')
       AND tc.is_paper = $3
+      AND tc.close_reason IS DISTINCT FROM 'paper_refill'
     ORDER BY tc.closed_at DESC
   `,
     [mode, days, isPaper],
@@ -87,6 +88,7 @@ export async function getAllStrategyPerformances(
     WHERE tc.status = 'CLOSED'
       AND tc.closed_at >= NOW() - ($1 * INTERVAL '1 day')
       AND tc.is_paper = $2
+      AND tc.close_reason IS DISTINCT FROM 'paper_refill'
     ORDER BY tc.strategy_mode, tc.closed_at DESC
   `,
     [days, isPaper],

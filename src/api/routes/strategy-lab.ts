@@ -25,8 +25,9 @@ strategyLabRoutes.get('/strategy-lab/overview', async (c) => {
         .catch(() => ({ rows: [] })),
     ]);
 
-    // DIVIDEND/SCALPING: 전략랩 대상 아님 (매수 차단 모드)
-    const EXCLUDED_MODES = new Set(['DIVIDEND', 'SCALPING']);
+    // DIVIDEND: 전략랩 대상 아님 (매수 차단 모드)
+    // SCALPING/EOD_BETTING: Paper 모드에서 데이터 수집 중이므로 제외하지 않음
+    const EXCLUDED_MODES = new Set(['DIVIDEND']);
     const modes = new Set(
       [...paperPerfs.map((p) => p.mode), ...livePerfs.map((p) => p.mode)]
         .filter((m) => !EXCLUDED_MODES.has(m)),
