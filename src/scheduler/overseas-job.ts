@@ -847,7 +847,7 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
 
     // 뉴스 테마 + 요약 캐시 조회
     try {
-      const { getCachedNewsTheme, getCachedNewsSummary, prefetchOverseasTheme } = await import('../api/routes/dashboard-news.js');
+      const { getCachedNewsTheme, getCachedNewsSummary, prefetchOverseasTheme } = await import('../shared/news-cache.js');
       _preNewsTheme = getCachedNewsTheme();
       if (!_preNewsTheme && isUSSession) {
         logger.info('📰 뉴스 테마 캐시 만료 → US 장중 리프레시', { component: SCOPE });
@@ -1437,7 +1437,7 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
       let newsThemeSectors: Set<string> | undefined;
       let newsSentimentScore: number | undefined;
       try {
-        const { getCachedNewsTheme } = await import('../api/routes/dashboard-news.js');
+        const { getCachedNewsTheme } = await import('../shared/news-cache.js');
         const _nt = getCachedNewsTheme();
         if (_nt?.theme) {
           const matched = new Set<string>();

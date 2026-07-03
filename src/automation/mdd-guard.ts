@@ -105,7 +105,7 @@ async function runForMode(isPaper: boolean): Promise<void> {
       `🚫 *MDD 가드 자동 발동*\nMDD ${mdd.toFixed(1)}% (임계 ${limit}%)\n신규 매수 ${BLOCK_TTL_MINUTES / 60}h 자동 차단\n회복 임계 ${recoverAt.toFixed(1)}% 미만이면 자동 해제`,
     ).catch(() => {});
     // 캡쳐 트리거
-    import('../api/routes/review/capture-trigger.js')
+    import('../shared/capture-trigger.js')
       .then((m) => m.triggerCapture('mdd_danger', mode as 'paper' | 'live').catch(() => {}))
       .catch(() => {});
     return;

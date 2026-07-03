@@ -21,7 +21,7 @@ const TREND_META: Record<string, { color: string; label: string }> = {
   STRONG_SELL: { color: 'text-rose-300',    label: '강매도' },
 };
 
-export default function InvestorFlowPanel() {
+function InvestorFlowPanel() {
   const [items, setItems] = React.useState<InvestorFlowItem[]>([]);
   const [loading, setLoading] = React.useState(true);
 
@@ -102,3 +102,5 @@ export default function InvestorFlowPanel() {
     </Panel>
   );
 }
+
+export default React.memo(InvestorFlowPanel);

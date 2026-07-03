@@ -5,7 +5,7 @@ import { Button } from '@/components/ui';
 import { ViewModeToggle } from '@/components/ViewModeToggle';
 import { MarketTicker } from '@/components/MarketTicker';
 
-export function DashboardHeader({ viewMode, switchView, dash, killSwitch, toggleKill, marketTab, setMobileMenu, isPaper, isUS, theme }: {
+export const DashboardHeader = React.memo(function DashboardHeader({ viewMode, switchView, dash, killSwitch, toggleKill, marketTab, setMobileMenu, isPaper, isUS, theme }: {
   viewMode: 'live' | 'paper'; switchView: (m: 'live' | 'paper') => void;
   dash: any; killSwitch: any; toggleKill: (scope?: 'KR' | 'OVERSEAS') => Promise<void>;
   marketTab: 'KR' | 'US'; setMobileMenu: (v: boolean) => void;
@@ -65,4 +65,4 @@ export function DashboardHeader({ viewMode, switchView, dash, killSwitch, toggle
       </div>
     </>
   );
-}
+});

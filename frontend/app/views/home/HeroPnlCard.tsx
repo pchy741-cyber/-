@@ -175,8 +175,8 @@ function HeroPnlCard({
             {krPct === 0 && usPct === 0 && <span className="text-sm font-bold tabular-nums text-slate-500">0%</span>}
           </div>
           <div className="h-1 rounded-full overflow-hidden bg-white/[0.04] flex mt-1">
-            {krPct > 0 && <div className="h-full bg-blue-500/70" style={{ width: `${krPct}%` }} />}
-            {usPct > 0 && <div className="h-full bg-indigo-500/70" style={{ width: `${usPct}%` }} />}
+            {krPct > 0 && <div className="h-full bg-blue-500/70 w-[var(--w)]" style={{ '--w': `${krPct}%` } as React.CSSProperties} />}
+            {usPct > 0 && <div className="h-full bg-indigo-500/70 w-[var(--w)]" style={{ '--w': `${usPct}%` } as React.CSSProperties} />}
             <div className="h-full bg-slate-600/30 flex-1" />
           </div>
         </div>

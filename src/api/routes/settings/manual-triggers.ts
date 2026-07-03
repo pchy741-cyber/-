@@ -30,7 +30,7 @@ manualTriggersRoutes.post('/run-overseas-paper', async (c) => {
   const { runWithMode } = await import('../../../config/context.js');
   const { checkAndRefillOverseasPaper } = await import('../../../scheduler/overseas/state.js');
   const { runOverseasJob } = await import('../../../scheduler/overseas-job.js');
-  const { prefetchAllNews } = await import('../../routes/dashboard-news.js');
+  const { prefetchAllNews } = await import('../../../shared/news-cache.js');
 
   (async () => {
     try {
@@ -172,30 +172,9 @@ manualTriggersRoutes.post('/loop/stop', async (c) => {
   return c.json(result);
 });
 
-// ── v16: 실전/연습 모드 별도 자동매매 ON/OFF ──
-// DB 영속 (system_state: auto_trade_paper / auto_trade_live), 기본값 true
-const _autoTradeEnabled = { paper: true, live: true };
-
-/** 부팅 시 DB → 메모리 복원 (main.ts에서 호출) */
-export async function initAutoTrade(): Promise<void> {
-  try {
-    const { rows } = await getPool().query(
-      `SELECT key, value FROM system_state WHERE key IN ('auto_trade_paper', 'auto_trade_live')`,
-    );
-    for (const r of rows) {
-      if (r.key === 'auto_trade_paper') _autoTradeEnabled.paper = r.value === true || r.value === 'true';
-      if (r.key === 'auto_trade_live') _autoTradeEnabled.live = r.value === true || r.value === 'true';
-    }
-    logger.info(`🔧 자동매매 복원: paper=${_autoTradeEnabled.paper} live=${_autoTradeEnabled.live}`, { component: 'BOOT' });
-  } catch (e: any) {
-    logger.warn(`자동매매 상태 복원 실패 (기본 ON 사용): ${e.message}`, { component: 'BOOT' });
-  }
-}
-
-/** 자동매매 활성화 여부 조회 (Track B, Loop, Overseas에서 참조) */
-export function isAutoTradeEnabled(isPaper: boolean): boolean {
-  return isPaper ? _autoTradeEnabled.paper : _autoTradeEnabled.live;
-}
+// ── 자동매매 상태 — shared/auto-trade-state.ts에서 re-export (하위호환) ──
+import { _autoTradeEnabled } from '../../../shared/auto-trade-state.js';
+export { initAutoTrade, isAutoTradeEnabled } from '../../../shared/auto-trade-state.js';
 
 manualTriggersRoutes.get('/auto-trade/status', (c) => {
   return c.json({ paper: _autoTradeEnabled.paper, live: _autoTradeEnabled.live });

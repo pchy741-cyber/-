@@ -2,6 +2,7 @@
 
 import React, { useState, useCallback, useEffect } from 'react';
 import { api } from '../lib/utils';
+import { Spinner } from '@/components/ui';
 import type { ScreenshotProps, CopilotData, XrayData } from './screenshot/screenshot-types';
 import { CopilotResultPanel } from './screenshot/CopilotResultPanel';
 import { AutoPilotButton } from './screenshot/AutoPilotButton';
@@ -199,9 +200,7 @@ export default function ScreenshotReview(props: ScreenshotProps) {
         title={`Health Check — QA + 리스크 진단${lastCheckTime ? ` (${timeAgo(lastCheckTime)})` : ''}`}
       >
         {checking ? (
-          <div className="relative">
-            <div className="w-6 h-6 border-2 border-white border-t-transparent rounded-full animate-spin" />
-          </div>
+          <Spinner size="xl" color="white" />
         ) : (copilot || xray) ? (
           <div className="flex flex-col items-center leading-none">
             <span className={`text-[11px] font-black ${scoreColor(healthScore)}`}>{healthScore}</span>

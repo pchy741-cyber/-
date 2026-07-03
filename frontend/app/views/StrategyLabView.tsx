@@ -141,8 +141,8 @@ export default function StrategyLabView({ toast, viewMode, confirm }: Props) {
   if (loading) return (
     <div className="flex justify-center items-center py-20">
       <div className="relative">
-        <div className="w-10 h-10 border-2 border-cyan-500/30 rounded-full animate-spin" style={{ borderTopColor: 'rgb(6 182 212)' }} />
-        <div className="absolute inset-0 w-10 h-10 border-2 border-transparent rounded-full animate-spin" style={{ borderRightColor: 'rgb(6 182 212 / 0.2)', animationDirection: 'reverse', animationDuration: '1.5s' }} />
+        <div className="w-10 h-10 border-2 border-cyan-500/30 border-t-cyan-500 rounded-full animate-spin" />
+        <div className="absolute inset-0 w-10 h-10 border-2 border-transparent border-r-cyan-500/20 rounded-full animate-spin [animation-direction:reverse] [animation-duration:1.5s]" />
       </div>
     </div>
   );

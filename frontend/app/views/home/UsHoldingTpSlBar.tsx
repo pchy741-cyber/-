@@ -16,8 +16,8 @@ function BarMarker({
 }) {
   return (
     <div
-      className={`absolute top-0 h-full ${className}`}
-      style={{ '--marker-pos': `${posPct}%`, left: 'var(--marker-pos)' } as React.CSSProperties}
+      className={`absolute top-0 h-full left-[var(--marker-pos)] ${className}`}
+      style={{ '--marker-pos': `${posPct}%` } as React.CSSProperties}
       title={title}
     />
   );

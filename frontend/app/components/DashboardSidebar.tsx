@@ -21,7 +21,7 @@ interface QAReport {
   status: 'pass' | 'warn' | 'fail';
 }
 
-export function DashboardSidebar({ tab, setTab, mobileMenu, setMobileMenu, health, dash, viewMode, switchView, killSwitch, toggleKill, lastUpdate, load, featureFlags, isPaper, isUS, theme, loopStatus, newInsightCount }: {
+export const DashboardSidebar = React.memo(function DashboardSidebar({ tab, setTab, mobileMenu, setMobileMenu, health, dash, viewMode, switchView, killSwitch, toggleKill, lastUpdate, load, featureFlags, isPaper, isUS, theme, loopStatus, newInsightCount }: {
   tab: Tab; setTab: (t: Tab) => void;
   mobileMenu: boolean; setMobileMenu: (v: boolean) => void;
   health: any; dash: any;
@@ -155,11 +155,12 @@ export function DashboardSidebar({ tab, setTab, mobileMenu, setMobileMenu, healt
 
         {/* QA Watchdog 상태 패널 */}
         <button
-          className="mx-3 mt-2 w-[calc(100%-24px)] text-left rounded-xl border p-3 space-y-1.5 transition-all hover:brightness-110"
-          style={{
-            background: !qaReport ? 'rgba(100,116,139,0.05)' : qaReport.status === 'pass' ? 'rgba(34,197,94,0.06)' : qaReport.status === 'warn' ? 'rgba(245,158,11,0.08)' : 'rgba(239,68,68,0.08)',
-            borderColor: !qaReport ? 'rgba(100,116,139,0.15)' : qaReport.status === 'pass' ? 'rgba(34,197,94,0.2)' : qaReport.status === 'warn' ? 'rgba(245,158,11,0.25)' : 'rgba(239,68,68,0.3)',
-          }}
+          className={`mx-3 mt-2 w-[calc(100%-24px)] text-left rounded-xl border p-3 space-y-1.5 transition-all hover:brightness-110 ${
+            !qaReport ? 'bg-slate-500/5 border-slate-500/15'
+            : qaReport.status === 'pass' ? 'bg-emerald-500/[0.06] border-emerald-500/20'
+            : qaReport.status === 'warn' ? 'bg-amber-500/[0.08] border-amber-500/25'
+            : 'bg-red-500/[0.08] border-red-500/30'
+          }`}
           onClick={() => { setQaModalOpen(true); fetchQAReports(); }}
         >
           <div className="flex items-center gap-2">
@@ -255,12 +256,15 @@ export function DashboardSidebar({ tab, setTab, mobileMenu, setMobileMenu, healt
             return (
               <div key={idx} className="mb-3 rounded-xl border border-white/[0.06] overflow-hidden">
                 {/* 리포트 헤더 */}
-                <div className={`px-4 py-2.5 flex items-center gap-3 bg-${statusColor}-500/5 border-b border-white/[0.04]`}
-                  style={{ background: report.status === 'pass' ? 'rgba(34,197,94,0.05)' : report.status === 'warn' ? 'rgba(245,158,11,0.05)' : 'rgba(239,68,68,0.05)' }}>
-                  <span className={`w-2 h-2 rounded-full`}
-                    style={{ background: report.status === 'pass' ? '#22c55e' : report.status === 'warn' ? '#f59e0b' : '#ef4444' }} />
-                  <span className={`text-[11px] font-bold`}
-                    style={{ color: report.status === 'pass' ? '#22c55e' : report.status === 'warn' ? '#f59e0b' : '#ef4444' }}>
+                <div className={`px-4 py-2.5 flex items-center gap-3 border-b border-white/[0.04] ${
+                  report.status === 'pass' ? 'bg-emerald-500/5' : report.status === 'warn' ? 'bg-amber-500/5' : 'bg-red-500/5'
+                }`}>
+                  <span className={`w-2 h-2 rounded-full ${
+                    report.status === 'pass' ? 'bg-emerald-500' : report.status === 'warn' ? 'bg-amber-500' : 'bg-red-500'
+                  }`} />
+                  <span className={`text-[11px] font-bold ${
+                    report.status === 'pass' ? 'text-emerald-500' : report.status === 'warn' ? 'text-amber-500' : 'text-red-500'
+                  }`}>
                     {statusLabel}
                   </span>
                   <span className="text-[10px] text-slate-500 ml-auto">{time} · {report.elapsedSec.toFixed(1)}s</span>
@@ -275,7 +279,9 @@ export function DashboardSidebar({ tab, setTab, mobileMenu, setMobileMenu, healt
                       const sevColor = issue.severity === 'CRITICAL' ? '#ef4444' : issue.severity === 'WARNING' ? '#f59e0b' : '#3b82f6';
                       const sevDot = issue.severity === 'CRITICAL' ? '🔴' : issue.severity === 'WARNING' ? '🟡' : '🔵';
                       return (
-                        <div key={j} className="rounded-lg px-3 py-2" style={{ background: 'rgba(255,255,255,0.02)', borderLeft: `2px solid ${sevColor}` }}>
+                        <div key={j} className={`rounded-lg px-3 py-2 bg-white/[0.02] border-l-2 ${
+                          issue.severity === 'CRITICAL' ? 'border-l-red-500' : issue.severity === 'WARNING' ? 'border-l-amber-500' : 'border-l-blue-500'
+                        }`}>
                           <div className="text-[11px] font-medium text-slate-200">
                             {sevDot} <span className="text-slate-500">[{issue.category}]</span> {issue.title}
                           </div>
@@ -292,4 +298,4 @@ export function DashboardSidebar({ tab, setTab, mobileMenu, setMobileMenu, healt
       </Modal>
     </>
   );
-}
+});

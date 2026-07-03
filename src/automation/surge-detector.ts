@@ -411,7 +411,7 @@ export async function runSurgeDetector(): Promise<void> {
     // ── v13: 뉴스 테마 종목 자동 편입 — Gemini 추천 테마 관련주 워치리스트 등록 ──
     const themeAdded: string[] = [];
     try {
-      const { getCachedNewsTheme } = await import('../api/routes/dashboard-news.js');
+      const { getCachedNewsTheme } = await import('../shared/news-cache.js');
       const theme = getCachedNewsTheme();
       if (theme?.stocks?.length) {
         for (const ts of theme.stocks) {

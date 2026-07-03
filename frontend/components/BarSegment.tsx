@@ -17,15 +17,8 @@ export function BarSegment({
 }) {
   return (
     <div
-      className={`absolute top-0 h-full ${bgClass} ${className}`}
-      style={
-        {
-          '--seg-left': `${startPct}%`,
-          '--seg-width': `${widthPct}%`,
-          left: 'var(--seg-left)',
-          width: 'var(--seg-width)',
-        } as React.CSSProperties
-      }
+      className={`absolute top-0 h-full left-[var(--seg-left)] w-[var(--seg-width)] ${bgClass} ${className}`}
+      style={{ '--seg-left': `${startPct}%`, '--seg-width': `${widthPct}%` } as React.CSSProperties}
     />
   );
 }
@@ -44,8 +37,8 @@ export function BarOverlay({
 }) {
   return (
     <div
-      className={`absolute top-0 left-0 h-full rounded-full ${className} ${transition}`}
-      style={{ '--bar-progress': `${progressPct}%`, width: 'var(--bar-progress)' } as React.CSSProperties}
+      className={`absolute top-0 left-0 h-full rounded-full w-[var(--bar-progress)] ${className} ${transition}`}
+      style={{ '--bar-progress': `${progressPct}%` } as React.CSSProperties}
     />
   );
 }

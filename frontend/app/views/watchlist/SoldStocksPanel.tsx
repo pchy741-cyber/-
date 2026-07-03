@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Panel, EmptyMsg } from '@/components/ui';
+import { Panel, EmptyMsg, Spinner } from '@/components/ui';
 import { api } from '../../lib/utils';
 import { toDisplayName } from '../../lib/helpers';
 
@@ -54,7 +54,7 @@ function SoldStocksPanel({ toast, onReAdd, viewMode = 'live' }: { toast: (msg: s
     return (
       <Panel title="최근 매도 추적" badge="불러오는 중...">
         <div className="p-8 text-center">
-          <div className="w-5 h-5 border-2 border-blue-400 border-t-transparent rounded-full animate-spin mx-auto" />
+          <Spinner size="lg" className="mx-auto" />
         </div>
       </Panel>
     );

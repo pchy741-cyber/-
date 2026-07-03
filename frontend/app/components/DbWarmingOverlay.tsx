@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { api } from '../lib/utils';
+import { Spinner } from '@/components/ui';
 
 type Phase = 'connecting' | 'waking' | 'ready';
 
@@ -120,7 +121,7 @@ export default function DbWarmingOverlay({ onReady }: Props) {
                   <path d="M5 13l4 4L19 7" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
               ) : (i === 0 && phase === 'connecting') || (i === 1 && phase === 'waking') ? (
-                <div className="w-3 h-3 border-[1.5px] border-current border-t-transparent rounded-full animate-spin" />
+                <Spinner size="xs" color="current" />
               ) : (
                 <div className="w-3 h-3 rounded-full border border-slate-700" />
               )}
@@ -138,8 +139,8 @@ export default function DbWarmingOverlay({ onReady }: Props) {
         <div className="flex flex-col items-center gap-2">
           <div className="w-40 h-0.5 rounded-full bg-slate-800 overflow-hidden">
             <div
-              className="h-full rounded-full bg-gradient-to-r from-blue-500 to-cyan-400 transition-all duration-1000 ease-out"
-              style={{ width: `${Math.min((elapsed / 180) * 100, 95)}%` }}
+              className="h-full rounded-full bg-gradient-to-r from-blue-500 to-cyan-400 transition-all duration-1000 ease-out w-[var(--w)]"
+              style={{ '--w': `${Math.min((elapsed / 180) * 100, 95)}%` } as React.CSSProperties}
             />
           </div>
           <p className="text-[10px] text-slate-600 tabular-nums">

@@ -2,7 +2,7 @@
 
 import dynamic from 'next/dynamic';
 import React, { useState, useEffect, useCallback } from 'react';
-import { Button } from '@/components/ui';
+import { Button, Spinner } from '@/components/ui';
 
 const Dashboard = dynamic(() => import('./dashboard'), { ssr: false });
 
@@ -154,7 +154,7 @@ function LoginScreen({ onUnlock }: { onUnlock: () => void }) {
             className="w-full mb-4 py-3 rounded-xl bg-gradient-to-r from-blue-500 to-cyan-500 text-white font-medium text-sm flex items-center justify-center gap-2 hover:opacity-90 transition-opacity disabled:opacity-50"
           >
             {biometricLoading ? (
-              <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+              <Spinner size="md" color="white" />
             ) : (
               <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24">
                 <path d="M12 10v4M7.5 15a6.5 6.5 0 1113 0" strokeLinecap="round" />
@@ -191,7 +191,7 @@ function LoginScreen({ onUnlock }: { onUnlock: () => void }) {
             className="w-full py-3 flex items-center justify-center gap-2"
             disabled={loading || !password}
           >
-            {loading ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> : '잠금 해제'}
+            {loading ? <Spinner size="md" color="white" /> : '잠금 해제'}
           </Button>
         </form>
 

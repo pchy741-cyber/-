@@ -4,7 +4,7 @@ import React, { useState, useEffect } from 'react';
 import { Panel } from '@/components/ui';
 import { ScoreSparkline } from '@/components/ScoreSparkline';
 import { ScoreRefreshTimer } from '@/components/ScoreRefreshTimer';
-import KrManualBuyModal from '../../panels/KrManualBuyModal';
+import UnifiedBuyModal from '../../panels/UnifiedBuyModal';
 import { api, fmtWon } from '../../lib/utils';
 import type { Dashboard, StockScore, ToastFn, ConfirmFn, ViewMode } from '../../types';
 
@@ -83,7 +83,7 @@ function KrAiScorePanel({
                     <span className="text-xs font-bold text-slate-300 shrink-0 truncate max-w-[72px]">{stockLabel}</span>
                     <div className="flex-1 min-w-0">
                       <div className="h-1.5 bg-white/[0.04] rounded-full overflow-hidden">
-                        <div className={`h-full rounded-full ${barColor} transition-all duration-500`} style={{ width: `${Math.max(2, Math.min(100, score))}%` }} />
+                        <div className={`h-full rounded-full ${barColor} transition-all duration-500 w-[var(--w)]`} style={{ '--w': `${Math.max(2, Math.min(100, score))}%` } as React.CSSProperties} />
                       </div>
                     </div>
                     <span className={`text-sm font-black w-7 text-right shrink-0 tabular-nums ${textColor}`}>{score}</span>
@@ -152,7 +152,8 @@ function KrAiScorePanel({
         </div>
       )}
       {modalStock && (
-        <KrManualBuyModal
+        <UnifiedBuyModal
+          market="KR"
           open={!!modalStock}
           stockCode={modalStock.code}
           stockName={modalStock.name}

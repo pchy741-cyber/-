@@ -17,8 +17,8 @@ export function ProgressBar({
   return (
     <div className={`${height} ${bgClass} rounded-full overflow-hidden`}>
       <div
-        className={`h-full rounded-full ${colorClass} ${transition}`}
-        style={{ width: `${clamped}%` }}
+        className={`h-full rounded-full ${colorClass} ${transition} w-[var(--w)]`}
+        style={{ '--w': `${clamped}%` } as React.CSSProperties}
       />
     </div>
   );

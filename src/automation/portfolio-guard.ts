@@ -540,7 +540,7 @@ export async function runPortfolioHealthCheck(): Promise<void> {
       );
       const totalUsd = Number(rows[0]?.total_usd ?? 0);
       if (totalUsd > 0) {
-        const { getFxRate } = await import('../api/routes/dashboard/helpers.js');
+        const { getFxRate } = await import('../shared/fx-rate.js');
         const fx = await getFxRate();
         const { FALLBACK_FX_RATE: FB } = await import('../config/constants.js');
         overseasValueKrw = totalUsd * (fx > 0 ? fx : FB);

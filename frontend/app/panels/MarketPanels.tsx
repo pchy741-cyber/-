@@ -52,7 +52,7 @@ export function SectorHeatmapPanel() {
               ? `rgba(248,113,113,${0.08 + intensity * 0.25})`
               : 'rgba(100,116,139,0.1)';
           return (
-            <div key={i} className="rounded-lg px-2 py-1.5 text-center min-w-[72px]" style={{ background: bg }}>
+            <div key={i} className="rounded-lg px-2 py-1.5 text-center min-w-[72px] bg-[var(--bg)]" style={{ '--bg': bg } as React.CSSProperties}>
               <p className="text-[10px] text-slate-300 truncate">{it.name}</p>
               <p className={`text-[11px] font-bold ${it.pct > 0 ? 'text-emerald-400' : it.pct < 0 ? 'text-rose-400' : 'text-slate-400'}`}>
                 {it.pct > 0 ? '+' : ''}{it.pct.toFixed(2)}%

@@ -35,35 +35,10 @@ export function SegmentedBar({
       {segments.map((seg, i) => (
         <div
           key={i}
-          className={`h-full ${seg.className} ${seg.transition ?? 'transition-all duration-500'}`}
-          style={{ '--seg-w': `${seg.widthPct}%`, width: 'var(--seg-w)' } as React.CSSProperties}
+          className={`h-full w-[var(--seg-w)] ${seg.className} ${seg.transition ?? 'transition-all duration-500'}`}
+          style={{ '--seg-w': `${seg.widthPct}%` } as React.CSSProperties}
         />
       ))}
-    </div>
-  );
-}
-
-/**
- * 단일 비중 표시 bar — ProgressBar의 가벼운 버전
- * 색상 클래스만 props로
- */
-export function WeightBar({
-  pct,
-  colorClass,
-  height = 'h-1.5',
-  bgClass = 'bg-white/[0.04]',
-}: {
-  pct: number;
-  colorClass: string;
-  height?: string;
-  bgClass?: string;
-}) {
-  return (
-    <div className={`${height} ${bgClass} rounded-full overflow-hidden`}>
-      <div
-        className={`h-full rounded-full ${colorClass}`}
-        style={{ '--wb-w': `${Math.max(0, Math.min(100, pct))}%`, width: 'var(--wb-w)' } as React.CSSProperties}
-      />
     </div>
   );
 }

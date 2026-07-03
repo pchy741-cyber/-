@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
-import { Panel, EmptyMsg } from '@/components/ui';
+import { Panel, EmptyMsg, Spinner } from '@/components/ui';
 import { api, fmtPct, pc, pbg } from '../../lib/utils';
 import { toDisplayName } from '../../lib/helpers';
 import { US_SECTOR_MAP, US_SECTORS } from '../../panels/OverseasScorePanel';
@@ -46,7 +46,7 @@ export function USWatchlistPanel({ usW }: { usW: UsWatchlistItem[] }) {
       </div>
       {scoresLoading && allDisplayList.length === 0 && (
         <div className="flex items-center gap-2 px-4 py-3 text-[11px] text-slate-500">
-          <div className="w-3 h-3 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+          <Spinner size="xs" />
           기술지표 자동 계산 중 (AI 없이 차트 분석)...
         </div>
       )}

@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { Button } from '@/components/ui';
+import { Button, Spinner } from '@/components/ui';
 
 interface ErrorBoundaryProps {
   children: React.ReactNode;

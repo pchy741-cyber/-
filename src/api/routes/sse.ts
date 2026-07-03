@@ -10,7 +10,7 @@ import { getPaperBalance } from '../../risk/engine.js';
 import { getKillSwitchStatusAll } from '../../risk/kill-switch.js';
 import { getLastRiskSizing } from '../../risk/risk-engine.js';
 import { getLoopStatus } from '../../scheduler/loop-mode.js';
-import { getOpenMarketRegions } from '../../scheduler/overseas/session.js';
+import { getOpenMarketRegions } from '../../shared/overseas/market-time.js';
 import { KR_FEE, FALLBACK_FX_RATE, OVERSEAS_FEE_PCT } from '../../config/constants.js';
 import { logger } from '../../utils/logger.js';
 import { PAPER_INITIAL_CAPITAL } from '../../risk/paper-balance.js';

@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import { Spinner } from './spinner';
 
 const BTN_VARIANT = {
   primary:   'bg-blue-600 hover:bg-blue-500 text-white shadow-sm',
@@ -55,7 +56,7 @@ export function LoadBtn({
     >
       {busy ? (
         <span className="flex items-center gap-1.5">
-          <span className="w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin" />
+          <Spinner size="xs" color="current" as="span" />
           {children}
         </span>
       ) : children}

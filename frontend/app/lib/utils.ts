@@ -69,5 +69,17 @@ export function toKSTDateStr(t: string | Date): string { return toKST(new Date(t
 /** KST 현재 시각의 시/분 (분 단위) */
 export function getKSTMinutes(): number { const k = toKST(new Date()); return k.getUTCHours() * 60 + k.getUTCMinutes(); }
 export const fmtTime = (t: string | null | undefined) => { if (!t) return '-'; const k = toKST(new Date(t)); return `${(k.getUTCMonth()+1).toString().padStart(2,'0')}/${k.getUTCDate().toString().padStart(2,'0')} ${k.getUTCHours().toString().padStart(2,'0')}:${k.getUTCMinutes().toString().padStart(2,'0')}`; };
+/** 상대 시간 표시 ("5초 전", "3분 전", "2시간 전", "1일 전") */
+export function timeAgo(dateStr: string): string {
+  const sec = Math.round((Date.now() - new Date(dateStr).getTime()) / 1000);
+  if (sec < 60) return `${sec}초 전`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}분 전`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}시간 전`;
+  const day = Math.floor(hr / 24);
+  return `${day}일 전`;
+}
+
 export const pc = (n: number | null | undefined) => n == null || n === 0 ? 'text-slate-400' : n > 0 ? 'text-emerald-400' : 'text-rose-400';
 export const pbg = (n: number | null | undefined) => n == null || n === 0 ? '' : n > 0 ? 'bg-emerald-950/30 border-emerald-900/30' : 'bg-rose-950/30 border-rose-900/30';

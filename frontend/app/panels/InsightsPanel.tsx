@@ -17,7 +17,7 @@ function validationBadge(i: Insight) {
   return <span className="text-[10px] bg-cyan-900/40 text-cyan-300 px-1.5 py-0.5 rounded-full font-medium">연습검증</span>;
 }
 
-export default function InsightsPanel({ insights: insightsProp, trades, onRefresh, toast, viewMode = 'live' }: { insights: Insight[]; trades?: Trade[]; onRefresh: () => void; toast?: ToastFn; viewMode?: ViewMode }) {
+function InsightsPanel({ insights: insightsProp, trades, onRefresh, toast, viewMode = 'live' }: { insights: Insight[]; trades?: Trade[]; onRefresh: () => void; toast?: ToastFn; viewMode?: ViewMode }) {
   const d = useInsightsData(insightsProp, trades, onRefresh, toast, viewMode);
   const harmful = d.insights.filter(i => (i.category ?? '') === 'LOSS_PATTERN');
   const normal = d.insights.filter(i => (i.category ?? '') !== 'LOSS_PATTERN');
@@ -158,3 +158,5 @@ export default function InsightsPanel({ insights: insightsProp, trades, onRefres
     </>
   );
 }
+
+export default React.memo(InsightsPanel);

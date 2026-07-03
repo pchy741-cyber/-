@@ -150,7 +150,7 @@ export default function PerformancePanel({ trades, strategy, setStrategy, toast,
                 const barH = Math.max(3, (Math.abs(d.pnl) / maxBar) * 36);
                 return (
                   <div key={i} className="flex-1 flex flex-col items-center justify-end" title={`${d.date}: ${d.pnl >= 0 ? '+' : ''}${fmtWon(d.pnl)}`}>
-                    <div className={`w-full rounded-sm ${d.pnl >= 0 ? 'bg-emerald-500/70' : 'bg-rose-500/70'}`} style={{ height: `${barH}px` }} />
+                    <div className={`w-full rounded-sm h-[var(--h)] ${d.pnl >= 0 ? 'bg-emerald-500/70' : 'bg-rose-500/70'}`} style={{ '--h': `${barH}px` } as React.CSSProperties} />
                   </div>
                 );
               })}

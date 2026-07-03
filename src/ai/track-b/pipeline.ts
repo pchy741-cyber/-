@@ -50,7 +50,7 @@ import { reconcilePendingOrders } from '../../trading/fill-reconciler.js';
 import { logger } from '../../utils/logger.js';
 import { getOverride } from '../ai-overrides.js';
 import { getCachedNewsAdj, refreshStaleNewsScores } from '../track-a/rss-scorer.js';
-import { getCachedNewsTheme } from '../../api/routes/dashboard-news.js';
+import { getCachedNewsTheme } from '../../shared/news-cache.js';
 import { IDLE_PARK_STOCK_CODE } from './cash-manager.js';
 import { loadPipelineData } from './data-loader.js';
 import { applyDecisionFlow } from './decision-flow.js';
@@ -421,7 +421,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       .then(async ({ rows }) => {
         const usd = Number(rows[0]?.total_usd ?? 0);
         if (usd <= 0) return 0;
-        const { getFxRate } = await import('../../api/routes/dashboard/helpers.js');
+        const { getFxRate } = await import('../../shared/fx-rate.js');
         const fx = await getFxRate();
         const { FALLBACK_FX_RATE: FB } = await import('../../config/constants.js');
         return usd * (fx > 0 ? fx : FB);

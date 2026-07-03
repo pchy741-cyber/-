@@ -16,12 +16,9 @@ export function BarLabel({
   className?: string;
   children: React.ReactNode;
 }) {
-  const styleVar =
-    position.side === 'left'
-      ? ({ '--bar-pos': `${position.pct}%`, left: 'var(--bar-pos)' } as React.CSSProperties)
-      : ({ '--bar-pos': `${position.pct}%`, right: 'var(--bar-pos)' } as React.CSSProperties);
+  const posClass = position.side === 'left' ? 'left-[var(--bar-pos)]' : 'right-[var(--bar-pos)]';
   return (
-    <span className={`absolute ${centered ? '-translate-x-1/2' : ''} ${className}`} style={styleVar}>
+    <span className={`absolute ${posClass} ${centered ? '-translate-x-1/2' : ''} ${className}`} style={{ '--bar-pos': `${position.pct}%` } as React.CSSProperties}>
       {children}
     </span>
   );

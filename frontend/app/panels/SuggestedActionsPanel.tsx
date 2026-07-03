@@ -72,10 +72,10 @@ function SuggestedActionsPanel({
               </div>
               <div className="relative h-2 bg-white/[0.06] rounded-full overflow-hidden">
                 <div
-                  className={`absolute inset-y-0 left-0 rounded-full transition-all duration-700 ${
+                  className={`absolute inset-y-0 left-0 rounded-full transition-all duration-700 w-[var(--w)] ${
                     goal.progressPct >= 100 ? 'bg-emerald-500' : goal.progressPct >= 50 ? 'bg-blue-500' : 'bg-amber-500'
                   }`}
-                  style={{ width: `${Math.min(100, Math.max(0, goal.progressPct))}%` }}
+                  style={{ '--w': `${Math.min(100, Math.max(0, goal.progressPct))}%` } as React.CSSProperties}
                 />
               </div>
               <div className="flex items-center justify-between mt-1.5">

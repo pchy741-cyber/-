@@ -1,19 +1,9 @@
 'use client';
 
 import React from 'react';
-import { fmtTime } from '../../lib/utils';
+import { fmtTime, timeAgo } from '../../lib/utils';
 import { STRATEGY_LABELS, STRATEGY_ICONS } from './constants';
 import type { TuningStatus, OptimizerResult } from '../../types';
-
-function timeAgo(dateStr: string): string {
-  const diff = Date.now() - new Date(dateStr).getTime();
-  const mins = Math.floor(diff / 60000);
-  if (mins < 60) return `${mins}분 전`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}시간 전`;
-  const days = Math.floor(hrs / 24);
-  return `${days}일 전`;
-}
 
 export function TuningPanel({ tuning }: { tuning: TuningStatus }) {
   const { optimizers, configs, insightStats, appliedInsights } = tuning;

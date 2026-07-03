@@ -1,5 +1,5 @@
 import React from 'react';
-import { Panel, Indicator, EmptyMsg } from '@/components/ui';
+import { Panel, Indicator, EmptyMsg, Spinner } from '@/components/ui';
 import type { StockAnalysis } from '../../types';
 
 interface StockAnalysisPanelProps {
@@ -17,7 +17,7 @@ function StockAnalysisPanel({ stockName, analysis, isLoading }: StockAnalysisPan
   return (
     <Panel title={`${stockName} 종목 분석`}>
       {isLoading ? (
-        <div className="p-8 text-center"><div className="w-6 h-6 border-2 border-blue-400 border-t-transparent rounded-full animate-spin mx-auto" /></div>
+        <div className="p-8 text-center"><Spinner size="xl" className="mx-auto" /></div>
       ) : t ? (
         <div className="p-4 sm:p-5 space-y-5">
           <div>

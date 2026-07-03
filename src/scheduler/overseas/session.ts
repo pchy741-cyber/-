@@ -169,65 +169,9 @@ export function resetAsiaSessionCache(): void {
   overseasState.asiaSessionCache.set('live', null);
 }
 
-// ── 미국 서머타임(DST) 자동 감지 ──
-// 규칙: 3월 둘째 일요일 2AM EST ~ 11월 첫째 일요일 2AM EDT
-function isUSDST(): boolean {
-  const now = new Date();
-  const month = now.getUTCMonth(); // 0-indexed
-  const year = now.getUTCFullYear();
-
-  if (month > 2 && month < 10) return true; // Apr~Oct: always DST
-  if (month < 2 || month > 10) return false; // Jan~Feb, Dec: never DST
-
-  const nthSunday = (m: number, n: number) => {
-    const dow = new Date(Date.UTC(year, m, 1)).getUTCDay();
-    return (dow === 0 ? 1 : 8 - dow) + (n - 1) * 7;
-  };
-
-  if (month === 2) {
-    // March: DST starts 2nd Sunday 2AM EST = 7AM UTC
-    return now >= new Date(Date.UTC(year, 2, nthSunday(2, 2), 7));
-  }
-  // November: DST ends 1st Sunday 2AM EDT = 6AM UTC
-  return now < new Date(Date.UTC(year, 10, nthSunday(10, 1), 6));
-}
-
-/** DST 여부 외부 노출 (cron 스케줄 등에서 사용) */
-export { isUSDST };
-
-// ── KST 오프셋 (UTC → KST 변환용, 밀리초) ──
-const KST_OFFSET_MS = 9 * 60 * 60 * 1000; // +9 hours
-
-// ── 현재 열려 있는 시장 판별 (KST 기준, DST 자동) ──
-export function getOpenMarketRegions(): Set<string> {
-  const now = new Date();
-  const kst = new Date(now.getTime() + KST_OFFSET_MS);
-  const mins = kst.getUTCHours() * 60 + kst.getUTCMinutes();
-  const open = new Set<string>();
-
-  const shift = isUSDST() ? 0 : 60; // 겨울시간 = 1시간 후
-
-  // 🇺🇸 미국 정규장 (서머: KST 22:30~05:00 / 겨울: 23:30~06:00)
-  const usOpen = 22 * 60 + 30 + shift;
-  const usClose = 5 * 60 + shift;
-  if (mins >= usOpen || mins <= usClose) open.add('US');
-
-  // 🇺🇸 프리마켓 + 포스트마켓 (서머: 17:00~22:30 / 겨울: 18:00~23:30)
-  const preStart = 17 * 60 + shift;
-  const postEnd = 9 * 60 + shift;
-  if ((mins >= preStart && mins < usOpen) || (mins > usClose && mins <= postEnd)) open.add('US_EXTENDED');
-
-  // 🇰🇷 한국 KRX: 09:00~15:30 KST (평일만 — 요일체크는 overseas-job에서)
-  if (mins >= 9 * 60 && mins <= 15 * 60 + 30) open.add('KR');
-
-  // 🇯🇵 일본 TSE: 09:00~11:30, 12:30~15:30 KST
-  if ((mins >= 9 * 60 && mins <= 11 * 60 + 30) || (mins >= 12 * 60 + 30 && mins <= 15 * 60 + 30)) open.add('JP');
-
-  // 🇹🇼 대만 TWSE: KST 10:00~14:30
-  if (mins >= 10 * 60 && mins <= 14 * 60 + 30) open.add('TW');
-
-  return open;
-}
+// ── 시장 시간 — shared/overseas/market-time.ts에서 re-export (하위호환) ──
+export { isUSDST, getOpenMarketRegions, KST_OFFSET_MS } from '../../shared/overseas/market-time.js';
+import { isUSDST, KST_OFFSET_MS } from '../../shared/overseas/market-time.js';
 
 // ── 종가베팅: US 마감 전 N분 구간 확인 ──
 /**

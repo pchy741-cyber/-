@@ -12,7 +12,7 @@ function RiskGauge({ item }: { item: CopilotData['risk'][0] }) {
     <div className="flex items-center gap-3">
       <div className="w-20 text-[10px] text-slate-400 shrink-0">{item.label}</div>
       <div className="flex-1 h-2 bg-slate-800 rounded-full overflow-hidden">
-        <div className={`h-full ${barColor} rounded-full transition-all duration-700`} style={{ width: `${pct}%` }} />
+        <div className={`h-full ${barColor} rounded-full transition-all duration-700 w-[var(--w)]`} style={{ '--w': `${pct}%` } as React.CSSProperties} />
       </div>
       <div className={`w-14 text-right text-xs font-bold tabular-nums ${textColor}`}>
         {item.value}{item.unit}

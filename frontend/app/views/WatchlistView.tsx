@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useRef } from 'react';
-import { Panel, EmptyMsg } from '@/components/ui';
+import { Panel, EmptyMsg, Spinner } from '@/components/ui';
 import { api } from '../lib/utils';
 import { toDisplayName } from '../lib/helpers';
 import StockCard from './watchlist/StockCard';
@@ -149,7 +149,7 @@ function WatchlistView({ watchlist, setWatchlist, dash, usDash, toast, confirm, 
             placeholder="종목명 또는 코드 검색 (예: 삼성전자, 005930)"
             className="w-full bg-white/[0.05] ring-1 ring-white/[0.08] rounded-xl px-3.5 py-2.5 text-sm text-slate-200 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all pr-8"
           />
-          {searchLoading && <div className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />}
+          {searchLoading && <Spinner size="md" className="absolute right-2 top-1/2 -translate-y-1/2" />}
           {showDropdown && searchResults.length > 0 && (
             <div className="absolute z-50 top-full left-0 right-0 mt-1 bg-[#0f1422] ring-1 ring-white/[0.08] rounded-xl shadow-xl shadow-black/40 overflow-hidden">
               {searchResults.map((r) => (

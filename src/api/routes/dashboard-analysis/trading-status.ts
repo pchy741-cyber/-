@@ -6,7 +6,7 @@ import { runWithMode } from '../../../config/context.js';
 import { getActiveStrategy, getActiveWatchlist } from '../../../db/client.js';
 import { isMarketOpen } from '../../../kis/market.js';
 import { getKillSwitchStatusAll } from '../../../risk/kill-switch.js';
-import { getOpenMarketRegions } from '../../../scheduler/overseas/session.js';
+import { getOpenMarketRegions } from '../../../shared/overseas/market-time.js';
 import { isLiveEnabled, resolveRequestMode } from '../../guards/live-pin.js';
 
 export const tradingStatusRoutes = new Hono();

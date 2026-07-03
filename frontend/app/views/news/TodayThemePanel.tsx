@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { Panel } from '@/components/ui';
+import { Panel, Spinner } from '@/components/ui';
 
 interface ThemeData {
   theme: string;
@@ -21,7 +21,7 @@ export function TodayThemePanel({ theme, themeLoading, isInWatchlist, addingCode
       <div className="p-4">
         {themeLoading ? (
           <div className="flex items-center gap-2 py-2">
-            <div className="w-4 h-4 border-2 border-violet-400 border-t-transparent rounded-full animate-spin shrink-0" />
+            <Spinner size="md" color="violet" className="shrink-0" />
             <span className="text-xs text-slate-500">AI가 오늘의 테마를 분석 중...</span>
           </div>
         ) : theme ? (
@@ -47,7 +47,7 @@ export function TodayThemePanel({ theme, themeLoading, isInWatchlist, addingCode
                       }`}
                     >
                       {addingCode === s.code ? (
-                        <span className="w-3 h-3 border border-slate-400 border-t-transparent rounded-full animate-spin" />
+                        <Spinner size="xs" color="slate" as="span" />
                       ) : inList ? (
                         <span className="text-emerald-400">✓</span>
                       ) : (

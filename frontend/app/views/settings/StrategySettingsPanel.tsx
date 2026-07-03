@@ -77,8 +77,8 @@ export function StrategySettingsPanel({ strategy }: {
                 <span className="text-[10px] text-slate-400">{MODEL_LABELS[model]}</span>
                 <div className="w-full bg-white/[0.06] rounded-full h-1.5">
                   <div
-                    className="bg-cyan-500 h-1.5 rounded-full transition-all"
-                    style={{ width: `${Math.round(ec.weights[model] * 100)}%` }}
+                    className="bg-cyan-500 h-1.5 rounded-full transition-all w-[var(--w)]"
+                    style={{ '--w': `${Math.round(ec.weights[model] * 100)}%` } as React.CSSProperties}
                   />
                 </div>
                 <span className="text-[11px] text-cyan-400 font-mono font-bold">{(ec.weights[model] * 100).toFixed(0)}%</span>

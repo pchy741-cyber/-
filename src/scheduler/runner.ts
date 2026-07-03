@@ -127,7 +127,7 @@ export function startScheduler(): void {
   logger.info('📅 마스터 스케줄러 시작', { component: 'SCHEDULER' });
 
   // v12.3: 서버 시작 직후 뉴스 수집 (배포/Cold Start 시 "뉴스 끊김" 차단 방지)
-  import('../api/routes/dashboard-news.js')
+  import('../shared/news-cache.js')
     .then((m) => m.prefetchAllNews())
     .then(() => logger.info('📰 서버 시작 뉴스 프리페치 완료', { component: 'SCHEDULER' }))
     .catch((e) => logger.warn(`📰 서버 시작 뉴스 프리페치 실패: ${e}`, { component: 'SCHEDULER' }));
@@ -225,7 +225,7 @@ export function startScheduler(): void {
   cron.schedule(
     '0 9,11,14,15,22,0,3,5 * * 1-5',
     () => {
-      import('../api/routes/review/capture-trigger.js')
+      import('../shared/capture-trigger.js')
         .then(async (m) => {
           await m.triggerCapture('scheduled', 'live', null).catch(() => {});
           await m.triggerCapture('scheduled', 'paper', null).catch(() => {});
@@ -326,7 +326,7 @@ export function startScheduler(): void {
     () => {
       autoSwitchStrategy().catch((e) => logger.error(`장세 감지 실패: ${e}`, { component: 'SCHEDULER' }));
       // 뉴스 프리페치 (매크로RSS + 요약 + 유튜브 캐시 워밍 — 앱 열면 즉시 표시)
-      import('../api/routes/dashboard-news.js')
+      import('../shared/news-cache.js')
         .then((m) => m.prefetchAllNews())
         .catch((e) => logger.error(`뉴스 프리페치 실패: ${e}`, { component: 'SCHEDULER' }));
     },
@@ -407,7 +407,7 @@ export function startScheduler(): void {
   cron.schedule(
     '0 16 * * 1-5',
     () => {
-      import('../api/routes/dashboard-news.js')
+      import('../shared/news-cache.js')
         .then((m) => m.prefetchOverseasTheme())
         .catch((e) => logger.error(`해외 테마 전환 실패: ${e}`, { component: 'SCHEDULER' }));
     },
@@ -782,7 +782,7 @@ export function startScheduler(): void {
     () => {
       autoSwitchStrategy().catch((e) => logger.error(`장세 재판단 실패: ${e}`, { component: 'SCHEDULER' }));
       // 점심 뉴스 갱신 — 오전 장세 반영 + 오후 전략 판단 데이터 최신화
-      import('../api/routes/dashboard-news.js')
+      import('../shared/news-cache.js')
         .then((m) => m.prefetchAllNews())
         .catch((e) => logger.error(`점심 뉴스 갱신 실패: ${e}`, { component: 'SCHEDULER' }));
     },
@@ -1286,7 +1286,7 @@ export function startScheduler(): void {
       // 개선: 21:00에 미리 돌려서 22:30 개장 시 바로 사용 가능
       try {
         // 뉴스 테마/요약/유튜브 프리페치 — 해외장 대시보드에 표시
-        import('../api/routes/dashboard-news.js')
+        import('../shared/news-cache.js')
           .then((m) => m.prefetchAllNews())
           .then(() => logger.info('📰 해외장 뉴스 테마/요약 프리페치 완료', { component: 'SCHEDULER' }))
           .catch((e) => logger.warn(`해외장 뉴스 프리페치 실패: ${e}`, { component: 'SCHEDULER' }));
@@ -1314,7 +1314,7 @@ export function startScheduler(): void {
     '0 23 * * 1-5',
     async () => {
       try {
-        const { prefetchAllNews } = await import('../api/routes/dashboard-news.js');
+        const { prefetchAllNews } = await import('../shared/news-cache.js');
         await prefetchAllNews();
         logger.info('📰 미장 개장 뉴스 프리페치 완료 (23:00)', { component: 'SCHEDULER' });
       } catch (e) {
@@ -1327,7 +1327,7 @@ export function startScheduler(): void {
     '0 1 * * 2-6',
     async () => {
       try {
-        const { prefetchAllNews } = await import('../api/routes/dashboard-news.js');
+        const { prefetchAllNews } = await import('../shared/news-cache.js');
         await prefetchAllNews();
         logger.info('📰 미장 미드세션 뉴스 프리페치 완료 (01:00)', { component: 'SCHEDULER' });
       } catch (e) {

@@ -26,7 +26,7 @@ import { getAccountBalance } from '../../kis/account.js';
 import { getMarketSentiment } from '../../market/consensus.js';
 import { isKillSwitchActive } from '../../risk/kill-switch.js';
 import { getPaperBalance } from '../../risk/paper-balance.js';
-import { computePaperCash } from '../../scheduler/overseas/state.js';
+import { computePaperCash } from '../../shared/overseas/paper-cash.js';
 import { logger } from '../../utils/logger.js';
 import { getFxRate } from './dashboard/helpers.js';
 

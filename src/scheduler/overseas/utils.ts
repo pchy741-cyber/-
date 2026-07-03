@@ -1,26 +1,12 @@
 /**
  * overseas 공통 유틸리티 — 중복 제거용 단일 정의
- * ctxMode, modePrefix, calcPnlPct, getSector, overseas_state KV
+ * 핵심 함수는 shared/overseas/position-utils.ts로 이동 — 하위호환 re-export
  */
-import { getCtxIsPaper } from '../../config/context.js';
 import { getPool } from '../../db/client.js';
-import { WATCHLIST_BY_CODE } from './watchlist.js';
+import { WATCHLIST_BY_CODE } from '../../shared/overseas/watchlist.js';
 
-/** 현재 컨텍스트의 trading_mode 문자열 반환 */
-export function ctxMode(isPaper?: boolean): string {
-  return (isPaper ?? getCtxIsPaper()) ? 'paper' : 'live';
-}
-
-/** paper/live 분리 state key 접두사 */
-export function modePrefix(isPaper?: boolean): string {
-  return (isPaper ?? getCtxIsPaper()) ? 'p_' : 'l_';
-}
-
-/** PnL% 계산 */
-export function calcPnlPct(currentPrice: number, avgPrice: number): number {
-  if (avgPrice <= 0) return 0;
-  return ((currentPrice - avgPrice) / avgPrice) * 100;
-}
+// ── 하위호환 re-export ──
+export { ctxMode, modePrefix, calcPnlPct, positionStateKeys } from '../../shared/overseas/position-utils.js';
 
 /** 종목 코드로 섹터 조회 */
 export function getSector(code: string): string {
@@ -42,19 +28,6 @@ export async function getOverseasState(key: string): Promise<string | null> {
   return rows.length > 0 ? String(rows[0].value) : null;
 }
 
-/** 포지션 종료 시 정리해야 할 overseas_state 키 배열 반환 */
-export function positionStateKeys(code: string, isPaper?: boolean): string[] {
-  const pfx = modePrefix(isPaper);
-  return [
-    `${pfx}maxprice_${code}`,
-    `${pfx}partial_tp_stage_${code}`,
-    `${pfx}dynamic_tpsl_${code}`,
-    `${pfx}scale_in_${code}`,
-    `${pfx}turtle_trail_${code}`,
-    `${pfx}sync_sell_pending_${code}`,
-  ];
-}
-
 /** overseas_state KV 삭제 (내부 전용) */
 async function deleteOverseasState(key: string): Promise<void> {
   await getPool().query('DELETE FROM overseas_state WHERE key = $1', [key]);
@@ -68,7 +41,6 @@ export async function getUserFavorites(): Promise<Set<string>> {
   return new Set(raw ? (JSON.parse(raw) as string[]) : []);
 }
 
-// v14: 기본 블랙리스트 비움 — 매매 기회 확대 (CEO 지시)
 const CEO_DEFAULT_BLACKLIST = new Set<string>();
 
 /** 사용자 블랙리스트 종목 목록 (CEO 기본 + DB 저장분 합산) */
@@ -85,7 +57,7 @@ export async function toggleFavorite(code: string): Promise<boolean> {
   if (wasActive) favs.delete(code);
   else favs.add(code);
   await setOverseasState('user_favorites', JSON.stringify([...favs]));
-  return !wasActive; // returns new state
+  return !wasActive;
 }
 
 /** 블랙리스트 토글 */

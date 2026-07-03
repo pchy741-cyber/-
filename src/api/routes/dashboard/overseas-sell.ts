@@ -8,7 +8,7 @@ import { config } from '../../../config/index.js';
 import { getPool } from '../../../db/client.js';
 import { resolveRequestMode } from '../../guards/live-pin.js';
 import { invalidateBalanceCache } from '../../../kis/account.js';
-import { positionStateKeys } from '../../../scheduler/overseas/utils.js';
+import { positionStateKeys } from '../../../shared/overseas/position-utils.js';
 import { logger } from '../../../utils/logger.js';
 import { sleep } from '../../../utils/sleep.js';
 import { hardInvalidateMode } from './helpers.js';

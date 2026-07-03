@@ -2,11 +2,6 @@
  * 대시보드 공통 헬퍼 — 종목명, 환율, 캐시 관리
  */
 
-// ── 환율 캐시 (1시간 TTL, 실패 시 최근 조회값 유지) ──
-// 초기값: FALLBACK_FX_RATE (getFxRate 첫 호출 시 실시간 갱신)
-import { FALLBACK_FX_RATE } from '../../../config/constants.js';
-let _fxCache = { rate: FALLBACK_FX_RATE, fetchedAt: 0 };
-
 const GARBLED_NAME_REGEX = /[^\w\s\uAC00-\uD7A3\u3131-\u318E\u1100-\u11FF().,·\-+%$]/;
 const PENDING_STOCK_NAME_REGEX = /^(?:종목(?:명)?확인중|확인중)$/;
 
@@ -102,21 +97,8 @@ export function getKnownStockName(code: string): string | undefined {
   return KNOWN_GLOBAL_STOCK_NAMES[code] ?? KNOWN_KR_STOCK_NAMES[code];
 }
 
-export async function getFxRate(): Promise<number> {
-  const now = Date.now();
-  if (now - _fxCache.fetchedAt < 60 * 60 * 1000) return _fxCache.rate;
-  try {
-    const resp = await fetch('https://open.er-api.com/v6/latest/USD', { signal: AbortSignal.timeout(2000) });
-    const data = (await resp.json()) as any;
-    const krw = data?.rates?.KRW;
-    if (krw && krw > 1000 && krw < 2000) {
-      _fxCache = { rate: Math.round(krw), fetchedAt: now };
-    }
-  } catch {
-    /* 폴백 유지 */
-  }
-  return _fxCache.rate;
-}
+// ── 환율 — shared/fx-rate.ts에서 re-export (하위호환) ──
+export { getFxRate } from '../../../shared/fx-rate.js';
 
 // ── 대시보드 캐시 — src/cache/dashboard-cache.ts 에서 re-export (의존방향 수정) ──
 export {

@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { api } from '../lib/utils';
+import { Spinner } from '@/components/ui';
 import type { AiCostSummary, AiCostHistory, AiCostDailyEntry } from '../types';
 
 const PROVIDER_COLORS: Record<string, string> = {
@@ -134,7 +135,7 @@ function ProviderBreakdown({ today }: { today: AiCostSummary['today'] }) {
               <span className="text-slate-500">{fmtUsd(stats.costUsd)} ({pct.toFixed(0)}%)</span>
             </div>
             <div className="h-1.5 bg-white/[0.04] rounded-full overflow-hidden">
-              <div className="h-full rounded-full transition-all" style={{ width: `${Math.max(pct, 1)}%`, backgroundColor: color }} />
+              <div className="h-full rounded-full transition-all w-[var(--w)] bg-[var(--c)]" style={{ '--w': `${Math.max(pct, 1)}%`, '--c': color } as React.CSSProperties} />
             </div>
           </div>
         );
@@ -168,7 +169,7 @@ function DetailTable({ today, exchangeRate }: { today: AiCostSummary['today']; e
           {entries.map(([provider, s]) => (
             <tr key={provider} className="border-b border-white/[0.03] text-slate-300">
               <td className="py-2 pr-3">
-                <span className="inline-block w-2 h-2 rounded-full mr-1.5" style={{ backgroundColor: PROVIDER_COLORS[provider] ?? '#94a3b8' }} />
+                <span className="inline-block w-2 h-2 rounded-full mr-1.5 bg-[var(--c)]" style={{ '--c': PROVIDER_COLORS[provider] ?? '#94a3b8' } as React.CSSProperties} />
                 {PROVIDER_LABELS[provider] ?? provider}
               </td>
               <td className="py-2 pr-3 text-right tabular-nums">{s.calls.toLocaleString()}</td>
@@ -198,18 +199,18 @@ function DailyStackedChart({ daily, exchangeRate }: { daily: AiCostDailyEntry[];
 
   return (
     <div className="overflow-x-auto">
-      <div className="flex items-end gap-0.5 h-32" style={{ minWidth: daily.length * (barW + 2) }}>
+      <div className="flex items-end gap-0.5 h-32 min-w-[var(--mw)]" style={{ '--mw': `${daily.length * (barW + 2)}px` } as React.CSSProperties}>
         {daily.map((d, i) => {
           const totalH = (d.totalUsd * exchangeRate / maxKrw) * 120;
           let offset = 0;
           return (
-            <div key={i} className="flex flex-col-reverse" style={{ width: barW }} title={`${d.day}: ${fmtKrw(d.totalUsd * exchangeRate)}원`}>
+            <div key={i} className="flex flex-col-reverse w-[var(--bw)]" style={{ '--bw': `${barW}px` } as React.CSSProperties} title={`${d.day}: ${fmtKrw(d.totalUsd * exchangeRate)}원`}>
               {providers.map(p => {
                 const krw = (d.providers[p]?.costUsd ?? 0) * exchangeRate;
                 const h = totalH > 0 ? (krw / (d.totalUsd * exchangeRate)) * totalH : 0;
                 offset += h;
                 return (
-                  <div key={p} style={{ height: Math.max(h, 0), backgroundColor: PROVIDER_COLORS[p] ?? '#94a3b8', minHeight: h > 0 ? 1 : 0 }} />
+                  <div key={p} className="h-[var(--h)] bg-[var(--c)] min-h-[var(--mh)]" style={{ '--h': `${Math.max(h, 0)}px`, '--c': PROVIDER_COLORS[p] ?? '#94a3b8', '--mh': h > 0 ? '1px' : '0px' } as React.CSSProperties} />
                 );
               })}
             </div>
@@ -220,7 +221,7 @@ function DailyStackedChart({ daily, exchangeRate }: { daily: AiCostDailyEntry[];
       <div className="flex gap-3 mt-2 flex-wrap">
         {providers.map(p => (
           <div key={p} className="flex items-center gap-1 text-[9px] text-slate-500">
-            <span className="w-2 h-2 rounded-sm" style={{ backgroundColor: PROVIDER_COLORS[p] ?? '#94a3b8' }} />
+            <span className="w-2 h-2 rounded-sm bg-[var(--c)]" style={{ '--c': PROVIDER_COLORS[p] ?? '#94a3b8' } as React.CSSProperties} />
             {PROVIDER_LABELS[p] ?? p}
           </div>
         ))}
@@ -260,7 +261,7 @@ export default function AiCostView() {
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64 gap-2">
-        <div className="w-5 h-5 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+        <Spinner size="lg" />
         <span className="text-[11px] text-slate-500">AI 비용 데이터 로딩...</span>
       </div>
     );

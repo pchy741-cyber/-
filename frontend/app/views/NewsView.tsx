@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Panel } from '@/components/ui';
+import { Panel, Spinner } from '@/components/ui';
 import { api } from '../lib/utils';
 import { toDisplayName } from '../lib/helpers';
 import { TodayThemePanel } from './news/TodayThemePanel';
@@ -228,8 +228,8 @@ function NewsView({ watchlist, setWatchlist, viewMode = 'live' }: { watchlist: W
                 <div className="flex items-center gap-2">
                   <span className="text-[10px] text-slate-500 font-medium">🎬 센티</span>
                   <div className="relative w-16 h-1.5 rounded-full bg-slate-800 overflow-hidden">
-                    <div className="absolute left-0 top-0 h-full bg-emerald-500/70 rounded-l-full" style={{ width: `${sentimentData.bullPct}%` }} />
-                    <div className="absolute right-0 top-0 h-full bg-rose-500/70 rounded-r-full" style={{ width: `${sentimentData.bearPct}%` }} />
+                    <div className="absolute left-0 top-0 h-full bg-emerald-500/70 rounded-l-full w-[var(--w)]" style={{ '--w': `${sentimentData.bullPct}%` } as React.CSSProperties} />
+                    <div className="absolute right-0 top-0 h-full bg-rose-500/70 rounded-r-full w-[var(--w)]" style={{ '--w': `${sentimentData.bearPct}%` } as React.CSSProperties} />
                   </div>
                   <span className="text-[9px] text-emerald-400 font-bold">{sentimentData.bullPct}%</span>
                   <span className="text-[9px] text-slate-600">/</span>
@@ -263,7 +263,7 @@ function NewsView({ watchlist, setWatchlist, viewMode = 'live' }: { watchlist: W
         <div className="p-3">
           {ytLoading ? (
             <div className="flex justify-center py-6">
-              <div className="w-5 h-5 border-2 border-red-400 border-t-transparent rounded-full animate-spin" />
+              <Spinner size="lg" color="red" />
             </div>
           ) : ytVideos.length === 0 ? (
             <p className="text-xs text-slate-600 text-center py-4">유튜브 영상이 없습니다</p>
@@ -303,7 +303,7 @@ function NewsView({ watchlist, setWatchlist, viewMode = 'live' }: { watchlist: W
         <div className="p-4">
           {macroLoading ? (
             <div className="flex justify-center py-4">
-              <div className="w-5 h-5 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+              <Spinner size="lg" />
             </div>
           ) : macroNews.length === 0 ? (
             <p className="text-xs text-slate-600 text-center py-3">수집된 매크로 뉴스가 없습니다</p>
@@ -345,7 +345,7 @@ function NewsView({ watchlist, setWatchlist, viewMode = 'live' }: { watchlist: W
         </div>
         {loading ? (
           <div className="flex justify-center py-8">
-            <div className="w-5 h-5 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+            <Spinner size="lg" />
           </div>
         ) : stockNews.length === 0 ? (
           <p className="text-xs text-slate-600 text-center py-6">오늘 수집된 종목 뉴스가 없습니다</p>

@@ -34,7 +34,7 @@ export default function MoneyStatsPanel({ market, monthlyGoal, viewMode = 'live'
         <div className="w-[72px] h-[72px] rounded-full bg-white/[0.04]" />
       </div>
       <div className="flex gap-1 h-16">
-        {[1,2,3,4,5,6].map(i => <div key={i} className="flex-1 bg-white/[0.03] rounded-t-sm" style={{ height: `${20 + i * 8}%` }} />)}
+        {[1,2,3,4,5,6].map(i => <div key={i} className="flex-1 bg-white/[0.03] rounded-t-sm h-[var(--h)]" style={{ '--h': `${20 + i * 8}%` } as React.CSSProperties} />)}
       </div>
     </div>
   );
@@ -98,7 +98,7 @@ export default function MoneyStatsPanel({ market, monthlyGoal, viewMode = 'live'
             <circle cx={cx} cy={cy} r={r} fill="none" stroke={gaugeColor} strokeWidth="7"
               strokeDasharray={circumference} strokeDashoffset={dashOffset}
               strokeLinecap="round" transform={`rotate(-90 ${cx} ${cy})`}
-              style={{ transition: 'stroke-dashoffset 0.8s ease' }} />
+              className="[transition:stroke-dashoffset_0.8s_ease]" />
             <text x={cx} y={cy - 4} textAnchor="middle" fill={gaugeColor} fontSize="11" fontWeight="800">{Math.round(goalPct)}%</text>
             <text x={cx} y={cy + 8} textAnchor="middle" fill="#64748b" fontSize="7">이달목표</text>
           </svg>
@@ -121,8 +121,8 @@ export default function MoneyStatsPanel({ market, monthlyGoal, viewMode = 'live'
                   </div>
                   <div className="w-full flex flex-col justify-end h-[52px]">
                     <div
-                      className={`w-full rounded-t-sm transition-all duration-500 ${isPos ? 'bg-emerald-500/70' : 'bg-rose-500/70'}`}
-                      style={{ height: `${Math.max(pct, 4)}%` }}
+                      className={`w-full rounded-t-sm transition-all duration-500 h-[var(--h)] ${isPos ? 'bg-emerald-500/70' : 'bg-rose-500/70'}`}
+                      style={{ '--h': `${Math.max(pct, 4)}%` } as React.CSSProperties}
                     />
                   </div>
                   <div className="text-[9px] text-slate-600">{label}월</div>
@@ -144,13 +144,12 @@ export default function MoneyStatsPanel({ market, monthlyGoal, viewMode = 'live'
           </div>
           <div className="w-full h-1.5 bg-white/[0.06] rounded-full overflow-hidden">
             <div
-              className="h-full rounded-full transition-all duration-700"
-              style={{
-                width: `${Math.min(100, (data.dinnerMoney.monthlyTotal / data.dinnerMoney.monthlyCap) * 100)}%`,
-                background: data.dinnerMoney.monthlyTotal >= data.dinnerMoney.monthlyCap
-                  ? '#34d399'
-                  : 'linear-gradient(90deg, #f59e0b, #fbbf24)',
-              }}
+              className={`h-full rounded-full transition-all duration-700 w-[var(--w)] ${
+                data.dinnerMoney.monthlyTotal >= data.dinnerMoney.monthlyCap
+                  ? 'bg-emerald-400'
+                  : 'bg-gradient-to-r from-amber-500 to-amber-400'
+              }`}
+              style={{ '--w': `${Math.min(100, (data.dinnerMoney.monthlyTotal / data.dinnerMoney.monthlyCap) * 100)}%` } as React.CSSProperties}
             />
           </div>
           <div className="text-[9px] text-slate-600 mt-1">수익 1만원 이상 되는 날 자동 적립 · 월 {(data.dinnerMoney.monthlyCap / 10000).toFixed(0)}만원 한도</div>

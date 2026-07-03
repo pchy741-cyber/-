@@ -150,8 +150,8 @@ function KrHoldingsTab({ chains, dash, busyAction, guard, getStockName, onRefres
             {(ch.currentPrice ?? 0) > 0 && avgPrice > 0 && (
               <div className="mt-3">
                 <div className="relative h-1.5 bg-white/[0.05] rounded-full overflow-visible">
-                  <div className={`absolute h-full rounded-full transition-all duration-700 ${pnlPct >= 0 ? 'bg-emerald-500' : 'bg-rose-500'}`} style={{ width: `${barPos}%` }} />
-                  <div className="absolute h-3 w-0.5 bg-white/20 rounded-full top-1/2 -translate-y-1/2" style={{ left: `${((0 - stopPct) / range) * 100}%` }} />
+                  <div className={`absolute h-full rounded-full transition-all duration-700 w-[var(--w)] ${pnlPct >= 0 ? 'bg-emerald-500' : 'bg-rose-500'}`} style={{ '--w': `${barPos}%` } as React.CSSProperties} />
+                  <div className="absolute h-3 w-0.5 bg-white/20 rounded-full top-1/2 -translate-y-1/2 left-[var(--l)]" style={{ '--l': `${((0 - stopPct) / range) * 100}%` } as React.CSSProperties} />
                 </div>
                 <div className="flex justify-between mt-0.5">
                   <span className="text-[9px] text-rose-500 tabular-nums">

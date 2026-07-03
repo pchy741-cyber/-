@@ -4,7 +4,7 @@
  * DB 영속 (loop_sessions/loop_ticks) + 서버 재시작 시 자동 재개
  */
 
-import type { CaptureTrigger } from '../api/routes/review/capture-trigger.js';
+import type { CaptureTrigger } from '../shared/capture-trigger.js';
 import { runWithMode } from '../config/context.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
 import { isKillSwitchActive } from '../risk/kill-switch.js';

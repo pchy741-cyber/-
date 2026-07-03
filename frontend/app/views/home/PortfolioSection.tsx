@@ -3,7 +3,8 @@
 import React, { useState } from 'react';
 import { api, fmt, fmtWon, fmtUsd, FALLBACK_FX_RATE } from '../../lib/utils';
 import { toDisplayName, isUnresolvedStockName } from '../../lib/helpers';
-import { SegmentedBar, WeightBar } from '@/components/SegmentedBar';
+import { SegmentedBar } from '@/components/SegmentedBar';
+import { ProgressBar } from '@/components/ProgressBar';
 import { CumulativePnlChart } from '@/components/CumulativePnlChart';
 import type { Dashboard, Chain, UsHolding, UsWatchlistItem, AllocConfig, MpData } from '../../types';
 
@@ -224,8 +225,8 @@ function PortfolioSectionInner(props: PortfolioSectionProps) {
                       </span>
                       <span className="text-slate-500">{fmtWon(inv)} ({pct.toFixed(0)}%)</span>
                     </div>
-                    <WeightBar
-                      pct={pct}
+                    <ProgressBar
+                      value={pct}
                       colorClass={(ch.unrealizedPnl ?? 0) >= 0 ? 'bg-emerald-500/60' : 'bg-rose-500/60'}
                     />
                   </div>
@@ -251,8 +252,8 @@ function PortfolioSectionInner(props: PortfolioSectionProps) {
                         <span className="font-medium text-blue-300">{toDisplayName(priceData?.name, h.stock_code)}</span>
                         <span className="text-slate-500">{fmtWon(invKrw)} ({pct.toFixed(0)}%)</span>
                       </div>
-                      <WeightBar
-                        pct={pct}
+                      <ProgressBar
+                        value={pct}
                         colorClass={curPnl >= 0 ? 'bg-blue-500/60' : 'bg-rose-500/60'}
                       />
                     </div>

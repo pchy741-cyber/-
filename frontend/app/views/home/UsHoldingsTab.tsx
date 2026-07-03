@@ -6,7 +6,7 @@ import { api, fmtPct, pc, pbg } from '../../lib/utils';
 import { toDisplayName, livePrefix } from '../../lib/helpers';
 import { usePriceFlash } from '../../hooks/usePriceFlash';
 import ReferencePanel from '../../panels/ReferencePanel';
-import ManualBuyModal from '../../panels/ManualBuyModal';
+import UnifiedBuyModal from '../../panels/UnifiedBuyModal';
 import { UsHoldingTpSlBar } from './UsHoldingTpSlBar';
 import type { UsHolding, UsWatchlistItem, Dashboard, ToastFn, ConfirmFn, ViewMode, LoopStatus } from '../../types';
 
@@ -281,11 +281,12 @@ function UsHoldingsTab({
         </div>
       )}
       {/* 수동매수 모달 */}
-      <ManualBuyModal
+      <UnifiedBuyModal
+        market="US"
         open={showManualBuy}
         onClose={() => setShowManualBuy(false)}
         onSuccess={onRefresh}
-        toast={toast as (msg: string, type?: string) => void}
+        toast={toast}
         confirm={confirm}
         viewMode={viewMode}
         watchlist={usW.map((s: UsWatchlistItem) => ({ code: s.code, name: s.name ?? s.code, exchange: s.exchange ?? 'NASDAQ' }))}

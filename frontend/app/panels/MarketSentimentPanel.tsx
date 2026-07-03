@@ -79,8 +79,8 @@ function MarketSentimentPanel() {
             {/* 게이지 바 */}
             <div className="relative h-1.5 bg-white/[0.06] rounded-full overflow-hidden">
               <div
-                className={`absolute inset-y-0 left-0 rounded-full bg-gradient-to-r ${barGrad} transition-all duration-700`}
-                style={{ width: `${fearGreedScore}%` }}
+                className={`absolute inset-y-0 left-0 rounded-full bg-gradient-to-r ${barGrad} transition-all duration-700 w-[var(--w)]`}
+                style={{ '--w': `${fearGreedScore}%` } as React.CSSProperties}
               />
             </div>
             <div className="flex justify-between mt-0.5 text-[8px] text-slate-600">

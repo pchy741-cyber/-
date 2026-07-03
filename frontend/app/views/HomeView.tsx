@@ -40,30 +40,43 @@ import KrAiScorePanel from './home/KrAiScorePanel';
 import SuggestedActionsPanel from '../panels/SuggestedActionsPanel';
 import MarketSentimentPanel from '../panels/MarketSentimentPanel';
 
-interface HomeViewProps {
+// ── Props 그룹핑: 관련 데이터를 논리적으로 묶어 가독성 개선 ──
+
+export interface MarketData {
   dash: Dashboard | null;
   health: Health | null;
-  killSwitch: KillSwitch | null;
-  trades: Trade[];
   usDash: UsDashboard | null;
-  withdrawConfig: WithdrawConfig | null;
+  trades: Trade[];
   watchlist: WatchlistItem[];
-  strategy: Strategy | null;
-  setStrategy: (s: Strategy) => void;
-  toast: ToastFn;
-  confirm: ConfirmFn;
-  onRefresh: (forceStatic?: boolean) => void;
-  allocConfig: AllocConfig | null;
-  setAllocConfig: (c: AllocConfig) => void;
-  onGoToSettings: () => void;
-  viewMode?: ViewMode;
-  onMarketTabChange?: (tab: 'KR' | 'US') => void;
-  mpData: MpData | null;
-  loopStatus?: LoopStatus | null;
   todayStats?: TodayStats | null;
   tradingStatus?: TradingStatus | null;
   aiStatus?: AiStatus | null;
+  loopStatus?: LoopStatus | null;
+  mpData: MpData | null;
 }
+
+export interface Controls {
+  strategy: Strategy | null;
+  setStrategy: (s: Strategy) => void;
+  onRefresh: (forceStatic?: boolean) => void;
+  viewMode?: ViewMode;
+  onMarketTabChange?: (tab: 'KR' | 'US') => void;
+  onGoToSettings: () => void;
+  killSwitch: KillSwitch | null;
+}
+
+export interface ConfigData {
+  withdrawConfig: WithdrawConfig | null;
+  allocConfig: AllocConfig | null;
+  setAllocConfig: (c: AllocConfig) => void;
+}
+
+export interface UiCallbacks {
+  toast: ToastFn;
+  confirm: ConfirmFn;
+}
+
+interface HomeViewProps extends MarketData, Controls, ConfigData, UiCallbacks {}
 
 function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, watchlist, strategy, setStrategy, toast, confirm, onRefresh, allocConfig, setAllocConfig, onGoToSettings, viewMode = 'live', onMarketTabChange, mpData, loopStatus, todayStats, tradingStatus: tradingStatusProp, aiStatus: aiStatusProp }: HomeViewProps) {
   const [holdingsTab, setHoldingsTab] = React.useState<'KR' | 'US'>('KR');

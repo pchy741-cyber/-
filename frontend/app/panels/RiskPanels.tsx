@@ -24,7 +24,7 @@ export function ArcGauge({ pct, color, label, sub }: { pct: number; color: strin
       <svg width="72" height="44" viewBox="0 0 72 44">
         <path d={`M 8 36 A ${r} ${r} 0 0 1 64 36`} fill="none" stroke={trackColor} strokeWidth="6" strokeLinecap="round" />
         <path d={`M 8 36 A ${r} ${r} 0 0 1 64 36`} fill="none" stroke={strokeColor} strokeWidth="6" strokeLinecap="round"
-          strokeDasharray={`${stroke} ${circ}`} style={{ transition: 'stroke-dasharray 0.6s ease' }} />
+          strokeDasharray={`${stroke} ${circ}`} className="[transition:stroke-dasharray_0.6s_ease]" />
         <text x="36" y="34" textAnchor="middle" fontSize="11" fontWeight="700" fill="white">{clamped}%</text>
       </svg>
       <div className="text-[10px] font-semibold text-slate-300 text-center leading-tight">{label}</div>
@@ -45,7 +45,7 @@ export function ScoreBar({ label, value, color }: { label: string; value: number
     <div className="flex items-center gap-2 text-[10px]">
       <div className="w-14 text-slate-500 shrink-0 text-right">{label}</div>
       <div className="flex-1 h-1.5 bg-white/[0.05] rounded-full overflow-hidden">
-        <div className={`h-full rounded-full ${colorMap[color] ?? colorMap.blue}`} style={{ width: `${Math.max(0, Math.min(100, value))}%`, transition: 'width 0.5s ease' }} />
+        <div className={`h-full rounded-full ${colorMap[color] ?? colorMap.blue} transition-all duration-500 w-[var(--w)]`} style={{ '--w': `${Math.max(0, Math.min(100, value))}%` } as React.CSSProperties} />
       </div>
       <div className="w-7 text-right text-slate-400 font-semibold">{Math.round(value)}</div>
     </div>

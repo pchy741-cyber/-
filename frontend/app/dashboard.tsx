@@ -1,7 +1,8 @@
 'use client';
 
 import React, { useState, type CSSProperties } from 'react';
-import { ConfirmModal, Button } from '@/components/ui';
+import dynamic from 'next/dynamic';
+import { ConfirmModal, Button, Spinner } from '@/components/ui';
 import { api, getKSTMinutes, toKST } from './lib/utils';
 import { useToast, useConfirm } from './lib/hooks';
 import { useMediaQuery, MEDIA } from './lib/useMediaQuery';
@@ -11,18 +12,21 @@ import { DashboardSidebar } from './components/DashboardSidebar';
 import { DashboardHeader } from './components/DashboardHeader';
 import { ErrorBoundary } from './components/ErrorBoundary';
 
+// 핵심 뷰 — 정적 import (초기 로딩 속도 보존)
 import HomeView from './views/HomeView';
 import TradesView from './views/TradesView';
-import JournalView from './views/JournalView';
-import WatchlistView from './views/WatchlistView';
 import NewsView from './views/NewsView';
-import SettingsView from './views/SettingsView';
-import DividendView from './views/DividendView';
-import StrategyLabView from './views/StrategyLabView';
-import AiCostView from './views/AiCostView';
+import WatchlistView from './views/WatchlistView';
 import ScreenshotReview from './components/ScreenshotReview';
 import DbWarmingOverlay from './components/DbWarmingOverlay';
 import { ResearchBotPanel } from './views/news/ResearchBotPanel';
+
+// 비핵심 뷰 — dynamic import (코드 스플리팅)
+const JournalView = dynamic(() => import('./views/JournalView'), { ssr: false });
+const DividendView = dynamic(() => import('./views/DividendView'), { ssr: false });
+const AiCostView = dynamic(() => import('./views/AiCostView'), { ssr: false });
+const StrategyLabView = dynamic(() => import('./views/StrategyLabView'), { ssr: false });
+const SettingsView = dynamic(() => import('./views/SettingsView'), { ssr: false });
 
 type Tab = 'home' | 'trades' | 'journal' | 'watchlist' | 'news' | 'research' | 'settings' | 'dividend' | 'strategy-lab' | 'ai-cost';
 
@@ -166,7 +170,7 @@ export default function Dashboard() {
       {/* DB 동기화 배너 — 캐시 데이터 표시 중 + 백그라운드 갱신 */}
       {(dbSyncing || isStale) && dash && (
         <div className="flex items-center justify-center gap-2 px-3 py-1.5 bg-blue-500/10 border-b border-blue-500/20 shrink-0">
-          <div className="w-3 h-3 border-[1.5px] border-blue-400 border-t-transparent rounded-full animate-spin" />
+          <Spinner size="xs" />
           <span className="text-[11px] text-blue-300">
             {dbSyncing ? 'DB 기상 중 — 마지막 데이터 표시 중' : '데이터 갱신 중...'}
           </span>
@@ -212,7 +216,7 @@ export default function Dashboard() {
         <main className="flex-1 overflow-y-auto transition-colors duration-500 [background:var(--theme-gradient)]">
           {loading && !dash ? (
             <div className="flex items-center justify-center h-full flex-col gap-3">
-              <div className="w-8 h-8 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+              <Spinner size="2xl" />
               <Button variant="ghost" size="sm" className="text-[10px] text-slate-500 hover:text-slate-300 mt-4" onClick={() => load(true)}>재시도</Button>
             </div>
           ) : (
@@ -234,7 +238,7 @@ export default function Dashboard() {
               </ErrorBoundary>
               <ErrorBoundary fallbackTitle="퀀트봇 로딩 오류">
                 {/* v17: 사전로드 — 탭 전환 시 즉시 표시 (기존: lazy mount → 탭 클릭 후 fetch 시작) */}
-                <div className="space-y-4" style={{ display: tab === 'research' ? undefined : 'none' }}>
+                <div className={`space-y-4 ${tab === 'research' ? '' : 'hidden'}`}>
                   <ResearchBotPanel />
                 </div>
               </ErrorBoundary>

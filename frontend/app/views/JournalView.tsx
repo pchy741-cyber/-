@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { Button } from '@/components/ui';
+import { Button, Spinner } from '@/components/ui';
 import { ToggleGroup } from '@/components/ToggleGroup';
 import { api, fmt, fmtWon, fmtUsd, fmtPct, fmtTime, pc } from '../lib/utils';
 import { KNOWN_STOCK_NAMES } from '../lib/stock-names';
@@ -109,7 +109,7 @@ function JournalView({ viewMode = 'live' }: { viewMode?: 'live' | 'paper' }) {
         </div>
         {loading ? (
           <div className="flex items-center justify-center p-12">
-            <div className="w-6 h-6 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+            <Spinner size="xl" />
           </div>
         ) : error ? (
           <div className="p-10 text-center">

@@ -39,7 +39,7 @@ interface AiTransparencyData {
  * 기존: watchlist 랜덤 종목의 무관한 점수 나열
  * 개선: 실제 보유 종목의 매수 이유, 진입/현재 점수, 최근 결정, 적중률
  */
-export default function AiTransparencyPanel({ watchlist, tab, usDash, viewMode = 'live' }: { watchlist: WatchlistItem[]; tab?: 'KR' | 'US'; usDash?: UsDashboard | null; viewMode?: string }) {
+function AiTransparencyPanel({ watchlist, tab, usDash, viewMode = 'live' }: { watchlist: WatchlistItem[]; tab?: 'KR' | 'US'; usDash?: UsDashboard | null; viewMode?: string }) {
   const [data, setData] = React.useState<AiTransparencyData | null>(null);
   const [selected, setSelected] = React.useState<string | null>(null);
   const [usSel, setUsSel] = React.useState<string | null>(null);
@@ -211,3 +211,5 @@ export default function AiTransparencyPanel({ watchlist, tab, usDash, viewMode =
     </div>
   );
 }
+
+export default React.memo(AiTransparencyPanel);

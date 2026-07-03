@@ -96,12 +96,4 @@ export function downloadPng(base64: string, filename: string) {
   a.click();
 }
 
-/** 상대 시간 표시 (예: "5분 전") */
-export function timeAgo(dateStr: string): string {
-  const sec = Math.round((Date.now() - new Date(dateStr).getTime()) / 1000);
-  if (sec < 60) return `${sec}초 전`;
-  const min = Math.floor(sec / 60);
-  if (min < 60) return `${min}분 전`;
-  const hr = Math.floor(min / 60);
-  return `${hr}시간 전`;
-}
+export { timeAgo } from '../../lib/utils';

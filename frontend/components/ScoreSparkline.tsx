@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { api } from '../app/lib/utils';
 
 /**
  * AI 점수 시계열 미니 그래프 (Sparkline)
@@ -20,7 +21,7 @@ interface Props {
   hours?: number;
   width?: number;
   height?: number;
-  apiBase?: string; // 기본 API base URL
+  apiBase?: string; // 하위 호환용 (미사용)
 }
 
 export function ScoreSparkline({
@@ -28,7 +29,6 @@ export function ScoreSparkline({
   hours = 24,
   width = 120,
   height = 36,
-  apiBase = '',
 }: Props) {
   const [points, setPoints] = useState<ScorePoint[]>([]);
   const [loading, setLoading] = useState(false);
@@ -39,10 +39,7 @@ export function ScoreSparkline({
     async function load() {
       try {
         setLoading(true);
-        const res = await fetch(`${apiBase}/api/ai-loop/scores/history?stock_code=${stockCode}&hours=${hours}`, {
-          credentials: 'include',
-        });
-        const data = await res.json();
+        const data = await api(`/ai-loop/scores/history?stock_code=${stockCode}&hours=${hours}`);
         if (cancelled) return;
         const pts = (data.points ?? []) as ScorePoint[];
         setPoints(pts);
@@ -60,11 +57,11 @@ export function ScoreSparkline({
       cancelled = true;
       clearInterval(id);
     };
-  }, [stockCode, hours, apiBase]);
+  }, [stockCode, hours]);
 
   if (points.length < 2) {
     return (
-      <div className="flex items-center justify-center text-[9px] text-slate-600" style={{ width, height }}>
+      <div className="flex items-center justify-center text-[9px] text-slate-600 w-[var(--w)] h-[var(--h)]" style={{ '--w': `${width}px`, '--h': `${height}px` } as React.CSSProperties}>
         {loading ? '...' : '데이터 없음'}
       </div>
     );
@@ -107,13 +104,12 @@ export function ScoreSparkline({
         <circle cx={lastX} cy={lastY} r="2.5" fill={lineColor} />
       </svg>
       <div className="flex flex-col text-[9px] leading-tight">
-        <span className="tabular-nums font-bold" style={{ color: lineColor }}>
+        <span className={`tabular-nums font-bold ${lastDelta != null && lastDelta < 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
           {last.score.toFixed(0)}
         </span>
         {lastDelta != null && (
           <span
-            className={`tabular-nums ${showBoost ? 'font-black animate-pulse' : ''}`}
-            style={{ color: lineColor }}
+            className={`tabular-nums ${showBoost ? 'font-black animate-pulse' : ''} ${lastDelta < 0 ? 'text-rose-400' : 'text-emerald-400'}`}
           >
             {boostBadge}
             {lastDelta >= 0 ? '+' : ''}

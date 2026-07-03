@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { Panel, Button } from '@/components/ui';
+import { Panel, Button, Spinner } from '@/components/ui';
 
 export function NewsSummaryPanel({
   summary, summaryError, summaryLoading, summaryRefreshing, summaryHeadlines,
@@ -43,7 +43,7 @@ export function NewsSummaryPanel({
         {summaryLoading ? (
           <div className="space-y-3 animate-pulse">
             <div className="flex items-center gap-2">
-              <div className="w-4 h-4 border-2 border-amber-400 border-t-transparent rounded-full animate-spin shrink-0" />
+              <Spinner size="md" color="amber" className="shrink-0" />
               <span className="text-[10px] text-slate-500">Gemini 분석 중... (최대 45초)</span>
             </div>
             <div className="space-y-2">
@@ -109,7 +109,7 @@ export function NewsSummaryPanel({
             <Button variant="ghost" size="sm" className="flex items-center gap-1.5 bg-violet-900/30 text-violet-300 hover:bg-violet-800/40"
               disabled={geminiTesting} onClick={testGemini}>
               {geminiTesting ? (
-                <span className="w-3 h-3 border border-violet-400 border-t-transparent rounded-full animate-spin" />
+                <Spinner size="xs" color="violet" as="span" />
               ) : (
                 <span>⚡</span>
               )}
@@ -118,7 +118,7 @@ export function NewsSummaryPanel({
             <Button variant="secondary" size="sm" className="flex items-center gap-1.5"
               disabled={summaryRefreshing} onClick={() => fetchSummary(true)}>
               {summaryRefreshing ? (
-                <span className="w-3 h-3 border border-slate-400 border-t-transparent rounded-full animate-spin" />
+                <Spinner size="xs" color="slate" as="span" />
               ) : (
                 <span>↻</span>
               )}

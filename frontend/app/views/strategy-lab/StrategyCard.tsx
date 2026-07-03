@@ -107,8 +107,8 @@ export function StrategyCard({ s, expanded, onToggle, viewMode = 'paper' }: { s:
             {perfBars.map((win, i) => (
               <div
                 key={i}
-                className={`w-[3px] rounded-sm ${win ? 'bg-emerald-500/60' : 'bg-rose-500/60'}`}
-                style={{ height: `${30 + ((i * 17 + p.totalTrades) % 70)}%` }}
+                className={`w-[3px] rounded-sm h-[var(--h)] ${win ? 'bg-emerald-500/60' : 'bg-rose-500/60'}`}
+                style={{ '--h': `${30 + ((i * 17 + p.totalTrades) % 70)}%` } as React.CSSProperties}
               />
             ))}
           </div>

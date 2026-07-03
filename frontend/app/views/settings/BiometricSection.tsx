@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { api } from '../../lib/utils';
+import { Spinner } from '@/components/ui';
 import type { ToastFn } from '../../types';
 
 interface Credential {
@@ -98,7 +99,7 @@ export function BiometricSection({ toast }: { toast?: ToastFn }) {
           className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 rounded-lg text-[11px] font-semibold transition-all shadow-sm disabled:opacity-50 flex items-center gap-1.5"
         >
           {loading ? (
-            <div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />
+            <Spinner size="xs" color="white" />
           ) : (
             <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24">
               <path d="M12 5v14M5 12h14" strokeLinecap="round" />

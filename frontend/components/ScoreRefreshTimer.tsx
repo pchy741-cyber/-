@@ -98,13 +98,8 @@ export function ScoreRefreshTimer({ apiBase = '' }: { apiBase?: string }) {
       {/* 진행률 바 */}
       <div className="h-1 bg-white/[0.04] rounded-full overflow-hidden">
         <div
-          className={`h-full ${isRefreshing ? 'bg-cyan-400 animate-pulse' : 'bg-blue-500/60'} transition-all duration-1000`}
-          style={
-            {
-              '--p': `${progressPct}%`,
-              width: 'var(--p)',
-            } as React.CSSProperties
-          }
+          className={`h-full w-[var(--p)] ${isRefreshing ? 'bg-cyan-400 animate-pulse' : 'bg-blue-500/60'} transition-all duration-1000`}
+          style={{ '--p': `${progressPct}%` } as React.CSSProperties}
         />
       </div>
       {status.lastRunAt && (

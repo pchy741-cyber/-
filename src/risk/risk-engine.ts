@@ -2,7 +2,7 @@
  * 리스크 통제 엔진 — 모든 국내 주문은 이 엔진을 거쳐야 함
  */
 
-import { getFxRate } from '../api/routes/dashboard/helpers.js';
+import { getFxRate } from '../shared/fx-rate.js';
 import { getCtxIsPaper } from '../config/context.js';
 import { config } from '../config/index.js';
 import { getAllocRisk } from '../db/alloc-risk-cache.js';

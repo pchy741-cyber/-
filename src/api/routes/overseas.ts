@@ -10,8 +10,8 @@ import { getOverseasBalance, getOverseasDailyChart, getOverseasPrice, placeOvers
 import { getFearGreedIndex } from '../../market/external-signals.js';
 import { notifyOverseasSell } from '../../notifications/web-push.js';
 import { calcDynamicTpSl, getVixRegime } from '../../scheduler/overseas/risk-intelligence.js';
-import { positionStateKeys } from '../../scheduler/overseas/utils.js';
-import { GLOBAL_WATCHLIST } from '../../scheduler/overseas/watchlist.js';
+import { positionStateKeys } from '../../shared/overseas/position-utils.js';
+import { GLOBAL_WATCHLIST } from '../../shared/overseas/watchlist.js';
 import { logger } from '../../utils/logger.js';
 import { sleep } from '../../utils/sleep.js';
 import { resolveRequestMode } from '../guards/live-pin.js';

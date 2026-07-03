@@ -53,7 +53,7 @@ export async function runTrackBJob(): Promise<void> {
 
   // v16: 모드별 자동매매 ON/OFF 체크
   try {
-    const { isAutoTradeEnabled } = await import('../api/routes/settings/manual-triggers.js');
+    const { isAutoTradeEnabled } = await import('../shared/auto-trade-state.js');
     if (!isAutoTradeEnabled(modeKey === 'paper')) {
       logger.debug(`🔇 자동매매 OFF [${modeKey}] — Track B 스킵`, { component: 'SCHEDULER' });
       return;

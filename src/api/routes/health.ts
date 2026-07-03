@@ -6,7 +6,7 @@ import { getKillSwitchStatusAll } from '../../risk/kill-switch.js';
 import { isWaking, tryWakeIfNeeded } from '../../utils/cloud-sql-wake.js';
 import { getActiveLocks } from '../../utils/lock.js';
 import { getRecentEvents } from '../../utils/system-events.js';
-import { isUSDST } from '../../scheduler/overseas/session.js';
+import { isUSDST } from '../../shared/overseas/market-time.js';
 
 // 역호환: 기존 import 경로 유지
 export { logSystemEvent, getRecentEvents } from '../../utils/system-events.js';
