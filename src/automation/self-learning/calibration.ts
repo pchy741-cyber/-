@@ -158,7 +158,8 @@ function _analyzeThresholdForData(
   if (belowWinRate < 0.38 && belowAvgPnl < 0 && aboveWinRate > belowWinRate + 0.1) {
     let bestThreshold = currentThreshold + 5;
     let bestAboveWinRate = 0;
-    for (let t = currentThreshold + 3; t <= Math.min(80, currentThreshold + 12); t += 3) {
+    // v24 P2: 캡 80→92 (SCALPING threshold 87 등 고임계 전략도 교정 가능)
+    for (let t = currentThreshold + 3; t <= Math.min(92, currentThreshold + 12); t += 3) {
       const atOrAbove = rows.filter((r: any) => Number(r.entry_score) >= t);
       if (atOrAbove.length < 5) break;
       const wr = atOrAbove.filter((r: any) => r.outcome === 'WIN').length / atOrAbove.length;
@@ -679,12 +680,13 @@ export async function evaluateAppliedInsights(): Promise<void> {
  */
 export async function autoPromotePaperInsights(): Promise<void> {
   try {
-    // v17: Paper 프로모션 조건 완화 — Paper 백테스팅 결과를 빠르게 Live에 반영
+    // v24 N5: 최소 샘플 8→30 (8건 승률은 신뢰구간 ±35%p → 무의미)
+    // Paper는 EXPLORE 태깅(v23)으로 학습 제외되므로, 승격은 충분한 샘플에서만 허용
     const { rows: candidates } = await getPool().query(
       `SELECT * FROM learned_insights
        WHERE is_paper = true
          AND confidence >= 0.70
-         AND sample_count >= 8
+         AND sample_count >= 30
          AND param_change IS NOT NULL
          AND COALESCE(is_dismissed, false) IS NOT TRUE
          AND COALESCE(is_promoted, false) IS NOT TRUE`,

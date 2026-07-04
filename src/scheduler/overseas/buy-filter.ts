@@ -102,8 +102,8 @@ function getUSTimeBonus(): number {
       : -1; // 장외 시간
   const sessionLen = (close + 24 * 60) - open; // 390분 (서머) or 390분 (겨울)
   if (minsSinceOpen < 0 || minsSinceOpen > sessionLen) return 0;
-  // 개장 30분: 모멘텀 포착 구간 → +5점
-  if (minsSinceOpen < 30) return 5;
+  // v24 P2: 개장 30분은 슬리피지 최악 구간 → 보너스 제거 (기존 +5)
+  if (minsSinceOpen < 30) return 0;
   // 개장 30분~1.5시간: 트렌드 확정 구간 → +10점
   if (minsSinceOpen < 90) return 10;
   // 최적 진입 (개장 1.5~2.5시간 후) → +8점
@@ -536,7 +536,8 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         // 5건만에 35% 차단 → 회복 가능 종목도 블랙리스트 (Paper 검증: 8건/30%가 적정)
         const hasBadWinRate = wr && wr.sampleCount >= 8 && wr.winRate <= 0.30;
         const effectiveBadWR = hasBadWinRate;
-        if (effectiveBadWR && !t.isBigMover) {
+        // v24 P2: BigMover도 승률 필터 적용 (기존: 면제 → 급등주 추격 과신)
+        if (effectiveBadWR) {
           logger.info(
             `  ⛔ 승률 피드백 차단: ${t.code} 승률 ${(wr!.winRate * 100).toFixed(0)}% (${wr!.sampleCount}건)`,
             { component: 'OVERSEAS' },

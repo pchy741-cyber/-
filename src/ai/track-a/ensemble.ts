@@ -230,8 +230,11 @@ function mergeScores(modelResults: ModelResult[], config: EnsembleConfig): Scori
     const mean = scores.reduce((a, b) => a + b, 0) / scores.length;
     const variance = scores.reduce((a, s) => a + (s - mean) ** 2, 0) / scores.length;
     const stdDev = Math.sqrt(variance);
-    // stdDev 0 → confidence 0.9, stdDev 20+ → confidence 0.5
-    const agreementBonus = Math.max(0, AGREEMENT_WEIGHT * (1 - Math.min(1, stdDev / STD_DEV_NORMALIZER)));
+    // v24 N2: RSS base=50+tech×0.6 → Gemini와 상관 높음 → 가짜 합의 → conf 인플레
+    // 독립 모델(non-RSS) 1개뿐이면 합의 측정 불가 → agreement bonus 0.4→0.15 캡
+    const realModelCount = entries.filter((e) => e.model !== 'rss').length;
+    const effectiveAgreementWeight = realModelCount >= 2 ? AGREEMENT_WEIGHT : 0.15;
+    const agreementBonus = Math.max(0, effectiveAgreementWeight * (1 - Math.min(1, stdDev / STD_DEV_NORMALIZER)));
     let confidence = Math.min(MAX_CONFIDENCE, BASE_CONFIDENCE + agreementBonus);
 
     // ── Tier 2: 앙상블 불일치 감지 ──

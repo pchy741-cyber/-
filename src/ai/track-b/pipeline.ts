@@ -739,41 +739,9 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     const { getStockWinRates } = await import('../../analysis/win-rate.js');
     const winRates = await getStockWinRates(stockCodes).catch(() => new Map());
 
-    // ── 종목별 실거래 승률 → 스코어 보정 (자기학습 연동) ─────────────
-    // 승률 65%+(5건+): +5점 보너스, 승률 35%-(5건+): -8점 페널티
-    const stockAccAdjMap = new Map<string, number>();
-    try {
-      // v17: 데이터스누핑 방지 — 최근 7일 holdout gap (T+1 결제 반영 대기)
-      const { rows: accRows } = await getPool().query(
-        `SELECT stock_code,
-                COUNT(*)::int AS total,
-                SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END)::int AS wins
-           FROM score_accuracy
-          WHERE recorded_at >= NOW() - INTERVAL '90 days'
-            AND recorded_at <= NOW() - INTERVAL '7 days'
-            AND is_paper = $1
-            AND stock_code = ANY($2)
-          GROUP BY stock_code
-          HAVING COUNT(*) >= 5`,
-        [ctxIsPaper, stockCodes],
-      );
-      for (const r of accRows) {
-        const wr = r.wins / r.total;
-        // v17: 승률 구간별 세밀 보정 (자기학습 강화)
-        if (wr >= 0.75 && r.total >= 8) stockAccAdjMap.set(r.stock_code, 10);      // 75%+ (8건+): 강한 실적
-        else if (wr >= 0.65) stockAccAdjMap.set(r.stock_code, 5);                  // 65%+: 양호
-        else if (wr <= 0.25 && r.total >= 8) stockAccAdjMap.set(r.stock_code, -12); // 25%- (8건+): 심각
-        else if (wr <= 0.35) stockAccAdjMap.set(r.stock_code, -8);                  // 35%-: 불량
-      }
-      if (stockAccAdjMap.size > 0) {
-        logger.info(
-          `📊 종목승률 보정: ${[...stockAccAdjMap.entries()].map(([k, v]) => `${k}${v > 0 ? '+' : ''}${v}`).join(', ')}`,
-          { component: 'TRACK_B' },
-        );
-      }
-    } catch {
-      /* score_accuracy 조회 실패 시 무시 */
-    }
+    // v24: 승률 score 보정 제거 (N1 이중 카운팅 해소)
+    // 승률은 win-rate.ts의 threshold 보정(-26~+26)으로만 반영.
+    // 기존: score +10 AND threshold -26 = 36pt 이중 스윙 → 과최적화 위험.
 
     // ── 외국인/기관 수급 → AI 스코어 보정 ────────────────────────────
     // 상위 5종목만 조회 (10→5, timeout 3s→1.5s로 속도 최적화)
@@ -1184,8 +1152,8 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
           logger.info(`🤖 AI Loop 점수 보정: ${s.stock_code} → ${aiScoreAdj > 0 ? '+' : ''}${aiScoreAdj}`, {
             component: 'AI_LOOP',
           });
-        // 종목별 실거래 승률 보정: 65%+→+5, 35%-→-8 (자기학습 연동)
-        const stockAccAdj = stockAccAdjMap.get(s.stock_code) ?? 0;
+        // v24: 승률 score 보정 제거 — threshold 보정으로 단일화 (N1 이중 카운팅 해소)
+        const stockAccAdj = 0;
         // v16.2: Piotroski F-Score 보정 강화: 8-9→+7, 6-7→+3, 0-2→-10
         const piotroskiFs = getCachedPiotroskiScore(s.stock_code);
         const piotroskiAdj = piotroskiFs != null
@@ -1305,7 +1273,8 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     const thresholdBonus = ctxIsPaper ? Math.min(0, winFeedback.thresholdBonus) : winFeedback.thresholdBonus;
     // v22: Paper≤Live 역전 수정 — 미검증 구간(42~49)이 실전에만 진입하는 모순 제거
     // Paper=45 (학습 기회 보존), Live=50 (검증된 시그널만 통과)
-    const thresholdFloor = ctxIsPaper ? 45 : 50;
+    // v24 N3: Live floor 50→58 (50~57은 HOLD 구간 — '관망' 판정 종목 매수 방지)
+    const thresholdFloor = ctxIsPaper ? 45 : 58;
     // 자기학습 인사이트 신호: Track A가 4시간 간격으로 생성한 실거래 패턴 분석 → thresholdAdj 반영
     let insightThresholdAdj = 0;
     try {
