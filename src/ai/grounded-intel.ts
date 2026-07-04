@@ -13,7 +13,7 @@ import { callVertexGemini } from '../utils/vertex-gemini.js';
 
 // 쿨다운: 같은 종목 30분 내 중복 조회 방지 (크레딧 절약)
 const _lastCheck = new Map<string, number>();
-const COOLDOWN_MS = 60 * 60_000; // 1시간 쿨다운 (비용 절약)
+const COOLDOWN_MS = 3 * 3600_000; // v26: 3시간 쿨다운 (1시간→3시간, 비용 66% 절감)
 
 export interface GroundedSignal {
   code: string;
@@ -105,7 +105,7 @@ Respond as JSON array: [...]`,
  * 하루 2~3회 호출 (개장 전, 장중, 장 마감 전)
  */
 let _lastMacroCheck = 0;
-const MACRO_COOLDOWN_MS = 6 * 3600_000; // 6시간 쿨다운 (비용 절약)
+const MACRO_COOLDOWN_MS = 8 * 3600_000; // v26: 8시간 쿨다운 (6→8시간, 일 3회→3회 유지하되 여유 확보)
 
 export interface MacroSignal {
   event: string;

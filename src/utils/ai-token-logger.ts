@@ -28,9 +28,9 @@ export function calcGeminiVertexCost(inputTokens: number, outputTokens: number, 
   return grounded ? base + 0.035 : base;
 }
 
-/** Gemini AI Studio: 무료 티어 → $0 */
-export function calcGeminiStudioCost(): number {
-  return 0;
+/** Gemini AI Studio Paid (flash-lite): $0.10/1M input + $0.40/1M output */
+export function calcGeminiStudioCost(inputTokens = 0, outputTokens = 0): number {
+  return (inputTokens / 1_000_000) * 0.10 + (outputTokens / 1_000_000) * 0.40;
 }
 
 /** GPT-4o-mini: $0.15/1M input + $0.60/1M output */

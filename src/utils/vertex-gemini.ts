@@ -1,14 +1,20 @@
 /**
- * Gemini 공통 클라이언트 — 하이브리드 모드
+ * Gemini 공통 클라이언트 — v26 비용 최적화
  *
- * grounded: false (기본) → AI Studio 무료 티어 (비용 $0)
- *   - Gemini 2.5 Flash: 10 RPM / 250 RPD / 250K TPM
- *   - GEMINI_API_KEY 필수
+ * 기본 경로: AI Studio 유료 (gemini-2.5-flash-lite)
+ *   - $0.10/1M input + $0.40/1M output (Gemini 최저가)
+ *   - thinking 토큰 없음 → 비용 예측 가능
+ *   - 유료 한도: 2000 RPM / 1500 RPD
+ *   - GEMINI_API_KEY 필수 (결제 활성화된 키)
  *
- * grounded: true → Vertex AI + Google Search Grounding (GCP 크레딧 소모)
- *   - Gemini 2.5 Flash with real-time web search
- *   - GOOGLE_CLOUD_PROJECT 필수, Cloud Run ADC 자동 인증
- *   - 비용: ~$0.035/query (GenAI App Builder Trial credit 적용)
+ * grounded: true → Vertex AI + Google Search Grounding (GCP 크레딧)
+ *   - 보유종목 뉴스 / 매크로 이벤트 / SEC 리서치 전용
+ *   - 비용: ~$0.035/query + 토큰
+ *
+ * v26 변경:
+ *   - AI Studio 무료 → 유료 flash-lite 전환 (무료 한도 250RPD 초과→Vertex 폴백 제거)
+ *   - Track A grounded OFF (RSS로 대체)
+ *   - grounded-intel 쿨다운 1h→3h, 매크로 6h→8h
  */
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { VertexAI } from '@google-cloud/vertexai';
@@ -16,9 +22,9 @@ import { logger } from './logger.js';
 import { logTokenUsage, calcGeminiVertexCost, calcGeminiStudioCost } from './ai-token-logger.js';
 
 // ── 모델 설정 ──
-const FREE_MODEL = 'gemini-2.5-flash';           // AI Studio 무료 티어 (thinking OK — 무료이므로)
-const VERTEX_MODEL = 'gemini-2.0-flash';          // Vertex 비그라운딩 호출 — thinking 토큰 없음 ($0.40/1M output vs $3.50/1M thinking)
-const GROUNDED_MODEL = 'gemini-2.5-flash';        // Vertex 그라운딩 전용 — 검색 결과 해석 품질 필요
+const STUDIO_MODEL = 'gemini-2.5-flash-lite';    // AI Studio 유료 — Gemini 최저가 ($0.10/$0.40 per 1M)
+const VERTEX_MODEL = 'gemini-2.0-flash';          // Vertex 비그라운딩 폴백 — thinking 없음
+const GROUNDED_MODEL = 'gemini-2.5-flash';        // Vertex 그라운딩 전용 — 검색 해석 품질 필요
 const VERTEX_LOCATION = 'us-central1';
 
 export interface GeminiCallOptions {
@@ -26,29 +32,26 @@ export interface GeminiCallOptions {
   maxOutputTokens?: number;
   label?: string;
   grounded?: boolean;   // true → Vertex AI + Google Search Grounding (GCP 크레딧)
-  useVertex?: boolean;  // true → Vertex AI 직접 사용 (GCP 크레딧, grounding 없음) — DART 분석 등 장문 처리용
-  paid?: boolean;       // true → AI Studio 유료 경로 (레이트리미터 우회, GEMINI_API_KEY 결제 적용)
+  useVertex?: boolean;  // true → Vertex AI 직접 사용 (GCP 크레딧, grounding 없음)
+  paid?: boolean;       // (deprecated) 항상 유료 — 호환성 유지용
 }
 
-// ── 레이트 리미터: AI Studio 무료 티어 한도 ──
+// ── 레이트 리미터: AI Studio 유료 한도 (안전가드) ──
 const RATE_LIMIT = {
-  RPM: 10,
-  RPD: 250,
-  TPM: 250_000,
+  RPM: 2000,
+  RPD: 1500,
 } as const;
 
 interface RateState {
   minuteSlots: number[];
   dailyCalls: number;
   dailyResetAt: number;
-  minuteTokens: number[];
 }
 
 const _rate: RateState = {
   minuteSlots: [],
   dailyCalls: 0,
   dailyResetAt: 0,
-  minuteTokens: [],
 };
 
 function resetDailyIfNeeded(): void {
@@ -63,6 +66,7 @@ function resetDailyIfNeeded(): void {
     _dailyTotals.studioCalls = 0;
     _dailyTotals.vertexCalls = 0;
     _dailyTotals.vertexCostUsd = 0;
+    _dailyTotals.studioCostUsd = 0;
     _recentCalls.length = 0;
   }
 }
@@ -81,11 +85,9 @@ function checkRateLimit(): { ok: boolean; waitMs: number; reason: string } {
   return { ok: true, waitMs: 0, reason: '' };
 }
 
-function recordStudioCall(_tokens: number): void {
-  const now = Date.now();
-  _rate.minuteSlots.push(now);
+function recordCall(): void {
+  _rate.minuteSlots.push(Date.now());
   _rate.dailyCalls++;
-  _rate.minuteTokens.push(now);
 }
 
 // ── 비용 추적 ──
@@ -97,6 +99,7 @@ const _dailyTotals = {
   vertexCalls: 0,
   studioCalls: 0,
   vertexCostUsd: 0,
+  studioCostUsd: 0,
 };
 
 interface CallRecord {
@@ -113,8 +116,9 @@ const _recentCalls: CallRecord[] = [];
 /** 대시보드용 — 오늘 AI 사용 현황 */
 export function getAiCostSummary() {
   resetDailyIfNeeded();
+  const totalCostUsd = _dailyTotals.studioCostUsd + _dailyTotals.vertexCostUsd;
   return {
-    model: `AI Studio FREE (${FREE_MODEL}) + Vertex (${VERTEX_MODEL}) + Grounded (${GROUNDED_MODEL})`,
+    model: `AI Studio Paid (${STUDIO_MODEL}) + Vertex Grounded (${GROUNDED_MODEL})`,
     today: {
       calls: _dailyTotals.calls,
       vertexCalls: _dailyTotals.vertexCalls,
@@ -122,9 +126,10 @@ export function getAiCostSummary() {
       inputTokens: _dailyTotals.inputTokens,
       outputTokens: _dailyTotals.outputTokens,
       totalTokens: _dailyTotals.totalTokens,
-      estimatedCostUsd: _dailyTotals.vertexCostUsd,
-      vertexDailyBudgetUsd: 5.0, // 일 $5 상한 (GCP 크레딧)
+      estimatedCostUsd: totalCostUsd,
+      vertexDailyBudgetUsd: 5.0,
       vertexDailySpentUsd: _dailyTotals.vertexCostUsd,
+      studioCostUsd: _dailyTotals.studioCostUsd,
       vertexAvailable: true,
       studioCallsUsed: _rate.dailyCalls,
       studioCallsMax: RATE_LIMIT.RPD,
@@ -140,7 +145,7 @@ let _genAI: GoogleGenerativeAI | null = null;
 function getStudioClient(): GoogleGenerativeAI {
   if (_genAI) return _genAI;
   const key = process.env.GEMINI_API_KEY;
-  if (!key) throw new Error('GEMINI_API_KEY 미설정 — AI Studio 무료 키 필요 (https://aistudio.google.com/apikey)');
+  if (!key) throw new Error('GEMINI_API_KEY 미설정 — 결제 활성화된 AI Studio 키 필요 (https://aistudio.google.com/apikey)');
   _genAI = new GoogleGenerativeAI(key);
   return _genAI;
 }
@@ -157,8 +162,7 @@ function getVertexAI(): VertexAI {
 
 /**
  * Vertex AI SDK — 비용 절약형 (Google Search Grounding 없음)
- * gemini-2.0-flash 사용 — thinking 토큰 없어서 ~85% 저렴
- * AI Studio 일 250콜 한도 소진 시 자동 폴백으로 사용
+ * AI Studio 429 시 비상 폴백용
  */
 async function callVertexUngrounded(
   systemPrompt: string,
@@ -185,7 +189,7 @@ async function callVertexUngrounded(
 
 /**
  * Vertex AI SDK + Google Search Grounding 호출
- * Cloud Run: ADC(서비스 계정) 자동 인증
+ * 보유종목뉴스 / 매크로이벤트 / SEC리서치 전용
  */
 async function callVertexGrounded(
   systemPrompt: string,
@@ -200,7 +204,7 @@ async function callVertexGrounded(
       maxOutputTokens: opts.maxOutputTokens ?? 8192,
     },
     systemInstruction: systemPrompt,
-    tools: [{ googleSearch: {} } as any], // Vertex AI SDK 타입 미지원 — google_search_retrieval → googleSearch 마이그레이션
+    tools: [{ googleSearch: {} } as any],
   });
 
   const result = await model.generateContent({ contents: [{ role: 'user', parts: [{ text: userMessage }] }] });
@@ -208,7 +212,7 @@ async function callVertexGrounded(
   const finishReason = response.candidates?.[0]?.finishReason;
   const text = response.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
   if (!text) {
-    throw new Error(`Vertex Grounded: 빈 응답 (finishReason=${finishReason ?? 'unknown'}) — AI Studio fallback`);
+    throw new Error(`Vertex Grounded: 빈 응답 (finishReason=${finishReason ?? 'unknown'}) — Studio fallback`);
   }
   const inputTokens = response.usageMetadata?.promptTokenCount ?? 0;
   const outputTokens = response.usageMetadata?.candidatesTokenCount ?? 0;
@@ -216,9 +220,12 @@ async function callVertexGrounded(
 }
 
 /**
- * Gemini 호출 — 하이브리드 라우팅
- * grounded: false → AI Studio 무료 ($0)
- * grounded: true  → Vertex AI + Google Search Grounding (GCP 크레딧)
+ * Gemini 호출 — v26 비용 최적화 라우팅
+ *
+ * 1. grounded: true  → Vertex AI + Google Search (GCP 크레딧)
+ * 2. useVertex: true  → Vertex AI 직접 (GCP 크레딧)
+ * 3. 기본             → AI Studio 유료 flash-lite ($0.10/$0.40)
+ * 4. Studio 429       → Vertex 비상 폴백
  */
 export async function callVertexGemini(
   systemPrompt: string,
@@ -227,42 +234,6 @@ export async function callVertexGemini(
 ): Promise<string> {
   const label = opts.label ?? 'unknown';
   const startMs = Date.now();
-
-  // ── paid: true → AI Studio 유료 경로 (레이트리미터 우회, 결제 적용) ──
-  if (opts.paid) {
-    try {
-      const client = getStudioClient();
-      const model = client.getGenerativeModel({
-        model: FREE_MODEL,
-        generationConfig: {
-          temperature: opts.temperature ?? 0.2,
-          maxOutputTokens: opts.maxOutputTokens ?? 8192,
-        },
-        systemInstruction: systemPrompt,
-      });
-      const result = await model.generateContent(userMessage);
-      const response = result.response;
-      const text = response.text();
-      const usage = response.usageMetadata;
-      const inTok = usage?.promptTokenCount ?? 0;
-      const outTok = usage?.candidatesTokenCount ?? 0;
-      _dailyTotals.inputTokens += inTok;
-      _dailyTotals.outputTokens += outTok;
-      _dailyTotals.totalTokens += inTok + outTok;
-      _dailyTotals.calls++;
-      _dailyTotals.studioCalls++;
-      const durationMs = Date.now() - startMs;
-      _recentCalls.push({ label, inputTokens: inTok, outputTokens: outTok, at: new Date().toISOString(), durationMs, isGrounded: false, costUsd: 0 });
-      if (_recentCalls.length > 20) _recentCalls.shift();
-      logTokenUsage({ provider: 'gemini', model: FREE_MODEL, inputTokens: inTok, outputTokens: outTok, costUsd: calcGeminiStudioCost(), label });
-      logger.info(`💳 AI Studio Paid [${label}]: ${inTok}+${outTok}tok ${durationMs}ms`, { component: 'AI_COST' });
-      return text;
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      logger.warn(`⚠️ AI Studio Paid 실패 [${label}]: ${msg}`, { component: 'AI_COST' });
-      throw err;
-    }
-  }
 
   // ── useVertex: true → Vertex AI 직접 경로 (GCP 크레딧, grounding 없음) ──
   if (opts.useVertex && !opts.grounded) {
@@ -283,17 +254,16 @@ export async function callVertexGemini(
       return text;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      logger.warn(`⚠️ Vertex Direct 실패 [${label}], AI Studio fallback: ${msg}`, { component: 'AI_COST' });
+      logger.warn(`⚠️ Vertex Direct 실패 [${label}], Studio fallback: ${msg}`, { component: 'AI_COST' });
+      // fall through to Studio
     }
   }
 
-  // ── grounded: true → Vertex AI 경로 ──
+  // ── grounded: true → Vertex AI + Google Search ──
   if (opts.grounded) {
     try {
       const { text, inputTokens, outputTokens } = await callVertexGrounded(systemPrompt, userMessage, opts);
       const durationMs = Date.now() - startMs;
-
-      // 비용 추정: Gemini 2.5 Flash $0.15/1M input + $0.60/1M output + thinking $3.50/1M + Search grounding $0.035/query
       const costUsd = calcGeminiVertexCost(inputTokens, outputTokens, true);
 
       _dailyTotals.vertexCalls++;
@@ -314,22 +284,21 @@ export async function callVertexGemini(
       return text;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      logger.warn(`⚠️ Vertex Grounding 실패 [${label}], AI Studio fallback: ${msg}`, { component: 'AI_COST' });
-      // Vertex 실패 시 AI Studio fallback (grounded 없이)
+      logger.warn(`⚠️ Vertex Grounding 실패 [${label}], Studio fallback: ${msg}`, { component: 'AI_COST' });
+      // fall through to Studio (grounded 없이)
     }
   }
 
-  // ── AI Studio 무료 경로 ──
-  let rateCheck = checkRateLimit();
+  // ── AI Studio 유료 경로 (gemini-2.5-flash-lite) ──
+  const rateCheck = checkRateLimit();
   if (!rateCheck.ok && rateCheck.waitMs > 0) {
-    logger.info(`⏳ AI Studio RPM 대기 ${Math.ceil(rateCheck.waitMs / 1000)}초 [${label}]`, { component: 'AI_COST' });
+    logger.info(`⏳ Studio RPM 대기 ${Math.ceil(rateCheck.waitMs / 1000)}초 [${label}]`, { component: 'AI_COST' });
     await new Promise((r) => setTimeout(r, rateCheck.waitMs));
-    rateCheck = checkRateLimit();
   }
 
-  // AI Studio 일 한도 초과 → Vertex AI (GCP 크레딧) 자동 폴백
-  if (!rateCheck.ok && rateCheck.reason.includes('일 한도')) {
-    logger.info(`⚡ AI Studio RPD 소진 [${label}] → Vertex AI 폴백 (GCP 크레딧)`, { component: 'AI_COST' });
+  if (!rateCheck.ok && rateCheck.waitMs === 0) {
+    // RPD 소진 (1500콜 초과 — 거의 불가) → Vertex 비상 폴백
+    logger.warn(`⚡ Studio RPD 소진 [${label}] → Vertex 비상 폴백`, { component: 'AI_COST' });
     try {
       const { text, inputTokens, outputTokens } = await callVertexUngrounded(systemPrompt, userMessage, opts);
       const costUsd = calcGeminiVertexCost(inputTokens, outputTokens, false);
@@ -343,24 +312,16 @@ export async function callVertexGemini(
       _recentCalls.push({ label, inputTokens, outputTokens, at: new Date().toISOString(), durationMs, isGrounded: false, costUsd });
       if (_recentCalls.length > 20) _recentCalls.shift();
       logTokenUsage({ provider: 'gemini', model: VERTEX_MODEL, inputTokens, outputTokens, costUsd, label });
-      logger.info(`⚡ Vertex Fallback [${label}]: ${inputTokens}+${outputTokens}tok $${costUsd.toFixed(5)} (${VERTEX_MODEL})`, { component: 'AI_COST' });
       return text;
     } catch (vErr) {
-      const vMsg = vErr instanceof Error ? vErr.message : String(vErr);
-      logger.warn(`⚠️ Vertex 폴백도 실패 [${label}]: ${vMsg}`, { component: 'AI_COST' });
-      throw new Error(`AI Studio 일 한도 초과 + Vertex 폴백 실패 — ${rateCheck.reason}`);
+      throw new Error(`Studio RPD 초과 + Vertex 폴백 실패 — ${label}`);
     }
-  }
-
-  if (!rateCheck.ok) {
-    logger.warn(`🚫 AI Studio 한도 초과 [${label}]: ${rateCheck.reason}`, { component: 'AI_COST' });
-    throw new Error(`AI Studio 한도 초과 — ${rateCheck.reason}`);
   }
 
   try {
     const client = getStudioClient();
     const model = client.getGenerativeModel({
-      model: FREE_MODEL,
+      model: STUDIO_MODEL,
       generationConfig: {
         temperature: opts.temperature ?? 0.2,
         maxOutputTokens: opts.maxOutputTokens ?? 8192,
@@ -375,31 +336,30 @@ export async function callVertexGemini(
     const usage = response.usageMetadata;
     const inTok = usage?.promptTokenCount ?? 0;
     const outTok = usage?.candidatesTokenCount ?? 0;
-    recordStudioCall(inTok + outTok);
+    recordCall();
 
+    const costUsd = calcGeminiStudioCost(inTok, outTok);
     _dailyTotals.inputTokens += inTok;
     _dailyTotals.outputTokens += outTok;
     _dailyTotals.totalTokens += inTok + outTok;
     _dailyTotals.calls++;
     _dailyTotals.studioCalls++;
+    _dailyTotals.studioCostUsd += costUsd;
 
     const durationMs = Date.now() - startMs;
-    _recentCalls.push({ label, inputTokens: inTok, outputTokens: outTok, at: new Date().toISOString(), durationMs, isGrounded: false, costUsd: 0 });
+    _recentCalls.push({ label, inputTokens: inTok, outputTokens: outTok, at: new Date().toISOString(), durationMs, isGrounded: false, costUsd });
     if (_recentCalls.length > 20) _recentCalls.shift();
-    logTokenUsage({ provider: 'gemini', model: FREE_MODEL, inputTokens: inTok, outputTokens: outTok, costUsd: calcGeminiStudioCost(), label });
+    logTokenUsage({ provider: 'gemini', model: STUDIO_MODEL, inputTokens: inTok, outputTokens: outTok, costUsd, label });
 
     logger.info(
-      `🤖 AI Studio [${label}]: ${inTok}+${outTok}tok ${durationMs}ms (${_rate.dailyCalls}/${RATE_LIMIT.RPD} RPD) $0`,
+      `🤖 Studio [${label}]: ${inTok}+${outTok}tok ${durationMs}ms $${costUsd.toFixed(5)} (${_rate.dailyCalls}/${RATE_LIMIT.RPD} RPD)`,
       { component: 'AI_COST' },
     );
     return text;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED')) {
-      // 컨테이너 재시작 후 인메모리 카운터가 0으로 리셋되어 사전 차단 못 한 경우 →
-      // 실제 429 수신 시 카운터를 한도로 강제 설정 후 Vertex 폴백
-      _rate.dailyCalls = RATE_LIMIT.RPD;
-      logger.warn(`⚠️ AI Studio 429 [${label}] — Vertex AI 폴백 진행`, { component: 'AI_COST' });
+      logger.warn(`⚠️ Studio 429 [${label}] — Vertex 비상 폴백`, { component: 'AI_COST' });
       try {
         const { text, inputTokens, outputTokens } = await callVertexUngrounded(systemPrompt, userMessage, opts);
         const costUsd = calcGeminiVertexCost(inputTokens, outputTokens, false);
@@ -413,15 +373,12 @@ export async function callVertexGemini(
         _recentCalls.push({ label, inputTokens, outputTokens, at: new Date().toISOString(), durationMs, isGrounded: false, costUsd });
         if (_recentCalls.length > 20) _recentCalls.shift();
         logTokenUsage({ provider: 'gemini', model: VERTEX_MODEL, inputTokens, outputTokens, costUsd, label });
-        logger.info(`⚡ Vertex 429-Fallback [${label}]: ${inputTokens}+${outputTokens}tok $${costUsd.toFixed(5)} (${VERTEX_MODEL})`, { component: 'AI_COST' });
         return text;
       } catch (vErr) {
-        const vMsg = vErr instanceof Error ? vErr.message : String(vErr);
-        logger.warn(`⚠️ Vertex 429-폴백도 실패 [${label}]: ${vMsg}`, { component: 'AI_COST' });
-        throw new Error(`AI Studio 429 + Vertex 폴백 실패 — ${label}`);
+        throw new Error(`Studio 429 + Vertex 폴백 실패 — ${label}`);
       }
     }
-    logger.warn(`⚠️ AI Studio 오류 [${label}]: ${msg}`, { component: 'AI_COST' });
+    logger.warn(`⚠️ Studio 오류 [${label}]: ${msg}`, { component: 'AI_COST' });
     throw err;
   }
 }

@@ -87,7 +87,7 @@ ${additionalSources ?? '추가 소스 없음'}
 
 위 데이터를 분석하여 종목별 팩트를 추출해주세요.`;
 
-  logger.info(`Gemini 분석 시작 (${watchlist.length}개 종목, 모드: ${mode}, 라우팅: Vertex우선)`, {
+  logger.info(`Gemini 분석 시작 (${watchlist.length}개 종목, 모드: ${mode}, 라우팅: AI Studio무료)`, {
     component: 'TRACK_A',
   });
 
@@ -95,7 +95,8 @@ ${additionalSources ?? '추가 소스 없음'}
   const responseText = await callVertexGemini(systemPrompt, userMessage, {
     temperature: 0.1,
     label: 'TrackA-분석',
-    grounded: true, // GenAI App Builder 크레딧 활용 — 실시간 시장 뉴스 grounding
+    // v26 비용최적화: grounded OFF — RSS/뉴스 Track B에서 이미 수집, 여기선 차트+펀더멘탈 분석만
+    // 기존 $0.035/쿼리 × ~40회/일 = $1.4+/일 절감
   });
 
   // Resilient JSON parsing — Gemini 응답이 깨져도 최대한 복구
