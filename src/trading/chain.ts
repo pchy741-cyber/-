@@ -380,11 +380,14 @@ export class ChainManager {
         _stratMode === 'SWING' || _stratMode === 'BREAKOUT' || _stratMode === 'SCALPING' ? 'BULLISH' :
         'NEUTRAL';
 
+      // v23-audit: Paper 모드 데이터는 EXPLORE 태깅 (Live 교정에서 제외)
+      const isPaperRecord = chain.is_paper ?? getCtxIsPaper();
+      const tradingProfile = isPaperRecord ? 'EXPLORE' : 'LIVE';
       const insertResult = await pool.query(
         `INSERT INTO score_accuracy
            (stock_code, chain_id, entry_score, entry_signal, entry_confidence,
-            realized_pnl_pct, outcome, holding_days, close_reason, strategy_mode, is_paper, entry_fingerprint, market_regime)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+            realized_pnl_pct, outcome, holding_days, close_reason, strategy_mode, is_paper, entry_fingerprint, market_regime, trading_profile)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
          ON CONFLICT (chain_id) DO NOTHING`,
         [
           chain.stock_code,
@@ -397,9 +400,10 @@ export class ChainManager {
           holdingDays,
           reason,
           chain.strategy_mode ?? null,
-          chain.is_paper ?? getCtxIsPaper(),
+          isPaperRecord,
           entryFingerprint,
           marketRegime,
+          tradingProfile,
         ],
       );
       if (insertResult.rowCount === 0) {

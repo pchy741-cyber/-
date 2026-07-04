@@ -345,9 +345,20 @@ export async function runEnsembleScoring(params: EnsembleParams): Promise<Scorin
 
   // 점수 합산
   const merged = mergeScores(modelResults, config);
+
+  // v23-audit: Gemini 부재 시 conf 캡 — RSS 단독으로 Live 매수 방지
+  // Live confFloor=0.45이므로 0.40 캡 → Live 신규매수 차단, Paper(confFloor=0.30)는 통과
+  const hasGemini = modelResults.some((r) => r.model === 'gemini');
+  if (!hasGemini) {
+    logger.warn('⚠️ 앙상블: Gemini 부재 → conf 0.40 캡 (Live 매수 차단, 매도 영향 없음)', { component: COMP });
+    for (const s of merged) {
+      s.confidence = Math.min(s.confidence, 0.40);
+    }
+  }
+
   const buyCount = merged.filter((s) => s.composite_score >= BUY_THRESHOLD).length;
 
-  logger.info(`🎼 앙상블 완료: ${modelResults.length}모델 → ${merged.length}개 스코어, 매수후보 ${buyCount}개`, {
+  logger.info(`🎼 앙상블 완료: ${modelResults.length}모델 → ${merged.length}개 스코어, 매수후보 ${buyCount}개${!hasGemini ? ' (Gemini 부재, conf캡 적용)' : ''}`, {
     component: COMP,
   });
 

@@ -89,11 +89,14 @@ export async function getGradualCooldown(isPaper?: boolean): Promise<GradualCool
     const isSectorConcentrated = stockCount <= 2 && lossCount >= 3; // 같은 1-2종목 반복 손절
 
     if (lossCount >= 6) {
+      // v23-audit: Lv3 = 신규매수 완전 중단 (기존: 8h+65% = "천천히 계속 잃기")
+      // 6+ 손실 = 전략-레짐 불일치 신호 → 사이징 축소가 아닌 완전 정지
+      // 매도 waterfall은 정상 동작 유지 (sizingPenalty는 매수에만 적용)
       return {
         level: 3,
-        cooldownMs: 8 * 60 * 60_000, // 12h→8h (기회비용 감소)
-        sizingPenalty: 0.65,
-        message: `${lossCount}건 손절 → 8h 쿨다운 + 포지션 65%`,
+        cooldownMs: Infinity, // 수동 재개만 허용 (자동 재개 금지)
+        sizingPenalty: 0,     // 0 = 신규매수 완전 차단
+        message: `🛑 ${lossCount}건 손절 → 신규매수 완전 중단 (수동 /resume 필요)`,
       };
     }
     if (lossCount >= 4) {

@@ -1303,8 +1303,9 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       : crossBoost.thresholdAdj + liveOffset;
     // Paper 모드: 패배 피드백이 임계값 올리는 것 차단 (학습 목적 — 진입 기회 보존)
     const thresholdBonus = ctxIsPaper ? Math.min(0, winFeedback.thresholdBonus) : winFeedback.thresholdBonus;
-    // Live v11: 하한선 50→42 (더 많은 고품질 신호 통과)
-    const thresholdFloor = ctxIsPaper ? 50 : 42;
+    // v22: Paper≤Live 역전 수정 — 미검증 구간(42~49)이 실전에만 진입하는 모순 제거
+    // Paper=45 (학습 기회 보존), Live=50 (검증된 시그널만 통과)
+    const thresholdFloor = ctxIsPaper ? 45 : 50;
     // 자기학습 인사이트 신호: Track A가 4시간 간격으로 생성한 실거래 패턴 분석 → thresholdAdj 반영
     let insightThresholdAdj = 0;
     try {

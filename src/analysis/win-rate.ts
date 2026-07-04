@@ -22,6 +22,7 @@ export async function getStockWinRates(
   const map = new Map<string, StockWinRate>();
   if (stockCodes.length === 0) return map;
   try {
+    // v23-audit: EXPLORE 프로파일 제외
     const { rows } = await getPool().query(
       `
       SELECT
@@ -34,6 +35,7 @@ export async function getStockWinRates(
         AND recorded_at >= NOW() - INTERVAL '90 days'
         AND is_paper = $2
         AND market = $3
+        AND COALESCE(trading_profile, 'LIVE') != 'EXPLORE'
       GROUP BY stock_code
       HAVING COUNT(*) >= 3
     `,

@@ -259,7 +259,7 @@ async function simulateDRIP(): Promise<void> {
       holdingMap.set(h.stock_code, { exchange: h.exchange, price, qty, value: qty * price });
     }
 
-    if (totalDivPool < 1) return; // $1 미만이면 스킵
+    if (totalDivPool < 50) return; // v22-audit: $1→$50 (소액 매수 시 수수료 손실 방지, 미달분은 다음달 이월 누적)
 
     // 2) 목표 비중 로드 (VIX 동적 or 튜닝된 비중)
     const { getOverseasState } = await import('./overseas/utils.js');

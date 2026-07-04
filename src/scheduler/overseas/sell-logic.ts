@@ -131,10 +131,8 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
   const maxPriceMap = await getMaxPriceBatch(holdingCodes, paperMode);
 
   for (const [code, holding] of holdings) {
-    if (pendingOrderStocks.has(code)) {
-      logger.info(`⏳ 미체결 주문 존재 → ${code} 추가 주문 스킵`, { component: 'OVERSEAS' });
-      continue;
-    }
+    // v22: 방어매도(SL/갭방어)는 pendingOrderStocks 우회 — 미체결 부분익절 중에도 손절 가능
+    const hasPendingOrder = pendingOrderStocks.has(code);
     // v10.11: O(1) Map 조회 (기존: O(n) find per holding)
     const tech = techByCode.get(code);
     if (!tech) {
@@ -148,6 +146,15 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
     const curPrice = tech.price.currentPrice;
     if (holding.avgPrice <= 0 || curPrice <= 0) continue; // 비정상 데이터 방어
     const pnlPct = ((curPrice - holding.avgPrice) / holding.avgPrice) * 100;
+
+    // v22: 방어매도 우회 판정 — 긴급 SL/갭방어는 미체결 존재해도 실행
+    // -6% 하드플로어 또는 동적 SL 도달 시 미체결 취소 후 즉시 방어매도
+    const emergencySl = pnlPct <= -6.0 || pnlPct <= (holding.slPct ?? -5);
+    if (hasPendingOrder && !emergencySl) {
+      logger.info(`⏳ 미체결 주문 존재 → ${code} 추가 주문 스킵 (PnL=${pnlPct.toFixed(1)}%)`, { component: 'OVERSEAS' });
+      continue;
+    }
+
     const ai = aiMap.get(code);
 
     // AI Loop forceHold: Claude Code가 매도 보류 지시 (실적 발표 대기 등)
@@ -270,12 +277,15 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
     // 기존 버그: 빼면 -6.0 → 6%드롭까지 허용 = VIX 위기 시 오히려 더 느슨해짐
     // v10.11: 클램핑 추가 — 양수 되면 트레일 비활성화 (VIX+고수익 동시 → 무방비)
     // v14: trail floor -0.5→-1.5% (기존: 고수익+VIX 시 -0.5% = 정상 변동성에도 매도 트리거)
-    const effectiveTrailDropPct = Math.min(-1.5, dynamicTrailDrop + vixRegime.trailTighten + profitTighten);
+    // v15 Smart Trail After Partial: 이미 부분익절 진행한 포지션은 트레일 즉시 활성화
+    const partialTpDone = await getPartialTpStageNum(code, paperMode);
+    // v23-audit: 부분익절 후 잔여 물량 손익분기 보호 — floor를 수수료 이상으로 상향
+    // Stage1 +2% 익절(20%) 후 잔여 80%가 floor -1.5%로 청산 → 수수료 0.7% 감안 시 순손실 경로
+    const baseFloor = Math.min(-1.5, dynamicTrailDrop + vixRegime.trailTighten + profitTighten);
+    const effectiveTrailDropPct = partialTpDone >= 1 ? Math.max(baseFloor, -0.8) : baseFloor;
     // v15: 모멘텀 가속 감지 → 트레일 넓히기 (위너 라이딩)
     const _momCtx: MomentumContext = { isMomentum: tech.isMomentum, rsi: tech.rsi, adx: tech.adx, vwapPosition: tech.vwapPosition };
     const _isAccel = isMomentumAccelerating(_momCtx);
-    // v15 Smart Trail After Partial: 이미 부분익절 진행한 포지션은 트레일 즉시 활성화
-    const partialTpDone = await getPartialTpStageNum(code, paperMode);
     // v10.9: 트레일 활성화 대폭 하향 (기존 5~10% → 2~4%) — 소액 계좌 수익 보호
     // v15: 모멘텀 가속 시 활성화 기준 +2% 상향 (너무 빨리 트레일 걸리면 위너 절단)
     // v15: 부분익절 1단계+ 완료 → 활성화 기준 = 0% (이미 수익 확정 시작, 잔여분 즉시 보호)
@@ -578,6 +588,10 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
     }
 
     if (sellReason) {
+      // v22: 미체결 존재 + 긴급 SL → 선취소-후매도 (미체결이 SL을 잠그는 버그 수정)
+      if (hasPendingOrder) {
+        logger.warn(`🚨 긴급방어매도: ${code} PnL=${pnlPct.toFixed(1)}% 미체결 무시하고 SL 실행 (${sellReason})`, { component: 'OVERSEAS' });
+      }
       const exec = await executeOverseasOrder(
         code,
         'SELL',

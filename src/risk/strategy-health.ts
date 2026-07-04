@@ -94,11 +94,13 @@ export async function computeStrategyHealth(
        ORDER BY 1 ASC`,
       [isPaper, days],
     ),
+    // v23-audit: EXPLORE 프로파일 제외
     pool.query<ScoreRow>(
       `SELECT outcome, realized_pnl_pct
        FROM score_accuracy
        WHERE is_paper = $1
          AND recorded_at >= NOW() - ($2 || ' days')::INTERVAL
+         AND COALESCE(trading_profile, 'LIVE') != 'EXPLORE'
        ORDER BY recorded_at ASC`,
       [isPaper, days],
     ),

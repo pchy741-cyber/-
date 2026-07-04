@@ -173,17 +173,44 @@ export function resetAsiaSessionCache(): void {
 export { isUSDST, getOpenMarketRegions, KST_OFFSET_MS } from '../../shared/overseas/market-time.js';
 import { isUSDST, KST_OFFSET_MS } from '../../shared/overseas/market-time.js';
 
+// ── US 조기폐장일 (13:00 ET 마감) ──
+// July 3, 추수감사절 전일(11월 넷째 금), 크리스마스 이브(12/24)
+function isUSEarlyCloseDay(): boolean {
+  const now = new Date();
+  // 미국 ET 기준으로 날짜 판정 (KST-14h ≈ ET)
+  const et = new Date(now.getTime() - 5 * 60 * 60 * 1000); // UTC-5 (EST 기준, DST 시 UTC-4)
+  if (isUSDST()) et.setTime(now.getTime() - 4 * 60 * 60 * 1000);
+  const m = et.getUTCMonth(); // 0-indexed
+  const d = et.getUTCDate();
+  const dow = et.getUTCDay(); // 0=Sun
+
+  // July 3 (독립기념일 전일) — 7/4가 토요일이면 7/2(금)이 조기폐장
+  if (m === 6 && d === 3) return true;
+  // Christmas Eve (12/24) — 주말이면 직전 금요일
+  if (m === 11 && d === 24 && dow >= 1 && dow <= 5) return true;
+  // 추수감사절 다음 날 금요일 (11월 넷째 목 +1)
+  if (m === 10 && dow === 5) {
+    // 넷째 목요일 = 22~28일 → 금요일 = 23~29일
+    if (d >= 23 && d <= 29) return true;
+  }
+  return false;
+}
+
 // ── 종가베팅: US 마감 전 N분 구간 확인 ──
 /**
  * 미국 정규장 마감 전 N분 구간인지 확인 (종가베팅 매수 윈도우)
- * Summer: 04:30~05:00 KST (N=30), Winter: 05:30~06:00 KST
+ * 정규: Summer 04:30~05:00 KST, Winter 05:30~06:00 KST
+ * 조기폐장: Summer 02:00 KST, Winter 03:00 KST (13:00 ET 마감)
  */
 export function isUSMarketLastNMinutes(minutes: number = 30): boolean {
   const now = new Date();
   const kst = new Date(now.getTime() + KST_OFFSET_MS);
   const mins = kst.getUTCHours() * 60 + kst.getUTCMinutes();
   const shift = isUSDST() ? 0 : 60;
-  const usClose = 5 * 60 + shift; // 05:00 KST (summer) / 06:00 KST (winter)
+  // v22: 조기폐장일은 13:00 ET = 02:00 KST (summer) / 03:00 KST (winter)
+  const usClose = isUSEarlyCloseDay()
+    ? (2 * 60 + shift) // 조기폐장: 02:00/03:00 KST
+    : (5 * 60 + shift); // 정규: 05:00/06:00 KST
   const windowStart = usClose - minutes;
   return mins >= windowStart && mins <= usClose;
 }
@@ -194,7 +221,8 @@ export function getMinutesToUSClose(): number {
   const kst = new Date(now.getTime() + KST_OFFSET_MS);
   const mins = kst.getUTCHours() * 60 + kst.getUTCMinutes();
   const shift = isUSDST() ? 0 : 60;
-  const usClose = 5 * 60 + shift;
+  // v22: 조기폐장일 반영
+  const usClose = isUSEarlyCloseDay() ? (2 * 60 + shift) : (5 * 60 + shift);
   // 자정 전후 처리: 22:30~24:00 → close까지 남은 분 = (24*60 - mins) + close
   if (mins >= 22 * 60) return 24 * 60 - mins + usClose;
   return Math.max(0, usClose - mins);

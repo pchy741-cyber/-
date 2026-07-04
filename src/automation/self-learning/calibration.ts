@@ -51,12 +51,14 @@ export async function analyzeBuyThreshold(): Promise<LearnedInsight[]> {
     // 동적 Holdout Gap — 거래 빈도 기반 (빈도 높으면 7일, 낮으면 21일, 기본 14일)
     const holdoutDays = await getAdaptiveHoldoutDays(isPaper);
 
+    // v23-audit: EXPLORE 프로파일 제외 (Paper 탐색 데이터는 Live 검증에 부적합)
     const { rows } = await getPool().query(
       `SELECT entry_score, outcome, realized_pnl_pct, market_regime
          FROM score_accuracy
         WHERE recorded_at BETWEEN NOW() - INTERVAL '90 days' AND NOW() - INTERVAL '${holdoutDays} days'
           AND entry_score IS NOT NULL
           AND is_paper = $1
+          AND COALESCE(trading_profile, 'LIVE') != 'EXPLORE'
         ORDER BY entry_score`,
       [isPaper],
     );
@@ -181,21 +183,36 @@ function _analyzeThresholdForData(
     });
   }
 
-  if (belowWinRate >= 0.52 && belowAvgPnl > 0 && currentThreshold > 55 && below.length >= 8) {
-    const suggestedThreshold = Math.max(53, currentThreshold - 5);
-    insights.push({
-      category: 'WIN_PATTERN',
-      insight: `매수 임계값 자동최적화 (${label}): ${currentThreshold}점 미만에서도 승률 ${(belowWinRate * 100).toFixed(0)}% (${below.length}건, 평균손익 ${belowAvgPnl.toFixed(1)}%). 임계값 ${suggestedThreshold}점 하향으로 기회 확대 가능.`,
-      recommendation: `buy_threshold: ${currentThreshold} → ${suggestedThreshold} (${label})`,
-      paramChange: label === '전체' ? {
-        field: 'buy_threshold',
-        value: suggestedThreshold,
-        reason: `임계값 이하도 수익 확인 → 기회 확대`,
-      } : undefined,
-      confidence: confidence * 0.85,
-      sampleCount: totalSamples,
-      lastUpdated: new Date().toISOString(),
-    });
+  // v22-audit: 하향 탐색 — 래칫 방지, 단 채택 기준 강화 (50건+)
+  if (belowWinRate >= 0.52 && belowAvgPnl > 0 && currentThreshold > 55 && below.length >= 50) {
+    let bestDownThreshold = currentThreshold;
+    let bestDownScore = 0;
+    for (let t = currentThreshold - 3; t >= Math.max(53, currentThreshold - 6); t -= 3) {
+      const atOrAbove = rows.filter((r: any) => Number(r.entry_score) >= t);
+      if (atOrAbove.length < 15) break;
+      const wr = atOrAbove.filter((r: any) => r.outcome === 'WIN').length / atOrAbove.length;
+      const avgPnl = atOrAbove.reduce((s: number, r: any) => s + Number(r.realized_pnl_pct), 0) / atOrAbove.length;
+      const score = wr * Math.max(avgPnl, 0.01);
+      if (wr >= 0.48 && avgPnl > 0 && score > bestDownScore) {
+        bestDownScore = score;
+        bestDownThreshold = t;
+      }
+    }
+    if (bestDownThreshold < currentThreshold) {
+      insights.push({
+        category: 'WIN_PATTERN',
+        insight: `매수 임계값 자동최적화 (${label}): ${currentThreshold}점 미만에서도 승률 ${(belowWinRate * 100).toFixed(0)}% (${below.length}건, 평균손익 ${belowAvgPnl.toFixed(1)}%). 임계값 ${bestDownThreshold}점 하향으로 기회 확대 가능.`,
+        recommendation: `buy_threshold: ${currentThreshold} → ${bestDownThreshold} (${label} ${totalSamples}건 분석, 50건+ 검증)`,
+        paramChange: label === '전체' ? {
+          field: 'buy_threshold',
+          value: bestDownThreshold,
+          reason: `임계값 이하도 수익 확인 → 기회 확대 (50건+ 표본)`,
+        } : undefined,
+        confidence: confidence * 0.80,
+        sampleCount: totalSamples,
+        lastUpdated: new Date().toISOString(),
+      });
+    }
   }
 
   return insights;
@@ -228,12 +245,14 @@ export async function calibrateScoreTierParams(market: 'KR' | 'US' = 'KR'): Prom
     // v9-fix: 데이터 스누핑 방지 — holdout gap (KR: 14일, US: 7일 — T+1 결제)
     const holdoutDays = market === 'US' ? 7 : 14;
     const marketFilter = market === 'US' ? `AND market = 'US'` : `AND (market IS NULL OR market = 'KR')`;
+    // v23-audit: EXPLORE 프로파일 제외
     const { rows: accuracyData } = await getPool().query(
       `SELECT entry_score, outcome, realized_pnl_pct
        FROM score_accuracy
        WHERE recorded_at BETWEEN NOW() - INTERVAL '120 days' AND NOW() - INTERVAL '${holdoutDays} days'
          AND entry_score IS NOT NULL
          AND is_paper = $1
+         AND COALESCE(trading_profile, 'LIVE') != 'EXPLORE'
          ${marketFilter}
        ORDER BY recorded_at DESC`,
       [getCtxIsPaper()],

@@ -96,12 +96,14 @@ export async function calibrateBonusWeights(): Promise<void> {
     // score_accuracy + transaction_chains 조인 — 보너스별 성과 분석
     // score_accuracy.details에 각 보너스 활성 여부가 기록되어 있다고 가정
     // 없으면 entry_score 기반 간이 분석
+    // v23-audit: EXPLORE 프로파일 제외
     const { rows } = await getPool().query(
       `SELECT sa.entry_score, sa.outcome, sa.realized_pnl_pct, sa.details
        FROM score_accuracy sa
        WHERE sa.recorded_at >= NOW() - INTERVAL '90 days'
          AND sa.is_paper = $1
-         AND sa.entry_score IS NOT NULL`,
+         AND sa.entry_score IS NOT NULL
+         AND COALESCE(sa.trading_profile, 'LIVE') != 'EXPLORE'`,
       [isPaper],
     );
 

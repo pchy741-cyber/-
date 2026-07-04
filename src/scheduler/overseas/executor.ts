@@ -23,10 +23,11 @@ const PAPER_SLIPPAGE_PCT = 0.0035;
 /** Milliseconds per day — used for holding day calculation */
 const MS_PER_DAY = 86_400_000;
 /** PnL threshold for WIN/LOSS/BREAK_EVEN classification
- * v10.11.3: 0.1% → 0.4% (해외 수수료 0.35% 이상이어야 실질 수익)
- * 기존: 0.1% 수익도 "WIN" → 수수료 0.35% 차감 후 실질 -0.25% 손실인데 WIN 분류
+ * v10.11.3: 0.1% → 0.4%
+ * v22-audit: 0.4% → 0.75% (편도 0.35%×2 = 왕복 0.70%, +0.05% 마진)
+ * 기존 0.4%: gross 0.4~0.7% 거래가 WIN 분류되지만 실제 net 음수 → 학습 오염
  */
-const PNL_BREAKEVEN_THRESHOLD = 0.4;
+const PNL_BREAKEVEN_THRESHOLD = 0.75;
 
 /** 해외 SELL 체결 후 score_accuracy 기록 */
 async function recordOverseasScoreAccuracy(params: {
@@ -56,13 +57,15 @@ async function recordOverseasScoreAccuracy(params: {
       ? Math.round((Date.now() - new Date(buyRows[0].created_at).getTime()) / MS_PER_DAY)
       : null;
 
+    // v23-audit: Paper 모드 데이터는 EXPLORE 태깅
+    const tradingProfile = isPaper ? 'EXPLORE' : 'LIVE';
     await pool.query(
       `INSERT INTO score_accuracy
          (stock_code, order_id, market, realized_pnl_pct, outcome, holding_days,
-          close_reason, is_paper)
-       VALUES ($1, $2, 'US', $3, $4, $5, $6, $7)
+          close_reason, is_paper, trading_profile)
+       VALUES ($1, $2, 'US', $3, $4, $5, $6, $7, $8)
        ON CONFLICT (order_id) WHERE order_id IS NOT NULL DO NOTHING`,
-      [stockCode, orderId, pnlPct, outcome, holdingDays, params.reasoning, isPaper],
+      [stockCode, orderId, pnlPct, outcome, holdingDays, params.reasoning, isPaper, tradingProfile],
     );
     logger.info(`📝 해외 스코어 기록: ${stockCode} ${outcome} (${pnlPct > 0 ? '+' : ''}${pnlPct.toFixed(2)}%)`, {
       component: 'OVERSEAS',

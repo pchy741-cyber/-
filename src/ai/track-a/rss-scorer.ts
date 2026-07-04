@@ -38,8 +38,9 @@ const OVEREXTENDED_BASE_THRESHOLD = 70; // 과매수 감점 기준 점수
 const OVEREXTENDED_VOL_THRESHOLD = 1.3; // 과매수 거래량 비율 기준
 const STRONG_BUY_THRESHOLD = 82; // AI 프롬프트 기준 통일 (82+=STRONG_BUY)
 const BUY_THRESHOLD = 68; // 68~81=BUY (프롬프트 기준)
-const STRONG_SELL_THRESHOLD = 25;
+const HOLD_THRESHOLD = 50; // v22-audit: ensemble.ts 정렬 (50~67=HOLD)
 const SELL_THRESHOLD = 30; // ensemble.ts 기준 통일 (30~49=SELL)
+// STRONG_SELL: <30 (ensemble.ts resolveSignal 정렬)
 const PULLBACK_VOL_COMBO_THRESHOLD = 1.3; // 눌림목+거래량 콤보 기준
 const PULLBACK_CONFIDENCE_BOOST = 0.08;
 const MAX_CONFIDENCE = 0.9;
@@ -261,9 +262,17 @@ export async function getNewsScore(_stockCode: string, stockName: string): Promi
       bounded = llmScore;
     } else {
       let score = 0;
+      // v22-audit: 부정어 맥락 탐지 — 긍정 키워드 앞뒤 10자 내 부정어 시 0처리 (weight 3 우선)
+      const NEGATORS = ['실패', '못', '불발', '무산', '아니', '하회', '미달', '불가', '취소', '부진'];
       for (const title of titles) {
         for (const [kw, weight] of POSITIVE) {
-          if (title.includes(kw)) score += weight;
+          if (!title.includes(kw)) continue;
+          if (weight >= 3) {
+            const idx = title.indexOf(kw);
+            const ctx = title.slice(Math.max(0, idx - 10), idx + kw.length + 10);
+            if (NEGATORS.some(neg => ctx.includes(neg))) continue; // 부정 맥락 → 0처리
+          }
+          score += weight;
         }
         for (const [kw, weight] of NEGATIVE) {
           if (title.includes(kw)) score -= weight;
@@ -592,20 +601,24 @@ export async function runRSSScoring(
     // 신호 결정 + 눌림목 확인 시 confidence 상향
     // HOLD 기본값 0.63: RSS 폴백은 AI 분석 없으므로 GPT 대비 -2% 패널티 (과신 방지)
     // (너무 낮추면 pipeline 0.60 필터 탈락 → 전 종목 매수 차단 버그)
+    // v22-audit: ensemble.ts resolveSignal()과 범위 정렬 (기존: 31~49가 HOLD로 빠짐)
     let signal: ScoringResult['signal'] = 'HOLD';
     let confidence = 0.63; // RSS 폴백: GPT(0.65) 대비 -0.02 패널티
     if (composite >= STRONG_BUY_THRESHOLD) {
       signal = 'STRONG_BUY';
-      confidence = 0.78; // RSS 폴백: GPT(0.82~0.9) 대비 -0.04 패널티
+      confidence = 0.78;
     } else if (composite >= BUY_THRESHOLD) {
       signal = 'BUY';
-      confidence = 0.68; // RSS 폴백: GPT(0.72) 대비 -0.04 패널티
-    } else if (composite <= STRONG_SELL_THRESHOLD) {
-      signal = 'STRONG_SELL';
-      confidence = 0.76;
-    } else if (composite <= SELL_THRESHOLD) {
+      confidence = 0.68;
+    } else if (composite >= HOLD_THRESHOLD) {
+      signal = 'HOLD';
+      confidence = 0.63;
+    } else if (composite >= SELL_THRESHOLD) {
       signal = 'SELL';
       confidence = 0.66;
+    } else {
+      signal = 'STRONG_SELL';
+      confidence = 0.76;
     }
 
     // 눌림목 + 거래량 콤보: confidence 추가 상향 (Track B 진입 문턱 넘기 용이)

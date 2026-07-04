@@ -169,8 +169,8 @@ export async function syncHoldingsFromKIS(): Promise<void> {
 
         // score_accuracy 기록
         if (manualOrderId && dbAvgPrice > 0 && sellPrice > 0) {
-          // v10.11.3: 해외 수수료 0.35% 고려 — 0.1% → 0.4%
-          const outcome = pnlPct > 0.4 ? 'WIN' : pnlPct < -0.4 ? 'LOSS' : 'BREAK_EVEN';
+          // v22-audit: 왕복 수수료 0.70% 반영 — 0.4% → 0.75%
+          const outcome = pnlPct > 0.75 ? 'WIN' : pnlPct < -0.75 ? 'LOSS' : 'BREAK_EVEN';
           getPool()
             .query(
               `INSERT INTO score_accuracy (stock_code, order_id, market, realized_pnl_pct, outcome, close_reason, is_paper)

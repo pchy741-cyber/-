@@ -8,12 +8,13 @@ export const OVERSEAS = {
   CONCENTRATION_MIN_PNL_PCT: 4.0,
 } as const;
 
-// ── 황금비율 자금배분 (해외) — 피보나치 기반 ──
+// ── 황금비율 자금배분 (해외) — 합산 100% ──
+// v22: CASH 3%→10% (기존 93% 합산 → 100% 정규화, 88% 투자캡과 정합)
 export const ALLOCATION_GOLDEN = {
   SWING_PCT: 0.50,
   CORE_PCT: 0.30,
   TACTICAL_PCT: 0.10,
-  CASH_PCT: 0.03,
+  CASH_PCT: 0.10,
 } as const;
 
 export type StrategyBucket = 'SWING' | 'CORE' | 'TACTICAL';
