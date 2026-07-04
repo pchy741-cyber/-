@@ -284,13 +284,15 @@ export function startScheduler(): void {
   // ⚡ 이벤트 기반 재스코어 — node-cron 최소 1분이므로 setInterval로 30초
   // 거래량 spike / 갭업·다운 즉시 감지 → 해당 종목만 재스코어 (paid AI 0)
   // _trackBRunning 참조: 클로저로 캡처 (이 setInterval 콜백은 30초 후 최초 실행되므로 선언 시점 이후)
-  setInterval(() => {
+  setInterval(async () => {
     const now = new Date();
     const kstH = (now.getUTCHours() + 9) % 24;
     const kstM = now.getUTCMinutes();
-    const isWeekday = now.getUTCDay() >= 1 && now.getUTCDay() <= 5;
     const inKrMarket = kstH >= 9 && (kstH < 15 || (kstH === 15 && kstM <= 30));
-    if (!isWeekday || !inKrMarket) return;
+    if (!inKrMarket) return;
+    // 공휴일 포함 비거래일 체크 (weekday 체크 대체)
+    const { isTradingDay } = await import('../utils/holidays.js');
+    if (!isTradingDay()) return;
     if (_trackBRunning) return; // Track B KIS 호출과 충돌 방지 — rate limit EGW00201 억제
     runWithMode(false, async () => {
       const { runEventRescore } = await import('../ai/track-a/event-rescore.js');
@@ -1513,6 +1515,8 @@ export function startScheduler(): void {
   cron.schedule(
     '0 8 * * 1-5',
     async () => {
+      const { isTradingDay } = await import('../utils/holidays.js');
+      if (!isTradingDay()) return;
       logger.info('🔄 KIS 관심종목/보유종목 동기화 (08:00)', { component: 'SCHEDULER' });
       await syncInterestGroups().catch((e) => logger.error(`관심종목 동기화 실패: ${e}`, { component: 'SCHEDULER' }));
       await syncHoldingsToWatchlist().catch((e) =>
@@ -1526,6 +1530,8 @@ export function startScheduler(): void {
   cron.schedule(
     '30 18 * * 1-5',
     async () => {
+      const { isTradingDay } = await import('../utils/holidays.js');
+      if (!isTradingDay()) return;
       logger.info('🔄 KIS 관심종목/보유종목 동기화', { component: 'SCHEDULER' });
       await syncInterestGroups().catch((e) => logger.error(`관심종목 동기화 실패: ${e}`, { component: 'SCHEDULER' }));
       await syncHoldingsToWatchlist().catch((e) =>
@@ -1650,10 +1656,10 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 📊 DART 야간 전체 배치 — 매일 22:00 (주말 포함, 제한 없이 감시목록 전종목)
+  // 📊 DART 야간 전체 배치 — 평일 22:00 (주말 DART 공시 없음 → 호출 불필요)
   // 08:35/10:00-15:00 배치의 종목 수 캡(15/10개) 보완 — 누락 없이 전체 커버
   cron.schedule(
-    '0 22 * * *',
+    '0 22 * * 1-5',
     async () => {
       try {
         const { getActiveWatchlist } = await import('../db/client.js');
@@ -1664,7 +1670,7 @@ export function startScheduler(): void {
           .map((w: { stock_code: string }) => w.stock_code)
           .filter((c: string) => /^\d{6}$/.test(c));
 
-        // 제한 없이 전종목 캐시미스 확인 (주말/공휴일 포함 매일)
+        // 제한 없이 전종목 캐시미스 확인 (평일만)
         const targets = await getSmartDartTargets(watchCodes, 999);
 
         if (targets.length > 0) {

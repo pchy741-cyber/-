@@ -161,9 +161,10 @@ export function startIdleWatcher(): void {
 let _healthTimer: ReturnType<typeof setInterval> | null = null;
 
 /**
- * DB 헬스 워처 시작 — 2분마다 DB 연결 확인, 실패 시 wake + reconnect
+ * DB 헬스 워처 시작 — 장중 30초 / 장외 5분마다 DB 연결 확인, 실패 시 wake + reconnect
  * 부팅 시 DB 연결 성공한 경우에도 동작 (idle watcher가 DB 끈 후 복구용)
  */
+let _lastHealthCheckAt = 0;
 export function startDbHealthWatcher(checkDb: () => Promise<boolean>, onReconnect: () => Promise<void>): void {
   if (_healthTimer) return;
 
@@ -175,6 +176,13 @@ export function startDbHealthWatcher(checkDb: () => Promise<boolean>, onReconnec
     const isWeekendOff = d === 0 || (d === 6 && hh >= 9) || (d === 1 && hh < 6);
     const recentActivity = Date.now() - _lastActivityAt < 15 * 60_000; // 15분 이내 활동
     if (isWeekendOff && !recentActivity) return; // 주말 동면 중 + 사용자 비활성 → 복구 스킵
+
+    // 장외 시 5분 간격으로 완화 (Cloud SQL 연결 풀 자체 keepalive 보유)
+    if (!isInMarketHours()) {
+      const now = Date.now();
+      if (now - _lastHealthCheckAt < 300_000) return; // 5분 미만이면 스킵
+      _lastHealthCheckAt = now;
+    }
 
     try {
       const ok = await checkDb();

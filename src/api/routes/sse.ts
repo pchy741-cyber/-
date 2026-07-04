@@ -396,7 +396,7 @@ async function buildMetaPayload(viewIsPaper: boolean): Promise<string> {
  * 2채널 분리:
  * - 'prices' 이벤트: 3초마다, chainPrices만 (~200바이트)
  * - 'meta' 이벤트: 30초마다, 전체 페이로드 (포트폴리오, 거래, 건강 등)
- * - 장외: 120초마다 meta만, 30초마다 keepalive ping
+ * - 장외: 300초(5분)마다 meta만, 30초마다 keepalive ping
  *
  * v3 개선:
  * - stream.aborted 체크 → 좀비 루프 방지
@@ -424,7 +424,7 @@ sseRoutes.get('/stream', (c) => {
 
     const PRICE_INTERVAL = 3_000;
     const META_INTERVAL = 30_000;
-    const CLOSED_INTERVAL = 120_000;
+    const CLOSED_INTERVAL = 300_000; // 장외 5분 (가격 변동 없음 → DB 쿼리 60% 절감)
     const KEEPALIVE_MS = 30_000;
 
     // 첫 이벤트: retry 설정 (재접속 간격 10초 — thundering herd 방지)
