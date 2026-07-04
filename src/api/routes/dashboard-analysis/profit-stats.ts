@@ -132,16 +132,16 @@ profitStatsRoutes.get('/equity-curve', async (c) => {
     const rawDays = Number(c.req.query('days') ?? 30);
     const days = Math.min(365, Math.max(7, Number.isFinite(rawDays) ? rawDays : 30));
     const isPaper = resolveViewIsPaper(c);
+    // v25 P0-1: 일 마지막 스냅샷 (종가 기준) — MAX(total_value) 장중 고점 → 왜곡 제거
     const { rows } = await getPool().query(
-      `SELECT
+      `SELECT DISTINCT ON ((snapshot_at AT TIME ZONE 'Asia/Seoul')::date)
          (snapshot_at AT TIME ZONE 'Asia/Seoul')::date AS date,
-         MAX(total_value) AS total_value,
-         MAX(daily_pnl) AS daily_pnl
+         total_value,
+         daily_pnl
        FROM portfolio_snapshots
        WHERE is_paper = $1
          AND snapshot_at >= NOW() - ($2 || ' days')::INTERVAL
-       GROUP BY 1
-       ORDER BY 1 ASC`,
+       ORDER BY (snapshot_at AT TIME ZONE 'Asia/Seoul')::date, snapshot_at DESC`,
       [isPaper, days],
     );
     return c.json({

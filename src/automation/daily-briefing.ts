@@ -16,6 +16,7 @@ import { safeQuery } from '../db/pool.js';
 import { sendTelegramMessage } from '../notifications/telegram.js';
 import { logger } from '../utils/logger.js';
 import { getKSTNow } from '../utils/time.js';
+import { computeStrategyHealth } from '../risk/strategy-health.js';
 
 const COMPONENT = 'BRIEFING';
 
@@ -97,10 +98,35 @@ export async function runDailyBriefing(market: Market): Promise<void> {
       [`${monthStart}T00:00:00+09:00`],
     );
 
+    // ── v25 P1-3: 성과 4줄 헤더 ──
+    let healthHeader = '';
+    try {
+      const h = await computeStrategyHealth(false, 90, 5.0);
+      const bmStr = h.benchmark.available
+        ? `벤치 ${h.benchmark.benchmarkCagr >= 0 ? '+' : ''}${h.benchmark.benchmarkCagr}% | 알파 ${h.benchmark.alpha >= 0 ? '+' : ''}${h.benchmark.alpha}%`
+        : '';
+      const uwStr = h.risk.maxUnderwaterDays < 0
+        ? `uw ${Math.abs(h.risk.maxUnderwaterDays)}일째`
+        : '';
+      const psrStr = h.efficiency.psrSignificant
+        ? `확정`
+        : `${h.efficiency.minTRL - h.period.tradingDays}일 더`;
+      healthHeader = [
+        `TWR ${h.returns.cumulativePct >= 0 ? '+' : ''}${h.returns.cumulativePct}%${bmStr ? ` | ${bmStr}` : ''}`,
+        `MDD -${h.risk.maxDrawdownPct}%${uwStr ? ` (${uwStr})` : ''} | 월 ${h.goal.currentMonthPct >= 0 ? '+' : ''}${h.goal.currentMonthPct}%/목표5%`,
+        `Sharpe ${h.efficiency.sharpeRatio} (PSR ${h.efficiency.psr}, ${psrStr}) | Sortino ${h.efficiency.sortinoRatio}`,
+        `등급 ${h.grade}${!h.goal.goalRealistic ? ' ⚠️목표 필요샤프 ' + h.goal.requiredSharpe + ' (비현실적)' : ''}`,
+      ].join('\n');
+    } catch { /* health 조회 실패 시 생략 */ }
+
     // ── 메시지 조립
     const lines: string[] = [];
     lines.push(`${isKr ? '🇰🇷' : '🇺🇸'} *${label} 운영 브리핑* · ${today}`);
     lines.push(`━━━━━━━━━━━━━━━━`);
+    if (healthHeader) {
+      lines.push(healthHeader);
+      lines.push(`━━━━━━━━━━━━━━━━`);
+    }
 
     // 청산 요약 — 한 줄씩
     if (closedChains.length === 0) {

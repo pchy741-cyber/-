@@ -10,6 +10,7 @@ import { getPool } from '../db/client.js';
 import { getAllStrategyPerformances, getStrategyPerformance } from '../risk/strategy-performance.js';
 import { logger } from '../utils/logger.js';
 import { classifyGraduationRisk } from './strategy-lab/risk-classifier.js';
+import { computeDSR, sampleSkewness, sampleKurtosis } from '../risk/statistics.js';
 
 // ── 졸업 기준 ──────────────────────────────────────────────────────────
 
@@ -118,7 +119,44 @@ export async function autoGraduate(): Promise<void> {
       const result = await checkGraduation(perf.mode);
 
       if (result.eligible) {
+        // v25 P1-2: DSR 게이트 — 토너먼트 시도 기록이 있으면 선택 편향 보정
+        let dsrPassed = true;
+        let dsrValue = 1.0;
+        try {
+          const { rows: trials } = await pool.query(
+            `SELECT sharpe_ratio FROM strategy_trials
+             WHERE strategy_mode = $1 AND is_paper = true
+               AND created_at >= NOW() - INTERVAL '90 days'`,
+            [perf.mode],
+          );
+          if (trials.length >= 3) {
+            const trialSRs = trials.map((t: { sharpe_ratio: string }) => Number(t.sharpe_ratio)).filter(Number.isFinite);
+            if (trialSRs.length >= 3) {
+              // 최고 SR 변형의 수익률로 DSR 계산 (간이: 전체 수익률 사용)
+              const bestSR = Math.max(...trialSRs);
+              const n = perf.totalTrades;
+              // 근사: skew/kurt은 표준값 사용 (개별 일별 수익 미보유 시)
+              dsrValue = computeDSR(bestSR, trialSRs, n, 0, 3);
+              dsrPassed = dsrValue >= 0.95;
+              if (!dsrPassed) {
+                const srStar = Math.sqrt(trialSRs.reduce((s, v, _, a) => s + (v - a.reduce((x, y) => x + y, 0) / a.length) ** 2, 0) / (trialSRs.length - 1));
+                logger.warn(
+                  `  ⚠️ ${perf.mode}: DSR ${dsrValue.toFixed(3)} < 0.95 — ${trialSRs.length}회 시도 중 최고 선택, 우연 상한 초과 의심`,
+                  { component: 'GRADUATION' },
+                );
+              }
+            }
+          }
+        } catch { /* strategy_trials 테이블 미존재 시 통과 */ }
+
         const risk = classifyGraduationRisk(result, result.criteria);
+
+        // v25 P1-2: DSR 미달 시 자동졸업 차단 → CEO 승인 강제
+        if (!dsrPassed) {
+          risk.autoApply = false;
+          risk.level = 'HIGH';
+          risk.reasons.push(`DSR ${dsrValue.toFixed(3)} < 0.95 (${result.actual.trades}회 시도 선택편향)`);
+        }
 
         // 이미 PENDING 건이 있으면 스킵
         const existing = await pool
