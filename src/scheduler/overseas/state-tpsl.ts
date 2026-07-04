@@ -44,6 +44,51 @@ export async function setMaxPrice(code: string, price: number, isPaper?: boolean
   }
 }
 
+/**
+ * 배치 최고가 조회 — 매도 루프 진입 전 1회 호출로 N+1 제거
+ * WHERE key = ANY($1) → 10종목 = 1 쿼리 (기존: 10개 개별 SELECT)
+ */
+export async function getMaxPriceBatch(codes: string[], isPaper?: boolean): Promise<Map<string, number>> {
+  const map = new Map<string, number>();
+  if (codes.length === 0) return map;
+  const pfx = modePrefix(isPaper);
+
+  // 1) 메모리 캐시에서 먼저 채우기
+  const missingCodes: string[] = [];
+  for (const code of codes) {
+    const cacheKey = `ov_maxprice:${pfx}${code}`;
+    const cached = cacheGet<number>(cacheKey);
+    if (cached != null) {
+      map.set(code, cached);
+    } else {
+      missingCodes.push(code);
+    }
+  }
+  if (missingCodes.length === 0) return map;
+
+  // 2) DB 배치 조회
+  try {
+    const keys = missingCodes.map((c) => `${pfx}maxprice_${c}`);
+    const { rows } = await getPool().query(
+      'SELECT key, value FROM overseas_state WHERE key = ANY($1)',
+      [keys],
+    );
+    for (const r of rows) {
+      const code = String(r.key).replace(`${pfx}maxprice_`, '');
+      const val = Number(r.value);
+      if (Number.isFinite(val) && val > 0) {
+        map.set(code, val);
+        cacheSet(`ov_maxprice:${pfx}${code}`, val, 300);
+      }
+    }
+  } catch (e) {
+    logger.warn(`getMaxPriceBatch 조회 실패: ${(e as Error).message}`, { component: 'OVERSEAS' });
+  }
+
+  // 캐시 미스 + DB 미존재 코드는 0 (기존 getMaxPrice 동작 유지)
+  return map;
+}
+
 export async function clearMaxPrice(code: string, isPaper?: boolean): Promise<void> {
   await getPool()
     .query('DELETE FROM overseas_state WHERE key = $1', [`${modePrefix(isPaper)}maxprice_${code}`])

@@ -18,11 +18,16 @@ export async function getOpenChains(isPaperOverride?: boolean): Promise<Transact
   const cacheKey = `db:chains:open:${isPaper}`;
   const cached = cacheGet<TransactionChain[]>(cacheKey);
   if (cached) return cached;
+  // Fix3: LATERAL JOIN으로 상관 서브쿼리 제거 (옵티마이저 친화적)
   const { rows } = await queryWithRetry(
-    `SELECT tc.*, w.stock_name, tc.peak_price_since_open,
-       (SELECT trigger_source FROM orders WHERE chain_id = tc.id AND side = 'BUY' ORDER BY created_at ASC LIMIT 1) AS trigger_source
+    `SELECT tc.*, w.stock_name, tc.peak_price_since_open, o.trigger_source
      FROM transaction_chains tc
      LEFT JOIN watchlist w ON tc.stock_code = w.stock_code
+     LEFT JOIN LATERAL (
+       SELECT trigger_source FROM orders
+       WHERE chain_id = tc.id AND side = 'BUY'
+       ORDER BY created_at ASC LIMIT 1
+     ) o ON true
      WHERE tc.status IN ('OPEN','AVERAGING','PROFIT_TAKING')
        AND tc.is_paper = $1
      ORDER BY tc.opened_at DESC`,

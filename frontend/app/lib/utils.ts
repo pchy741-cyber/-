@@ -81,5 +81,14 @@ export function timeAgo(dateStr: string): string {
   return `${day}일 전`;
 }
 
+// ── 한국 원화 포맷 (배당/세금 패널 공용) ──
+export const fmtManWon = (n: number) => {
+  if (n >= 100_000_000) return (n / 100_000_000).toFixed(1) + '억';
+  if (n >= 10_000_000) return (n / 10_000_000).toFixed(0) + '천만';
+  if (n >= 10_000) return Math.round(n / 10_000).toLocaleString() + '만';
+  return Math.round(n).toLocaleString();
+};
+export const fmtKrwFull = (n: number) => '₩' + Math.round(n).toLocaleString('ko-KR');
+
 export const pc = (n: number | null | undefined) => n == null || n === 0 ? 'text-slate-400' : n > 0 ? 'text-emerald-400' : 'text-rose-400';
 export const pbg = (n: number | null | undefined) => n == null || n === 0 ? '' : n > 0 ? 'bg-emerald-950/30 border-emerald-900/30' : 'bg-rose-950/30 border-rose-900/30';

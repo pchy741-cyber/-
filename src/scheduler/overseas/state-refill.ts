@@ -4,6 +4,7 @@
 import { fetchExchangeRate } from '../../automation/macro-data.js';
 import { FALLBACK_FX_RATE } from '../../config/constants.js';
 import { getPool } from '../../db/client.js';
+import { isKillSwitchActive } from '../../risk/kill-switch.js';
 import { computePaperCash, getEffectivePaperSeedKrw } from '../../shared/overseas/paper-cash.js';
 import { logger } from '../../utils/logger.js';
 import { getHoldings } from './state-holdings.js';
@@ -40,6 +41,12 @@ export async function checkAndRefillOverseasPaper(force = false): Promise<boolea
     const totalRatio = seedUsd > 0 ? totalValue / seedUsd : 0;
 
     if (!force && totalRatio >= OVERSEAS_REFILL_THRESHOLD) return false;
+
+    // 🛡️ Kill Switch 활성 시 리필 차단 — API 장애로 인한 가짜 포트폴리오 하락 → 리필 → 데이터 영구손실 방지
+    if (!force && isKillSwitchActive('OVERSEAS', true)) {
+      logger.warn('🛑 Kill Switch 활성 중 → Paper 리필 차단 (API 장애 의심)', { component: 'OVERSEAS' });
+      return false;
+    }
 
     // v10.8.4 안전장치: 최근 1시간 내 매매가 있었으면 리필 차단 (현금 계산 일시 오류 방지)
     const { rows: recentTrades } = await getPool().query(

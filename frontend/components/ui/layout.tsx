@@ -66,6 +66,55 @@ export function Indicator({
   );
 }
 
+/** 작은 통계 카드 — 배당/세금 패널에서 반복되는 숫자 박스 */
+export function StatCard({
+  label, value, sub, color,
+}: {
+  label: string; value: string; sub?: string; color?: string;
+}) {
+  return (
+    <div className="bg-white/[0.03] ring-1 ring-white/[0.06] rounded-xl p-3.5 text-center">
+      <div className="text-[9px] text-slate-500 mb-0.5">{label}</div>
+      <div className={`text-sm font-bold tabular-nums ${color || 'text-slate-200'}`}>{value}</div>
+      {sub && <div className="text-[9px] text-slate-600 mt-0.5">{sub}</div>}
+    </div>
+  );
+}
+
+/** 프리셋 버튼 그룹 — 년수/금액/옵션 선택 UI */
+export function PresetGroup<T extends string | number>({
+  label, items, selected, onSelect, accent = 'cyan', cols,
+}: {
+  label?: string;
+  items: { value: T; label: string }[];
+  selected: T;
+  onSelect: (v: T) => void;
+  accent?: 'cyan' | 'blue' | 'violet' | 'emerald';
+  cols?: number;
+}) {
+  const accentMap = {
+    cyan:    { active: 'bg-cyan-500/15 text-cyan-400 ring-cyan-500/30',    inactive: 'bg-white/[0.04] text-slate-400 ring-white/[0.06] hover:ring-white/[0.12]' },
+    blue:    { active: 'bg-blue-500/15 text-blue-400 ring-blue-500/30',    inactive: 'bg-white/[0.04] text-slate-400 ring-white/[0.06] hover:ring-white/[0.12]' },
+    violet:  { active: 'bg-violet-500/15 text-violet-400 ring-violet-500/30', inactive: 'bg-white/[0.04] text-slate-400 ring-white/[0.06] hover:ring-white/[0.12]' },
+    emerald: { active: 'bg-emerald-500/15 text-emerald-400 ring-emerald-500/30', inactive: 'bg-white/[0.04] text-slate-400 ring-white/[0.06] hover:ring-white/[0.12]' },
+  };
+  const style = accentMap[accent];
+  const gridCols = cols ? `grid-cols-${cols}` : items.length <= 4 ? `grid-cols-${items.length}` : 'grid-cols-4';
+  return (
+    <div>
+      {label && <div className="text-[10px] text-slate-500 mb-1.5">{label}</div>}
+      <div className={`grid ${gridCols} gap-1.5`}>
+        {items.map(item => (
+          <button key={String(item.value)} onClick={() => onSelect(item.value)}
+            className={`py-1.5 text-[10px] font-bold rounded-lg ring-1 transition-all ${
+              selected === item.value ? style.active : style.inactive
+            }`}>{item.label}</button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function EmptyMsg({ children, icon }: { children: React.ReactNode; icon?: string }) {
   return (
     <div className="p-8 sm:p-10 text-center">

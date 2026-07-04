@@ -82,7 +82,14 @@ export async function updateOrderByKisOrderNo(kisOrderNo: string, updates: Parti
 
 export async function getOrdersByChain(chainId: string): Promise<Order[]> {
   if (isMemoryMode()) return memGetOrdersByChain(chainId);
-  const { rows } = await queryWithRetry('SELECT * FROM orders WHERE chain_id = $1 ORDER BY created_at ASC', [chainId]);
+  // Fix4: SELECT * → 필요 컬럼만 명시 + Fix6: LIMIT 500 안전가드
+  const { rows } = await queryWithRetry(
+    `SELECT id, chain_id, stock_code, side, order_type, quantity, price,
+            kis_order_no, kis_status, filled_quantity, filled_price, status,
+            trading_mode, trigger_source, ai_reasoning, avg_buy_price, created_at, updated_at
+     FROM orders WHERE chain_id = $1 ORDER BY created_at ASC LIMIT 500`,
+    [chainId],
+  );
   return rows;
 }
 
@@ -98,8 +105,12 @@ export async function getPendingDomesticOrders(mode?: string): Promise<Order[]> 
       tradingMode = config.tradingMode;
     }
   }
+  // Fix4: SELECT * → 필요 컬럼만 명시
   const { rows } = await queryWithRetry(
-    `SELECT * FROM orders
+    `SELECT id, chain_id, stock_code, side, order_type, quantity, price,
+            kis_order_no, kis_status, filled_quantity, filled_price, status,
+            trading_mode, trigger_source, ai_reasoning, avg_buy_price, created_at, updated_at
+     FROM orders
      WHERE status IN ('PENDING', 'PARTIAL')
        AND (trigger_source IS NULL OR trigger_source != 'OVERSEAS')
        AND created_at >= NOW() - INTERVAL '2 hours'

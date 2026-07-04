@@ -21,7 +21,7 @@ import {
 } from './risk-intelligence.js';
 import { checkHoldingPriceShock } from './session-strategy.js';
 import { isUSMarketLastNMinutes } from './session.js';
-import { cleanupPositionState, getMaxPrice, setMaxPrice, updateHoldingTpSl, updateTradeState } from './state.js';
+import { cleanupPositionState, getMaxPrice, getMaxPriceBatch, setMaxPrice, updateHoldingTpSl, updateTradeState } from './state.js';
 import { getTunerOverrides } from './trade-tuner.js';
 import { GLOBAL_WATCHLIST, WATCHLIST_BY_CODE } from './watchlist.js';
 
@@ -126,6 +126,10 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
   }
   checkHoldingPriceShock(priceMap);
 
+  // Fix1: 최고가 배치 조회 — N+1 제거 (10종목 = 10쿼리 → 1쿼리)
+  const holdingCodes = [...holdings.keys()].filter((c) => !pendingOrderStocks.has(c));
+  const maxPriceMap = await getMaxPriceBatch(holdingCodes, paperMode);
+
   for (const [code, holding] of holdings) {
     if (pendingOrderStocks.has(code)) {
       logger.info(`⏳ 미체결 주문 존재 → ${code} 추가 주문 스킵`, { component: 'OVERSEAS' });
@@ -134,31 +138,10 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
     // v10.11: O(1) Map 조회 (기존: O(n) find per holding)
     const tech = techByCode.get(code);
     if (!tech) {
-      // 🚨 안전망: 가격 데이터 완전 실패 → 비상 시장가 매도 (절대 손실 방치 금지)
-      // overseas-job.ts에서 재시도+fallback 후에도 여기 도달하면 = 심각한 장애
-      logger.error(`🚨 비상매도: ${code} 가격 데이터 완전 누락 → 매입가 기준 청산 시도 (보유 ${holding.qty}주, 매입가 $${holding.avgPrice})`, { component: 'OVERSEAS' });
-      try {
-        // avgPrice를 fallback 가격으로 사용 (executor가 price<=0을 거부하므로)
-        const emergencyPrice = holding.avgPrice > 0 ? holding.avgPrice : 1;
-        const exec = await executeOverseasOrder(
-          code, 'SELL', holding.qty, emergencyPrice, holding.exchange,
-          `🚨 비상매도: 가격 데이터 완전 실패 — 손실 방지 긴급 청산 (매입가 $${holding.avgPrice})`,
-          holding.qty, holding.avgPrice, { isPaper: paperMode },
-        );
-        if (exec.submitted && exec.filledQty > 0) {
-          cash += exec.filledPrice * exec.filledQty * (1 - OVERSEAS_FEE_PCT);
-          sellOrders.push(`${code} 🚨비상매도 ${exec.filledQty}주`);
-          if (exec.filledQty >= holding.qty) {
-            await updateTradeState({ code, exchange: holding.exchange, qty: 0, avgPrice: 0, newCash: cash, isPaper: paperMode });
-            await cleanupPositionState(code, paperMode);
-          } else {
-            const remainQty = holding.qty - exec.filledQty;
-            await updateTradeState({ code, exchange: holding.exchange, qty: remainQty, avgPrice: holding.avgPrice, newCash: cash, isPaper: paperMode });
-          }
-        }
-      } catch (emergErr) {
-        logger.error(`🚨 비상매도 실행 실패: ${code} — ${emergErr}`, { component: 'OVERSEAS' });
-      }
+      // 🛡️ API 장애 시 비상매도 금지 — 다음 사이클까지 대기
+      // 이유: KIS 점검 모드에서 가격=0 반환 → avgPrice 매도는 시장가 괴리 손실 확대
+      // 정상 복구 후 실제 가격 기반 재평가가 안전함
+      logger.warn(`⏸️ ${code} 가격 데이터 누락 → 비상매도 안 함, 다음 사이클 대기 (보유 ${holding.qty}주, 매입가 $${holding.avgPrice})`, { component: 'OVERSEAS' });
       continue;
     }
 
@@ -210,7 +193,7 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
       continue;
     }
 
-    const prevMax = await getMaxPrice(code, paperMode);
+    const prevMax = maxPriceMap.get(code) ?? 0;
     const newMax = Math.max(prevMax || holding.avgPrice, curPrice);
     if (newMax > prevMax) await setMaxPrice(code, newMax, paperMode);
     const maxPnlPct = ((newMax - holding.avgPrice) / holding.avgPrice) * 100;

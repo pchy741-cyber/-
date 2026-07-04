@@ -1,28 +1,27 @@
 'use client';
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { api } from '../lib/utils';
+import { Panel, StatCard, PresetGroup } from '@/components/ui/layout';
+import { api, fmtManWon, fmtKrwFull } from '../lib/utils';
 
 interface ProjectionPanelProps {
   viewMode: 'paper' | 'live';
   toast: (msg: string, type?: 'ok' | 'err' | 'info') => void;
 }
 
-const YEAR_PRESETS = [5, 10, 20, 30];
-const MONTHLY_PRESETS = [
-  { krw: 0, label: '없음' },
-  { krw: 500_000, label: '50만' },
-  { krw: 1_000_000, label: '100만' },
-  { krw: 2_000_000, label: '200만' },
+const YEAR_PRESETS = [
+  { value: 5, label: '5년' },
+  { value: 10, label: '10년' },
+  { value: 20, label: '20년' },
+  { value: 30, label: '30년' },
 ];
 
-const fmtKrw = (n: number) => '₩' + Math.round(n).toLocaleString('ko-KR');
-const fmtManWon = (n: number) => {
-  if (n >= 100_000_000) return (n / 100_000_000).toFixed(1) + '억';
-  if (n >= 10_000_000) return (n / 10_000_000).toFixed(0) + '천만';
-  if (n >= 10_000) return Math.round(n / 10_000).toLocaleString() + '만';
-  return Math.round(n).toLocaleString();
-};
+const MONTHLY_PRESETS = [
+  { value: 0, label: '없음' },
+  { value: 500_000, label: '50만' },
+  { value: 1_000_000, label: '100만' },
+  { value: 2_000_000, label: '200만' },
+];
 
 export default function ProjectionPanel({ viewMode, toast }: ProjectionPanelProps) {
   const [years, setYears] = useState(10);
@@ -51,7 +50,7 @@ export default function ProjectionPanel({ viewMode, toast }: ProjectionPanelProp
   const yearData = data?.years || [];
   const summary = data?.summary;
 
-  // SVG 영역 차트 계산
+  // SVG 영역 차트
   const chartW = 320;
   const chartH = 140;
   const padL = 0;
@@ -73,37 +72,10 @@ export default function ProjectionPanel({ viewMode, toast }: ProjectionPanelProp
   const contribPath = points.map((p: any, i: number) => `${i === 0 ? 'M' : 'L'}${p.x},${p.yContrib}`).join(' ');
 
   return (
-    <div className="glass rounded-2xl border border-white/[0.04] overflow-hidden shadow-xl shadow-black/40">
-      <div className="px-5 py-3.5 border-b border-white/[0.04] flex items-center justify-between">
-        <h2 className="text-sm font-bold text-slate-200">장기 배당 프로젝션</h2>
-        <span className="text-[10px] px-2 py-0.5 rounded-full font-bold bg-cyan-500/15 text-cyan-400">복리</span>
-      </div>
+    <Panel title="장기 배당 프로젝션" badge="복리" badgeColor="neutral">
       <div className="p-5 space-y-4">
-        {/* 투자 기간 */}
-        <div>
-          <div className="text-[10px] text-slate-500 mb-1.5">투자 기간</div>
-          <div className="flex gap-1.5">
-            {YEAR_PRESETS.map(y => (
-              <button key={y} onClick={() => setYears(y)}
-                className={`flex-1 py-1.5 text-[10px] font-bold rounded-lg ring-1 transition-all ${
-                  years === y ? 'bg-cyan-500/15 text-cyan-400 ring-cyan-500/30' : 'bg-white/[0.04] text-slate-400 ring-white/[0.06]'
-                }`}>{y}년</button>
-            ))}
-          </div>
-        </div>
-
-        {/* 월 적립금 */}
-        <div>
-          <div className="text-[10px] text-slate-500 mb-1.5">월 적립금</div>
-          <div className="grid grid-cols-4 gap-1.5">
-            {MONTHLY_PRESETS.map(p => (
-              <button key={p.krw} onClick={() => setMonthly(p.krw)}
-                className={`py-1.5 text-[10px] font-bold rounded-lg ring-1 transition-all ${
-                  monthly === p.krw ? 'bg-cyan-500/15 text-cyan-400 ring-cyan-500/30' : 'bg-white/[0.04] text-slate-400 ring-white/[0.06]'
-                }`}>{p.label}</button>
-            ))}
-          </div>
-        </div>
+        <PresetGroup label="투자 기간" items={YEAR_PRESETS} selected={years} onSelect={setYears} accent="cyan" />
+        <PresetGroup label="월 적립금" items={MONTHLY_PRESETS} selected={monthly} onSelect={setMonthly} accent="cyan" cols={4} />
 
         {/* 성장률 슬라이더 */}
         <div>
@@ -134,15 +106,11 @@ export default function ProjectionPanel({ viewMode, toast }: ProjectionPanelProp
             {yearData.length > 1 && (
               <div className="bg-white/[0.02] rounded-xl p-3 overflow-hidden">
                 <svg viewBox={`0 0 ${chartW} ${chartH}`} className="w-full" preserveAspectRatio="xMidYMid meet">
-                  {/* 명목 가치 영역 */}
                   <path d={nominalArea} fill="rgba(59,130,246,0.12)" />
                   <path d={nominalPath} fill="none" stroke="rgba(59,130,246,0.7)" strokeWidth="2" />
-                  {/* 실질 가치 라인 */}
                   <path d={realPath} fill="none" stroke="rgba(148,163,184,0.4)" strokeWidth="1.5" strokeDasharray="4,3" />
-                  {/* 투입금 라인 */}
                   <path d={contribPath} fill="none" stroke="rgba(251,191,36,0.3)" strokeWidth="1" strokeDasharray="2,2" />
-                  {/* X축 라벨 */}
-                  {yearData.filter((_: any, i: number) => i === 0 || i === yearData.length - 1 || (yearData.length > 5 && i === Math.floor(yearData.length / 2))).map((y: any, _: number) => {
+                  {yearData.filter((_: any, i: number) => i === 0 || i === yearData.length - 1 || (yearData.length > 5 && i === Math.floor(yearData.length / 2))).map((y: any) => {
                     const idx = yearData.indexOf(y);
                     const px = padL + (idx / Math.max(yearData.length - 1, 1)) * drawW;
                     return (
@@ -161,31 +129,14 @@ export default function ProjectionPanel({ viewMode, toast }: ProjectionPanelProp
             {/* 요약 카드 4개 */}
             {summary && (
               <div className="grid grid-cols-2 gap-2">
-                <div className="bg-white/[0.03] ring-1 ring-white/[0.06] rounded-xl p-3 text-center">
-                  <div className="text-[9px] text-slate-500 mb-0.5">최종 가치</div>
-                  <div className="text-sm font-black text-blue-400 tabular-nums">{fmtManWon(summary.finalValue)}원</div>
-                  <div className="text-[9px] text-slate-600">실질 {fmtManWon(summary.finalRealValue)}원</div>
-                </div>
-                <div className="bg-white/[0.03] ring-1 ring-white/[0.06] rounded-xl p-3 text-center">
-                  <div className="text-[9px] text-slate-500 mb-0.5">총 배당 수령</div>
-                  <div className="text-sm font-black text-emerald-400 tabular-nums">{fmtManWon(summary.totalDividends)}원</div>
-                </div>
-                <div className="bg-white/[0.03] ring-1 ring-white/[0.06] rounded-xl p-3 text-center">
-                  <div className="text-[9px] text-slate-500 mb-0.5">월 배당 수입</div>
-                  <div className="text-sm font-black text-cyan-400 tabular-nums">{fmtKrw(summary.monthlyIncomeAtEnd)}</div>
-                  <div className="text-[9px] text-slate-600">{years}년 후 기준</div>
-                </div>
-                <div className="bg-white/[0.03] ring-1 ring-white/[0.06] rounded-xl p-3 text-center">
-                  <div className="text-[9px] text-slate-500 mb-0.5">CAGR</div>
-                  <div className={`text-sm font-black tabular-nums ${summary.cagr >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                    {summary.cagr}%
-                  </div>
-                  <div className="text-[9px] text-slate-600">연평균 성장률</div>
-                </div>
+                <StatCard label="최종 가치" value={`${fmtManWon(summary.finalValue)}원`} sub={`실질 ${fmtManWon(summary.finalRealValue)}원`} color="text-blue-400" />
+                <StatCard label="총 배당 수령" value={`${fmtManWon(summary.totalDividends)}원`} color="text-emerald-400" />
+                <StatCard label="월 배당 수입" value={fmtKrwFull(summary.monthlyIncomeAtEnd)} sub={`${years}년 후 기준`} color="text-cyan-400" />
+                <StatCard label="CAGR" value={`${summary.cagr}%`} sub="연평균 성장률" color={summary.cagr >= 0 ? 'text-emerald-400' : 'text-rose-400'} />
               </div>
             )}
 
-            {/* 연도별 테이블 (접기/펼치기) */}
+            {/* 연도별 테이블 */}
             <div>
               <button onClick={() => setShowTable(!showTable)}
                 className="w-full text-[10px] text-slate-500 hover:text-slate-300 py-1.5 transition-colors">
@@ -213,6 +164,6 @@ export default function ProjectionPanel({ viewMode, toast }: ProjectionPanelProp
           </div>
         ) : null}
       </div>
-    </div>
+    </Panel>
   );
 }

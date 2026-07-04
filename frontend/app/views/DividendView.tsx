@@ -2,7 +2,8 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { Button } from '@/components/ui';
-import { api, pc, FALLBACK_FX_RATE } from '../lib/utils';
+import { Panel, StatCard, PresetGroup } from '@/components/ui/layout';
+import { api, pc, FALLBACK_FX_RATE, fmtManWon } from '../lib/utils';
 import TaxSimulatorPanel from '../panels/TaxSimulatorPanel';
 import TaxScreenerPanel from '../panels/TaxScreenerPanel';
 import ProjectionPanel from '../panels/ProjectionPanel';
@@ -15,11 +16,11 @@ interface DividendViewProps {
   onRefreshMp?: () => void;
 }
 
-const BUDGET_PRESETS = [
-  { krw: 100000, label: '10만' },
-  { krw: 300000, label: '30만' },
-  { krw: 500000, label: '50만' },
-  { krw: 1000000, label: '100만' },
+const BUDGET_PRESETS: { value: number; label: string }[] = [
+  { value: 100000, label: '10만' },
+  { value: 300000, label: '30만' },
+  { value: 500000, label: '50만' },
+  { value: 1000000, label: '100만' },
 ];
 
 const DEFAULT_FX = FALLBACK_FX_RATE;
@@ -118,58 +119,39 @@ export default function DividendView({ toast, viewMode, confirm, mpData, onRefre
   const hasHoldings = holdings.length > 0;
 
   const activeWeights = tunedWeights || strategy?.activeWeights || null;
+  const w = activeWeights || { JEPQ: 0.25, SPYI: 0.20, SCHD: 0.15, QQQI: 0.15, JEPI: 0.15, O: 0.10 };
+  const tierPcts = { core: 0, satellite: 0, anchor: 0 };
+  DIVIDEND_ETFS.forEach(e => { tierPcts[e.tier as keyof typeof tierPcts] += (w[e.code] ?? 0) * 100; });
 
   return (
     <div className="space-y-5">
       {/* ── VIX 레짐 인디케이터 ── */}
-      <div className="glass rounded-2xl border border-white/[0.04] overflow-hidden shadow-xl shadow-black/40">
-        <div className="px-5 py-3.5 flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <h2 className="text-sm font-bold text-slate-200">배당 전략</h2>
-            <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${regimeInfo.color}`}>
-              VIX {regimeInfo.text}
-            </span>
-          </div>
-          <span className="text-[10px] text-slate-500">{regimeInfo.desc}</span>
-        </div>
+      <Panel title="배당 전략" badge={`VIX ${regimeInfo.text}`}>
         <div className="px-5 pb-4">
           <div className="flex gap-1.5">
-            {(() => {
-              const w = activeWeights || { JEPQ: 0.25, SPYI: 0.20, SCHD: 0.15, QQQI: 0.15, JEPI: 0.15, O: 0.10 };
-              const tierPcts = { core: 0, satellite: 0, anchor: 0 };
-              DIVIDEND_ETFS.forEach(e => { tierPcts[e.tier as keyof typeof tierPcts] += (w[e.code] ?? 0) * 100; });
-              return [
-                { label: `Core ${Math.round(tierPcts.core)}%`, color: 'bg-blue-500/10 text-blue-400' },
-                { label: `Satellite ${Math.round(tierPcts.satellite)}%`, color: 'bg-violet-500/10 text-violet-400' },
-                { label: `Anchor ${Math.round(tierPcts.anchor)}%`, color: 'bg-cyan-500/10 text-cyan-400' },
-              ].map(t => (
-                <span key={t.label} className={`text-[9px] px-2 py-0.5 rounded-full ${t.color}`}>{t.label}</span>
-              ));
-            })()}
+            {[
+              { label: `Core ${Math.round(tierPcts.core)}%`, color: 'bg-blue-500/10 text-blue-400' },
+              { label: `Satellite ${Math.round(tierPcts.satellite)}%`, color: 'bg-violet-500/10 text-violet-400' },
+              { label: `Anchor ${Math.round(tierPcts.anchor)}%`, color: 'bg-cyan-500/10 text-cyan-400' },
+            ].map(t => (
+              <span key={t.label} className={`text-[9px] px-2 py-0.5 rounded-full ${t.color}`}>{t.label}</span>
+            ))}
           </div>
-          <p className="text-[9px] text-slate-600 mt-2">
-            Multi-Tier + VIX 동적 배분 · SPYI/QQQI 차세대 콜스프레드 · Smart DRIP 리밸런싱
-          </p>
+          <p className="text-[9px] text-slate-600 mt-2">{regimeInfo.desc} · Multi-Tier + VIX 동적 배분 · Smart DRIP</p>
         </div>
-      </div>
+      </Panel>
 
       {/* ── 투자 입금 ── */}
-      <div className="glass rounded-2xl border border-white/[0.04] overflow-hidden shadow-xl shadow-black/40">
-        <div className="px-5 py-4 border-b border-white/[0.04]">
-          <h2 className="text-sm font-bold text-slate-200">배당 ETF 자동투자</h2>
-          <p className="text-[10px] text-slate-500 mt-0.5">금액만 넣으면 6개 ETF VIX 기반 배분 · Smart DRIP 자동 리밸런싱</p>
-        </div>
+      <Panel title="배당 ETF 자동투자">
         <div className="p-5 space-y-4">
-          {/* 프리셋 버튼 */}
           <div className="grid grid-cols-4 gap-2">
             {BUDGET_PRESETS.map(p => (
-              <button key={p.krw} onClick={() => handleInvest(p.krw)} disabled={investing}
+              <button key={p.value} onClick={() => handleInvest(p.value)} disabled={investing}
                 className="py-3 bg-white/[0.04] hover:bg-emerald-500/10 ring-1 ring-white/[0.06] hover:ring-emerald-500/30 rounded-xl text-sm font-bold text-slate-300 hover:text-emerald-400 transition-all disabled:opacity-50">
                 {p.label}
               </button>
             ))}
           </div>
-          {/* 직접 입력 */}
           <div className="flex gap-2">
             <input
               type="number" min="10000" step="10000" placeholder="직접 입력 (원)"
@@ -181,55 +163,32 @@ export default function DividendView({ toast, viewMode, confirm, mpData, onRefre
               {investing ? '투자 중...' : '투자'}
             </Button>
           </div>
-          {activeWeights ? (
-            <div className="text-[9px] text-center">
-              <span className="text-cyan-400/70">VIX+실적 자동 조정: </span>
-              <span className="text-slate-500">
-                {Object.entries(activeWeights).map(([k, v]) => `${k} ${((v as number) * 100).toFixed(0)}%`).join(' · ')}
-              </span>
-            </div>
-          ) : (
-            <p className="text-[9px] text-slate-600 text-center">JEPQ 25% · SPYI 20% · SCHD 15% · QQQI 15% · JEPI 15% · O 10%</p>
-          )}
+          <p className="text-[9px] text-slate-600 text-center">
+            {activeWeights
+              ? Object.entries(activeWeights).map(([k, v]) => `${k} ${((v as number) * 100).toFixed(0)}%`).join(' · ')
+              : 'JEPQ 25% · SPYI 20% · SCHD 15% · QQQI 15% · JEPI 15% · O 10%'}
+          </p>
         </div>
-      </div>
+      </Panel>
 
       {/* ── 내 현황 (보유 시만) ── */}
       {hasHoldings && (
-        <div className="glass rounded-2xl border border-white/[0.04] overflow-hidden shadow-xl shadow-black/40">
-          <div className="px-5 py-3.5 border-b border-white/[0.04] flex items-center justify-between">
-            <h2 className="text-sm font-bold text-slate-200">내 배당 현황</h2>
-            <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 font-medium">Smart DRIP</span>
-          </div>
+        <Panel title="내 배당 현황" badge="Smart DRIP" badgeColor="emerald">
           <div className="p-5">
-            {/* 핵심 숫자 */}
             <div className="grid grid-cols-2 gap-3 mb-4">
-              <div className="bg-white/[0.03] ring-1 ring-white/[0.06] rounded-xl p-3.5 text-center">
-                <div className="text-[9px] text-slate-500 mb-0.5">투자금</div>
-                <div className="text-base font-bold text-slate-200 tabular-nums">₩{Math.round(investedKrw).toLocaleString()}</div>
-              </div>
-              <div className="bg-white/[0.03] ring-1 ring-white/[0.06] rounded-xl p-3.5 text-center">
-                <div className="text-[9px] text-slate-500 mb-0.5">현재 가치</div>
-                <div className={`text-base font-bold tabular-nums ${returnPct >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                  ₩{Math.round(currentUsd * FX_RATE).toLocaleString()}
-                </div>
-                <div className={`text-[10px] font-medium ${returnPct >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                  {Number.isFinite(returnPct) ? `${returnPct >= 0 ? '+' : ''}${returnPct.toFixed(1)}%` : '-'}
-                </div>
-              </div>
+              <StatCard label="투자금" value={`₩${Math.round(investedKrw).toLocaleString()}`} />
+              <StatCard
+                label="현재 가치"
+                value={`₩${Math.round(currentUsd * FX_RATE).toLocaleString()}`}
+                sub={Number.isFinite(returnPct) ? `${returnPct >= 0 ? '+' : ''}${returnPct.toFixed(1)}%` : '-'}
+                color={returnPct >= 0 ? 'text-emerald-400' : 'text-rose-400'}
+              />
             </div>
             <div className="grid grid-cols-2 gap-3 mb-4">
-              <div className="bg-white/[0.03] ring-1 ring-white/[0.06] rounded-xl p-3.5 text-center">
-                <div className="text-[9px] text-slate-500 mb-0.5">받은 배당</div>
-                <div className="text-sm font-bold text-emerald-400 tabular-nums">${Number.isFinite(divUsd) ? divUsd.toFixed(2) : '0.00'}</div>
-              </div>
-              <div className="bg-white/[0.03] ring-1 ring-white/[0.06] rounded-xl p-3.5 text-center">
-                <div className="text-[9px] text-slate-500 mb-0.5">월 예상 배당</div>
-                <div className="text-sm font-bold text-emerald-400 tabular-nums">₩{Math.round(monthlyDiv * FX_RATE).toLocaleString()}</div>
-              </div>
+              <StatCard label="받은 배당" value={`$${Number.isFinite(divUsd) ? divUsd.toFixed(2) : '0.00'}`} color="text-emerald-400" />
+              <StatCard label="월 예상 배당" value={`₩${Math.round(monthlyDiv * FX_RATE).toLocaleString()}`} color="text-emerald-400" />
             </div>
 
-            {/* 보유 ETF 목록 */}
             <div className="divide-y divide-white/[0.03]">
               {holdings.map((h: any) => (
                 <div key={h.stock_code} className="py-2 px-1 flex items-center justify-between">
@@ -245,24 +204,16 @@ export default function DividendView({ toast, viewMode, confirm, mpData, onRefre
               ))}
             </div>
           </div>
-        </div>
+        </Panel>
       )}
 
-      {/* ── 세후 실수령 계산기 ── */}
+      {/* ── 세금/프로젝션 패널 ── */}
       <TaxSimulatorPanel viewMode={viewMode} toast={toast} />
-
-      {/* ── ETF 과세 효율 스크리너 ── */}
       <TaxScreenerPanel viewMode={viewMode} toast={toast} />
-
-      {/* ── 장기 배당 프로젝션 ── */}
       <ProjectionPanel viewMode={viewMode} toast={toast} />
 
-      {/* ── ETF 유니버스 & 시뮬레이터 ── */}
-      <div className="glass rounded-2xl border border-white/[0.04] overflow-hidden shadow-xl shadow-black/40">
-        <div className="px-5 py-3.5 border-b border-white/[0.04]">
-          <h2 className="text-sm font-bold text-slate-200">ETF 유니버스</h2>
-          <p className="text-[10px] text-slate-500 mt-0.5">배당 + 시세 + 복리 DRIP · 가중 수익률 ~9.0%</p>
-        </div>
+      {/* ── ETF 유니버스 ── */}
+      <Panel title="ETF 유니버스">
         <div className="p-5 space-y-3">
           <div className="space-y-1">
             {DIVIDEND_ETFS.map(etf => {
@@ -293,17 +244,13 @@ export default function DividendView({ toast, viewMode, confirm, mpData, onRefre
               );
             })}
           </div>
-          <p className="text-[9px] text-slate-600 text-center">* 배당소득세 15.4% 차감 · 과거 실적 기반 추정 · 참고가 기준</p>
+          <p className="text-[9px] text-slate-600 text-center">* 배당소득세 15.4% 차감 · 과거 실적 기반 추정</p>
         </div>
-      </div>
+      </Panel>
 
-      {/* ── ETF 일일 순위 (종합수익률) ── */}
+      {/* ── ETF 일일 순위 ── */}
       {rankings.length > 0 && (
-        <div className="glass rounded-2xl border border-white/[0.04] overflow-hidden shadow-xl shadow-black/40">
-          <div className="px-5 py-3.5 border-b border-white/[0.04] flex items-center justify-between">
-            <h2 className="text-sm font-bold text-slate-200">ETF 일일 순위</h2>
-            <span className="text-[9px] text-slate-500">배당+시세 종합</span>
-          </div>
+        <Panel title="ETF 일일 순위">
           <div className="divide-y divide-white/[0.04]">
             {rankings.map((r: any) => (
               <div key={r.code} className="px-5 py-3 flex items-center justify-between">
@@ -314,14 +261,7 @@ export default function DividendView({ toast, viewMode, confirm, mpData, onRefre
                     r.rank === 3 ? 'bg-orange-600/20 text-orange-400' :
                     'bg-slate-700/30 text-slate-500'
                   }`}>{r.rank}</span>
-                  <div>
-                    <span className="text-[11px] font-bold text-slate-200">{r.code}</span>
-                    <span className={`ml-2 text-[9px] px-1.5 py-0.5 rounded ${
-                      r.risk === '낮음' ? 'bg-emerald-500/10 text-emerald-400' :
-                      r.risk === '중' ? 'bg-amber-500/10 text-amber-400' :
-                      'bg-cyan-500/10 text-cyan-400'
-                    }`}>{r.risk}</span>
-                  </div>
+                  <span className="text-[11px] font-bold text-slate-200">{r.code}</span>
                 </div>
                 <div className="text-right">
                   <div className={`text-xs font-bold ${r.totalReturn >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
@@ -332,38 +272,27 @@ export default function DividendView({ toast, viewMode, confirm, mpData, onRefre
               </div>
             ))}
           </div>
-        </div>
+        </Panel>
       )}
 
       {/* ── 종가베팅 현황 ── */}
       {eodBetting && (
-        <div className="glass rounded-2xl border border-white/[0.04] overflow-hidden shadow-xl shadow-black/40">
-          <div className="px-5 py-3.5 border-b border-white/[0.04] flex items-center justify-between">
-            <h2 className="text-sm font-bold text-slate-200">종가베팅</h2>
-            <span className="text-[9px] text-slate-500">마감 급락 → 익일 반등</span>
-          </div>
+        <Panel title="종가베팅">
           <div className="p-5 space-y-4">
-            {/* 7일 통계 */}
-            <div className="flex gap-3">
-              <div className="flex-1 text-center">
-                <div className="text-lg font-black text-slate-200">{eodBetting.stats7d?.count ?? 0}</div>
-                <div className="text-[9px] text-slate-500">7일 매매</div>
-              </div>
-              <div className="flex-1 text-center">
-                <div className={`text-lg font-black ${(eodBetting.stats7d?.winRate ?? 0) >= 50 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                  {eodBetting.stats7d?.winRate ?? 0}%
-                </div>
-                <div className="text-[9px] text-slate-500">승률</div>
-              </div>
-              <div className="flex-1 text-center">
-                <div className={`text-lg font-black ${(eodBetting.stats7d?.avgPnlPct ?? 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                  {(eodBetting.stats7d?.avgPnlPct ?? 0) >= 0 ? '+' : ''}{eodBetting.stats7d?.avgPnlPct ?? 0}%
-                </div>
-                <div className="text-[9px] text-slate-500">평균 수익률</div>
-              </div>
+            <div className="grid grid-cols-3 gap-3">
+              <StatCard label="7일 매매" value={String(eodBetting.stats7d?.count ?? 0)} />
+              <StatCard
+                label="승률"
+                value={`${eodBetting.stats7d?.winRate ?? 0}%`}
+                color={(eodBetting.stats7d?.winRate ?? 0) >= 50 ? 'text-emerald-400' : 'text-rose-400'}
+              />
+              <StatCard
+                label="평균 수익률"
+                value={`${(eodBetting.stats7d?.avgPnlPct ?? 0) >= 0 ? '+' : ''}${eodBetting.stats7d?.avgPnlPct ?? 0}%`}
+                color={(eodBetting.stats7d?.avgPnlPct ?? 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}
+              />
             </div>
 
-            {/* 오늘 매수 종목 */}
             {eodBetting.todayBets?.length > 0 && (
               <div>
                 <div className="text-[10px] font-bold text-slate-400 mb-2">오늘 매수</div>
@@ -379,7 +308,6 @@ export default function DividendView({ toast, viewMode, confirm, mpData, onRefre
               <div className="text-[10px] text-slate-500 text-center">오늘 밤 15:15 매수 예정</div>
             )}
 
-            {/* 어제 매도 결과 */}
             {eodBetting.yesterdayResults?.length > 0 && (
               <div>
                 <div className="text-[10px] font-bold text-slate-400 mb-2">어제 결과</div>
@@ -394,40 +322,27 @@ export default function DividendView({ toast, viewMode, confirm, mpData, onRefre
               </div>
             )}
           </div>
-        </div>
+        </Panel>
       )}
 
       {/* ── 혁신 전략 설명 ── */}
-      <div className="glass rounded-2xl border border-white/[0.04] overflow-hidden shadow-xl shadow-black/40">
-        <div className="px-5 py-3.5 border-b border-white/[0.04]">
-          <h2 className="text-sm font-bold text-slate-200">혁신 전략 v2</h2>
+      <Panel title="혁신 전략 v2">
+        <div className="p-5 space-y-2.5">
+          {[
+            { n: 1, c: 'text-blue-400', t: 'VIX 동적 배분', d: '변동성 낮을 때 성장주, 높을 때 커버드콜 프리미엄 수확' },
+            { n: 2, c: 'text-violet-400', t: 'Smart DRIP 리밸런싱', d: '배당금을 비중 부족 ETF에 집중 → 자동 포트폴리오 균형' },
+            { n: 3, c: 'text-emerald-400', t: '차세대 ETF (SPYI · QQQI)', d: '콜스프레드 전략 → JEPI/QYLD 대비 NAV 보존 + 상승 참여 우수' },
+          ].map(s => (
+            <div key={s.n} className="flex items-start gap-2.5">
+              <span className={`${s.c} text-sm shrink-0 mt-0.5`}>{s.n}</span>
+              <div>
+                <div className="text-[11px] font-bold text-slate-300">{s.t}</div>
+                <div className="text-[10px] text-slate-500">{s.d}</div>
+              </div>
+            </div>
+          ))}
         </div>
-        <div className="p-5 space-y-3">
-          <div className="space-y-2.5">
-            <div className="flex items-start gap-2.5">
-              <span className="text-blue-400 text-sm shrink-0 mt-0.5">1</span>
-              <div>
-                <div className="text-[11px] font-bold text-slate-300">VIX 동적 배분</div>
-                <div className="text-[10px] text-slate-500">변동성 낮을 때 성장주, 높을 때 커버드콜 프리미엄 수확</div>
-              </div>
-            </div>
-            <div className="flex items-start gap-2.5">
-              <span className="text-violet-400 text-sm shrink-0 mt-0.5">2</span>
-              <div>
-                <div className="text-[11px] font-bold text-slate-300">Smart DRIP 리밸런싱</div>
-                <div className="text-[10px] text-slate-500">배당금을 비중 부족 ETF에 집중 → 자동 포트폴리오 균형</div>
-              </div>
-            </div>
-            <div className="flex items-start gap-2.5">
-              <span className="text-emerald-400 text-sm shrink-0 mt-0.5">3</span>
-              <div>
-                <div className="text-[11px] font-bold text-slate-300">차세대 ETF (SPYI · QQQI)</div>
-                <div className="text-[10px] text-slate-500">콜스프레드 전략 → JEPI/QYLD 대비 NAV 보존 + 상승 참여 우수</div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
+      </Panel>
     </div>
   );
 }

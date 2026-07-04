@@ -221,6 +221,20 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
     // ── 환율 1회 조회 — 사이클 전체에서 동일 환율 사용 (환율 drift 방지) ──
     const cycleFxRate = await fetchExchangeRate();
 
+    // ── 🛡️ KIS API 건강 프로브 — AAPL 가격 1회 조회로 점검 모드 감지 ──
+    // KIS가 업데이트/점검 중이면 모든 종목 currentPrice=0 반환 → 전체 사이클 스킵
+    try {
+      const probePrice = await getOverseasPrice('AAPL', 'NASD');
+      if (probePrice.currentPrice <= 0) {
+        logger.warn('🛑 KIS API 건강 프로브 실패: AAPL 가격=0 → API 점검 모드 감지, 전체 사이클 스킵', { component: 'OVERSEAS' });
+        await activateKillSwitch('KIS API 점검 모드 (AAPL 가격=0)', false, SCOPE, isPaper());
+        return;
+      }
+    } catch (probeErr) {
+      logger.warn(`🛑 KIS API 건강 프로브 예외: ${probeErr} → 사이클 스킵`, { component: 'OVERSEAS' });
+      return;
+    }
+
     // ── US 섹터 시그널 로깅 (US 세션일 때만) ──
     const isUSSession = openRegions.has('US') || isUSExtended;
     if (isUSSession) {
@@ -546,8 +560,9 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
           continue;
         }
       } catch { /* 재시도도 실패 */ }
-      // 재시도 실패 → avgPrice 기반 비상 TechResult (최소한 손절 판단 가능)
-      logger.error(`🚨 보유종목 ${code} 가격 조회 완전 실패 → avgPrice($${holding.avgPrice}) 기반 비상 SL 활성`, { component: 'OVERSEAS' });
+      // 재시도 실패 → avgPrice 기반 중립 TechResult (다음 사이클까지 홀드)
+      // 🛡️ API 장애 시 SELL 신호 금지 — 가격 0 상태에서 매도 트리거 방지
+      logger.warn(`⏸️ 보유종목 ${code} 가격 조회 완전 실패 → 중립 홀드 (다음 사이클 대기)`, { component: 'OVERSEAS' });
       techResults.push({
         code: stockMeta.code,
         name: stockMeta.name,
@@ -556,7 +571,7 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
         price: {
           stockCode: stockMeta.code,
           stockName: stockMeta.name,
-          currentPrice: holding.avgPrice, // 최소한 본절 기준으로 SL 체크
+          currentPrice: holding.avgPrice, // 본절 가격 사용 → PnL 0% = 매도 트리거 안 됨
           changePrice: 0,
           changePct: 0,
           volume: 0,
@@ -565,8 +580,8 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
           dayLow: holding.avgPrice,
           dayOpen: holding.avgPrice,
         } as OverseasPrice,
-        signal: 'SELL', // 보수적: 가격 실패 시 매도 신호
-        score: -50,     // 강한 매도 점수
+        signal: 'NEUTRAL', // 🛡️ 중립: API 장애 시 매도 신호 차단
+        score: 0,          // 중립 점수: 어떤 매도 조건에도 걸리지 않음
         rsi: 50,
         adx: 20,
         trendStrength: 'WEAK',
@@ -1110,6 +1125,23 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
     // 매크로 RISK_OFF Lv3 → 트레일 추가 타이트닝
     const macroTighten = macroEvents.some((e) => e.impact === 'RISK_OFF' && e.severity >= 3) ? 1.0 : 0;
     if (macroTighten > 0) effectiveVixRegime.trailTighten += macroTighten;
+
+    // ── 🛡️ 데이터 품질 게이트 — 보유종목 50%+ 폴백 가격이면 매도 평가 전체 스킵 ──
+    // API 부분 장애 시 2차 방어: 다수 종목이 avgPrice 폴백이면 매도 판단 불가
+    if (holdings.size > 0) {
+      const fallbackCount = Array.from(holdings.keys()).filter((code) => {
+        const tech = techResults.find((t) => t.code === code);
+        return !tech || tech.price.changePct === 0 && tech.price.volume === 0;
+      }).length;
+      const fallbackRatio = fallbackCount / holdings.size;
+      if (fallbackRatio >= 0.5) {
+        logger.warn(`🛑 데이터 품질 게이트: 보유종목 ${fallbackCount}/${holdings.size} (${(fallbackRatio * 100).toFixed(0)}%)이 폴백 가격 → 매도 평가 스킵`, { component: 'OVERSEAS' });
+        await activateKillSwitch(`데이터 품질 실패 (${fallbackCount}/${holdings.size} 폴백)`, false, SCOPE, isPaper());
+        // 매도 스킵 → 매수도 당연히 스킵하고 사이클 종료
+        return;
+      }
+    }
+
     const sellResult = await evaluateSells({
       holdings,
       pendingOrderStocks,

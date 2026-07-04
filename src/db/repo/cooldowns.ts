@@ -56,31 +56,29 @@ export async function getRecentLossStocks(_daysBack = 7): Promise<Set<string>> {
     return _lossStocksCache.get(cacheKey) ?? new Set();
   }
   try {
-    // 1) 일반 손실 7일 + 대손실 14일 졸업식 차단
+    // Fix2: UNION ALL로 2 쿼리 → 1 DB 라운드트립 통합
     const { rows } = await queryWithRetry(
-      `SELECT DISTINCT stock_code FROM transaction_chains
-       WHERE status = 'CLOSED'
-         AND is_paper = $1
-         AND (
-           (realized_pnl < -5000  AND closed_at > NOW() - INTERVAL '3 days')
-           OR
-           (realized_pnl < -50000 AND closed_at > NOW() - INTERVAL '7 days')
-         )`,
+      `SELECT DISTINCT stock_code FROM (
+         SELECT stock_code FROM transaction_chains
+         WHERE status = 'CLOSED'
+           AND is_paper = $1
+           AND (
+             (realized_pnl < -5000  AND closed_at > NOW() - INTERVAL '3 days')
+             OR
+             (realized_pnl < -50000 AND closed_at > NOW() - INTERVAL '7 days')
+           )
+         UNION ALL
+         SELECT stock_code FROM orders
+         WHERE side = 'SELL' AND status = 'FILLED'
+           AND is_paper = $1
+           AND created_at > NOW() - INTERVAL '3 days'
+           AND (ai_reasoning LIKE '%손절%' OR ai_reasoning LIKE '%ATR트레일%'
+                OR ai_reasoning LIKE '%FORCE_CLOSE%' OR ai_reasoning LIKE '%시간 손절%')
+       ) sub
+       LIMIT 200`,
       [getCtxIsPaper()],
     );
     const blocked = new Set(rows.map((r: { stock_code: string }) => r.stock_code));
-
-    // 2) ATR/손절 사유로 매도된 종목 7일 추가 차단
-    const { rows: slRows } = await queryWithRetry(
-      `SELECT DISTINCT o.stock_code FROM orders o
-       WHERE o.side = 'SELL' AND o.status = 'FILLED'
-         AND o.is_paper = $1
-         AND o.created_at > NOW() - INTERVAL '3 days'
-         AND (o.ai_reasoning LIKE '%손절%' OR o.ai_reasoning LIKE '%ATR트레일%'
-              OR o.ai_reasoning LIKE '%FORCE_CLOSE%' OR o.ai_reasoning LIKE '%시간 손절%')`,
-      [getCtxIsPaper()],
-    );
-    for (const r of slRows) blocked.add(r.stock_code);
 
     _lossStocksCache.set(cacheKey, blocked);
     return blocked;
