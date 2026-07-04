@@ -11,7 +11,7 @@ import { getKSTNow } from './time.js';
 const COMP = 'AI_TOKEN';
 
 export interface TokenUsageEntry {
-  provider: 'gemini' | 'gpt' | 'claude-api' | 'claude-cli' | 'groq';
+  provider: 'gemini' | 'gpt' | 'claude-api' | 'claude-cli' | 'groq' | 'nvidia';
   model: string;
   inputTokens: number;
   outputTokens: number;
@@ -41,6 +41,11 @@ export function calcGptCost(inputTokens: number, outputTokens: number): number {
 /** Groq (llama-3.3-70b): $0.59/1M input + $0.79/1M output */
 export function calcGroqCost(inputTokens: number, outputTokens: number): number {
   return (inputTokens / 1_000_000) * 0.59 + (outputTokens / 1_000_000) * 0.79;
+}
+
+/** NVIDIA NIM: 무료 티어 → $0 */
+export function calcNvidiaCost(): number {
+  return 0;
 }
 
 /** Claude Haiku 4.5 API: $0.80/1M input + $4.00/1M output */

@@ -11,7 +11,7 @@
  */
 
 import { logger } from '../../utils/logger.js';
-import { logTokenUsage, calcGroqCost, calcClaudeApiCost } from '../../utils/ai-token-logger.js';
+import { logTokenUsage, calcGroqCost, calcClaudeApiCost, calcNvidiaCost } from '../../utils/ai-token-logger.js';
 
 export interface GroqNewsSentiment {
   stockCode: string;
@@ -207,6 +207,63 @@ score 기준: 100(극호재), 50(호재), 0(중립), -50(악재), -100(극악재
   }
 }
 
+// ── NVIDIA NIM 폴백 (Claude/Groq 둘 다 없을 때) ────────────────
+async function analyzeWithNvidiaFallback(
+  items: Array<{ stockCode: string; companyName: string; headlines: string[] }>,
+): Promise<Record<string, { score: number; summary: string }>> {
+  const apiKey = process.env.NVIDIA_API_KEY;
+  if (!apiKey) return {};
+
+  const { default: OpenAI } = await import('openai');
+  const nvidia = new OpenAI({ apiKey, baseURL: 'https://integrate.api.nvidia.com/v1' });
+
+  const prompt = `다음 한국 주식 종목들의 최신 뉴스 헤드라인을 분석해 투자 감성 점수를 매겨주세요.
+
+${items
+  .map(
+    (it) => `종목: ${it.companyName} (${it.stockCode})
+헤드라인:
+${it.headlines.length > 0 ? it.headlines.map((h) => `- ${h}`).join('\n') : '- (헤드라인 없음)'}`,
+  )
+  .join('\n\n')}
+
+각 종목에 대해 JSON으로 응답하세요 (JSON만, 다른 텍스트 금지):
+{
+  "종목코드": { "score": -100~100, "summary": "한줄요약(20자이내)" }
+}
+score 기준: 100(극호재), 50(호재), 0(중립), -50(악재), -100(극악재)`;
+
+  const resp = await nvidia.chat.completions.create({
+    model: 'meta/llama-3.3-70b-instruct',
+    messages: [{ role: 'user', content: prompt }],
+    temperature: 0.1,
+    max_tokens: 1024,
+  });
+
+  if (resp.usage) {
+    logTokenUsage({
+      provider: 'nvidia', model: 'llama-3.3-70b-nim',
+      inputTokens: resp.usage.prompt_tokens ?? 0,
+      outputTokens: resp.usage.completion_tokens ?? 0,
+      costUsd: calcNvidiaCost(),
+      label: 'news',
+    });
+  }
+
+  const text = resp.choices[0]?.message?.content ?? '{}';
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) {
+    logger.warn('NVIDIA NIM 감성 JSON 추출 실패', { component: 'NVIDIA_NEWS', rawPreview: text.slice(0, 200) });
+    return {};
+  }
+  try {
+    return JSON.parse(jsonMatch[0]) as Record<string, { score: number; summary: string }>;
+  } catch {
+    logger.warn('NVIDIA NIM 감성 JSON 파싱 실패', { component: 'NVIDIA_NEWS', rawPreview: text.slice(0, 200) });
+    return {};
+  }
+}
+
 // ── 키워드 기반 간이 감성 분석 (GROQ_API_KEY 없을 때 폴백) ──
 const BULL_KEYWORDS = ['상승', '급등', '반등', '신고가', '호재', '돌파', '매수', '랠리', '회복', '호실적', '어닝서프라이즈', '수주', '계약', 'surge', 'rally', 'record', 'bullish', 'beat'];
 const BEAR_KEYWORDS = ['하락', '급락', '폭락', '악재', '매도', '붕괴', '적자', '하향', '위기', '리스크', '공포', 'plunge', 'crash', 'bearish', 'miss', 'downgrade'];
@@ -234,8 +291,9 @@ export async function analyzeNewsWithGroq(
 ): Promise<GroqNewsSentiment[]> {
   const useClaude = !!process.env.ANTHROPIC_API_KEY;
   const useGroq = !useClaude && !!process.env.GROQ_API_KEY;
-  if (!useClaude && !useGroq) {
-    logger.info('ANTHROPIC/GROQ API_KEY 미설정 → RSS + 키워드 기반 감성 분석 폴백', { component: 'CLAUDE_NEWS' });
+  const useNvidia = !useClaude && !useGroq && !!process.env.NVIDIA_API_KEY;
+  if (!useClaude && !useGroq && !useNvidia) {
+    logger.info('ANTHROPIC/GROQ/NVIDIA API_KEY 미설정 → RSS + 키워드 기반 감성 분석 폴백', { component: 'CLAUDE_NEWS' });
   }
 
   try {
@@ -269,7 +327,13 @@ export async function analyzeNewsWithGroq(
       headlineResults[i].status === 'fulfilled' ? headlineResults[i].value.source : ('rss' as const),
     );
 
-    const groqResult = useClaude ? await analyzeWithClaude(items) : useGroq ? await analyzeWithGroqFallback(items) : {};
+    const groqResult = useClaude
+      ? await analyzeWithClaude(items)
+      : useGroq
+        ? await analyzeWithGroqFallback(items)
+        : useNvidia
+          ? await analyzeWithNvidiaFallback(items)
+          : {};
 
     const fresh: GroqNewsSentiment[] = items.map((it, i) => {
       const gr = groqResult[it.stockCode] ?? keywordSentiment(it.headlines);
@@ -286,7 +350,7 @@ export async function analyzeNewsWithGroq(
     });
 
     const serpCount = fresh.filter((f) => f.newsSource === 'serpapi').length;
-    const engine = useClaude ? 'Claude' : useGroq ? 'Groq' : 'Keyword';
+    const engine = useClaude ? 'Claude' : useGroq ? 'Groq' : useNvidia ? 'NVIDIA' : 'Keyword';
     logger.info(
       `${engine} 뉴스 분석 ${fresh.length}종목 완료 (SerpApi ${serpCount}건, RSS ${fresh.length - serpCount}건, 캐시 ${cached.length}건)`,
       { component: 'CLAUDE_NEWS' },
