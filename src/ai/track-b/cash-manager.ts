@@ -37,8 +37,8 @@ export function getCashReserveRatio(isPaper?: boolean): number {
 
 // ── v2 핵심 상수: 전부 비율(%) 기반, 고정 금액 없음 ──
 
-/** 파킹 검토 시작 현금 비율 — 이 이상이면 파킹 시작 */
-const PARK_TRIGGER_RATIO = 0.3;
+/** 파킹 검토 시작 현금 비율 — 40% 이상 (v-tune: 놀고 있는 현금 최소화, 하락장 가드는 별도) */
+const PARK_TRIGGER_RATIO = 0.4;
 
 /** 파킹 최소 금액: 총자산의 2% (절대 최소 1만원은 소자산 폴백) */
 const MIN_PARK_RATIO = 0.02;
@@ -53,33 +53,68 @@ const MIN_PARK_HOLD_MS = 1 * 60 * 60_000; // 1 hour
 /** Paper 모드 최소 보유 — 1시간 (실전과 유사하게 테스트) */
 const MIN_PARK_HOLD_MS_PAPER = 60 * 60_000; // 1 hour
 
-/** 해제 손실 보호: 손실이면 해제 금지 (파킹은 무조건 본전 이상에서만 해제) */
-const UNPARK_MAX_LOSS_PCT = 0;
+/** 파킹 손절: -2% 도달 시 즉시 해제 (파킹=원금보전, 손실 고착 방지) */
+const PARK_STOP_LOSS_PCT = -2.0;
 
-/** 해제 강제 타임아웃: 6시간 넘으면 손실이어도 해제 (묶이지 않게) */
-const UNPARK_FORCE_TIMEOUT_MS = 6 * 60 * 60_000; // 6 hours
+/** 해제 손실 보호: -2% 이상 손실이 아니면 해제 허용 (기존: 무조건 본전→회복 대기 → 손실 고착) */
+const UNPARK_MAX_LOSS_PCT = PARK_STOP_LOSS_PCT;
 
-/** 수익 자동실현: +5% 이상 수익이면 매수신호 없어도 익절 (v3: 2%→5%, 주도주 상승 더 태우기) */
-const PARK_PROFIT_TAKE_PCT = 5.0;
+/** 해제 강제 타임아웃: 3시간 넘으면 손실이어도 해제 (v-tune: 6h→3h, 묶임 방지) */
+const UNPARK_FORCE_TIMEOUT_MS = 3 * 60 * 60_000; // 3 hours
+
+/** 수익 자동실현: +2% 이상이면 매수신호 없어도 익절 (v-tune: 5%→2%, 대형주 현실적 목표) */
+const PARK_PROFIT_TAKE_PCT = 2.0;
 
 /** 최대 파킹 종목 수 — v2는 1종목 집중 (회전 방지) */
 const MAX_PARK_POSITIONS = 1;
 
-// 기본 5종목 — 오늘의 테마 후보가 없을 때 폴백
+// ── 파킹 후보 v-tune: 국내 고배당/안정 ETF 우선 + 메가캡 폴백 ──
+// 배당 ETF: 원금보전 + 배당수익 (변동성 낮음, 수수료 이상 수익 목표)
+export const DIVIDEND_ETF_PARK_CANDIDATES: Array<{ code: string; name: string; priority: number }> = [
+  { code: '161510', name: 'KODEX 고배당', priority: 1 },
+  { code: '211560', name: 'TIGER 배당성장', priority: 2 },
+  { code: '278530', name: 'KODEX 고배당가치', priority: 3 },
+  { code: '404780', name: 'KODEX CD금리액티브', priority: 4 },  // 초안정 (금리형)
+  { code: '069500', name: 'KODEX 200', priority: 5 },
+  { code: '148020', name: 'KBSTAR 200', priority: 6 },
+];
+
+// 메가캡 폴백 (ETF 거래 불가 시)
 export const MEGA_CAP_PARK_CANDIDATES: Array<{ code: string; name: string }> = [
   { code: '005930', name: '삼성전자' },
   { code: '005380', name: '현대차' },
   { code: '000660', name: 'SK하이닉스' },
-  { code: '012450', name: '한화에어로스페이스' },
   { code: '005935', name: '삼성전자우' },
 ];
+
+/**
+ * 배당 ETF 1등 선정 — 가격 데이터 기반 안정성 순위
+ * 기준: 당일 변동률이 가장 안정적(0% 근처) + 양수인 종목 우선
+ */
+function getBestDividendETF(
+  livePrices: Map<string, CurrentPrice>,
+): { code: string; name: string } | null {
+  const scored = DIVIDEND_ETF_PARK_CANDIDATES
+    .map((etf) => {
+      const p = livePrices.get(etf.code);
+      if (!p || p.currentPrice <= 0) return null;
+      // 안정성 점수: |변동률|이 작을수록 좋고, 양수이면 보너스
+      const stability = 100 - Math.abs(p.changePct) * 20 + (p.changePct > 0 ? 10 : 0);
+      return { ...etf, price: p, stability };
+    })
+    .filter((x): x is NonNullable<typeof x> => x != null)
+    .sort((a, b) => b.stability - a.stability);
+
+  return scored[0] ?? null;
+}
 
 // 레거시 호환 (pipeline.ts에서 참조)
 export const IDLE_PARK_STOCK_CODE = MEGA_CAP_PARK_CANDIDATES[0].code;
 
-// ── 테마 기반 대형주 후보 — 시가총액 안전 기준 통과하는 종목만 ──
+// ── 테마 기반 대형주 + 배당 ETF — 파킹 대상 인식용 ──
 const THEME_LARGE_CAPS = new Set([
   '005930', '000660', '005380', '012450', '005935', // 기본 메가캡
+  '161510', '211560', '278530', '404780', '069500', '148020', // 배당 ETF
   '373220', '006400', '051910',     // 배터리: LG에너지솔루션, 삼성SDI, LG화학
   '034020', '298040', '015760',     // 전력/원전: 두산에너빌리티, 효성중공업, 한전
   '009540', '042660',               // 조선: HD현대중공업, 한화오션
@@ -116,7 +151,10 @@ function getThemeParkCandidates(
     }
   }
 
-  if (!bestTheme) return { candidates: [...MEGA_CAP_PARK_CANDIDATES], hotTheme: null };
+  if (!bestTheme) {
+    // 테마 없으면 배당 ETF 전체 + 메가캡 폴백
+    return { candidates: [...DIVIDEND_ETF_PARK_CANDIDATES, ...MEGA_CAP_PARK_CANDIDATES], hotTheme: null };
+  }
 
   // 핫 테마에서 대형주만 추출
   const themeCluster = THEME_CLUSTERS.find((c) => c.id === bestTheme!.id);
@@ -138,7 +176,8 @@ function getThemeParkCandidates(
   );
 
   return {
-    candidates: [...MEGA_CAP_PARK_CANDIDATES, ...themeCandidates.slice(0, 3)],
+    // 배당 ETF 최우선 → 메가캡 → 테마 (배당 ETF가 안정성 최고)
+    candidates: [...DIVIDEND_ETF_PARK_CANDIDATES, ...MEGA_CAP_PARK_CANDIDATES, ...themeCandidates.slice(0, 3)],
     hotTheme: bestTheme.id,
   };
 }
@@ -181,18 +220,17 @@ function getDynamicParkPct(cashRatio: number, timingScore: number, isPaper: bool
       basePct = 0.08; // 30-40% → 8%
     else return 0;
   } else {
-    // Live 보수적 유지
-    if (cashRatio >= 0.8) basePct = 0.22;
-    else if (cashRatio >= 0.65) basePct = 0.16;
-    else if (cashRatio >= 0.5) basePct = 0.12;
-    else if (cashRatio >= 0.4) basePct = 0.08;
-    else if (cashRatio >= PARK_TRIGGER_RATIO) basePct = 0.05;
+    // Live (v-tune: 적극 배치하되 손절로 보호, 현금 놀림 최소화)
+    if (cashRatio >= 0.8) basePct = 0.18;        // 22→18% (현금 80%면 적극 배치)
+    else if (cashRatio >= 0.65) basePct = 0.12;   // 16→12%
+    else if (cashRatio >= 0.5) basePct = 0.08;    // 12→8%
+    else if (cashRatio >= PARK_TRIGGER_RATIO) basePct = 0.05; // 40~50% → 5%
     else return 0;
   }
 
-  // 타이밍 품질 승수 (0.6x ~ 1.4x)
+  // 타이밍 품질 승수 (0.7x ~ 1.2x) — v-tune: 범위 축소 (파킹=보수적, 큰 포지션 방지)
   const timingMult =
-    timingScore >= 35 ? 1.4 : timingScore >= 20 ? 1.2 : timingScore >= 10 ? 1.0 : timingScore >= 0 ? 0.8 : 0.6;
+    timingScore >= 35 ? 1.2 : timingScore >= 20 ? 1.1 : timingScore >= 10 ? 1.0 : timingScore >= 0 ? 0.8 : 0.7;
 
   const maxRatio = isPaper ? MAX_PARK_RATIO_PAPER : MAX_PARK_RATIO_LIVE;
   const rawPct = basePct * timingMult;
@@ -240,6 +278,22 @@ export function manageCashParking(params: CashManagerParams): TradeDecision[] {
       const name = MEGA_CAP_PARK_CANDIDATES.find((c) => c.code === parkChain.stock_code)?.name
         ?? THEME_CLUSTERS.flatMap((cl) => cl.stocks).find((s) => s.code === parkChain.stock_code)?.name
         ?? parkChain.stock_code;
+
+      // ── 파킹 손절: -2% 도달 시 즉시 해제 (파킹=원금보전, 손실 고착 방지) ──
+      if (pnlPct <= PARK_STOP_LOSS_PCT && holdMs >= 30 * 60_000) { // 30분 최소 보유 후 손절
+        logger.info(`🚫 파킹 손절: ${name} ${pnlPct.toFixed(1)}% (${qty}주) — 원금보전 실패, 즉시 해제`, {
+          component: 'CASH_MANAGER',
+        });
+        decisions.push({
+          action: 'SELL',
+          stock_code: parkChain.stock_code,
+          quantity: qty,
+          price_type: 'MARKET',
+          reasoning: `🚫 파킹 손절: ${name} ${pnlPct.toFixed(1)}% — 손절선(${PARK_STOP_LOSS_PCT}%) 도달`,
+          confidence: 0.95,
+        });
+        continue;
+      }
 
       // ── 수익 자동실현: +2% 이상이면 매수신호 없어도 익절 ──
       if (pnlPct >= PARK_PROFIT_TAKE_PCT && holdMs >= minHoldMs) {
@@ -362,14 +416,18 @@ export function manageCashParking(params: CashManagerParams): TradeDecision[] {
         if (tech.candlePatterns.some((p) => p.bullish && p.strength === 'STRONG')) timingScore += 10;
         else if (tech.candlePatterns.some((p) => p.bullish)) timingScore += 4;
       }
-      // 🎯 테마 보너스: 핫 테마 종목이면 +12점 (테마 모멘텀 활용)
-      const isThemeStock = hotTheme && !MEGA_CAP_PARK_CANDIDATES.some((m) => m.code === c.code);
-      if (isThemeStock) timingScore += 12;
+      // 🎯 배당 ETF 보너스: 안정성 최우선 — 파킹의 본래 목적에 부합
+      const isDividendETF = DIVIDEND_ETF_PARK_CANDIDATES.some((e) => e.code === c.code);
+      if (isDividendETF) timingScore += 20; // 배당 ETF는 항상 우선 (안정성 보장)
+      // 테마 보너스: 핫 테마 종목이면 +8점 (배당 ETF보다 낮게)
+      const isThemeStock = hotTheme && !MEGA_CAP_PARK_CANDIDATES.some((m) => m.code === c.code) && !isDividendETF;
+      if (isThemeStock) timingScore += 8;
       return { ...c, price, tech, timingScore };
     })
-    // 당일 급락 종목 제외 (칼잡이 방지), 상한 9%
-    // paper는 -3% 허용 (대형주 일시 조정도 파킹 학습 기회)
-    .filter((c) => c.price && c.price.changePct >= (isPaper ? -3.0 : -2.0) && c.price.changePct <= 9.0);
+    // 당일 하락 종목 제외 (v-tune: 칼잡이 원천 차단)
+    // Live: 당일 -0.5% 이하면 파킹 대상 제외 (파킹=원금보전, 하락중 매수 금지)
+    // Paper: -2% 허용 (학습 기회)
+    .filter((c) => c.price && c.price.changePct >= (isPaper ? -2.0 : -0.5) && c.price.changePct <= 5.0);
 
   // 타이밍 점수 정렬
   const candidates = scored.sort((a, b) => b.timingScore - a.timingScore);
@@ -381,8 +439,8 @@ export function manageCashParking(params: CashManagerParams): TradeDecision[] {
 
   const best = candidates[0];
 
-  // 타이밍 점수 하한: live=0, paper=-5 (대형주 소폭 눌림도 파킹 허용)
-  const timingFloor = isPaper ? -5 : 0;
+  // 타이밍 점수 하한: live=10, paper=5 (v-tune: 기술적 확인 없는 파킹 차단)
+  const timingFloor = isPaper ? 5 : 10;
   if (best.timingScore < timingFloor) {
     logger.info(`💤 파킹 보류 — 타이밍 부적합 (최고=${best.timingScore}점, 기준=${timingFloor})`, {
       component: 'CASH_MANAGER',
