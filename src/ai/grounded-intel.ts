@@ -15,6 +15,22 @@ import { callVertexGemini } from '../utils/vertex-gemini.js';
 const _lastCheck = new Map<string, number>();
 const COOLDOWN_MS = 3 * 3600_000; // v26: 3시간 쿨다운 (1시간→3시간, 비용 66% 절감)
 
+// ── 일일 그라운딩 호출 카운터 (무료 쿼터 안전장치) ──
+let _groundedCallCount = 0;
+let _groundedCountDate = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+const GROUNDED_DAILY_LIMIT = 1200; // 무료 1500의 80%
+
+function checkGroundedQuota(): boolean {
+  const today = new Date().toISOString().slice(0, 10);
+  if (today !== _groundedCountDate) {
+    _groundedCallCount = 0;
+    _groundedCountDate = today;
+  }
+  if (_groundedCallCount >= GROUNDED_DAILY_LIMIT) return false;
+  _groundedCallCount++;
+  return true;
+}
+
 export interface GroundedSignal {
   code: string;
   action: 'URGENT_SELL' | 'SELL_WARNING' | 'POSITIVE' | 'NEUTRAL';
@@ -51,13 +67,25 @@ export async function checkHoldingsNews(
 
   const codeList = toCheck.map((t) => `${t.code}(${t.name})`).join(', ');
 
+  // 일일 쿼터 체크 (grounded 호출만 카운트)
+  let useGrounded = true;
+  if (!checkGroundedQuota()) {
+    useGrounded = false;
+    logger.warn(`⚠️ 그라운딩 일일 한도 도달 (${GROUNDED_DAILY_LIMIT}회) → grounded=false 폴백`, { component: 'GROUNDED_INTEL' });
+    try {
+      const { sendTelegramMessage } = await import('../notifications/telegram.js');
+      sendTelegramMessage(`⚠️ 그라운딩 일일 쿼터 ${GROUNDED_DAILY_LIMIT}회 도달 — grounded=false 폴백 중`).catch(() => {});
+    } catch {}
+  }
+
   try {
     const result = await callVertexGemini(
-      `You are a financial news analyst for US stock trading. Current time: ${new Date().toISOString()}.
+      `You are a financial news analyst for US stock trading.
 Analyze ONLY breaking news, earnings reports, FDA decisions, lawsuits, analyst downgrades, or other material events from the LAST 24 HOURS.
 Do NOT analyze price movements or technical indicators.
 Respond in JSON array format only.`,
-      `Check for any material news in the last 24 hours for these stocks: ${codeList}
+      `Current time: ${new Date().toISOString()}.
+Check for any material news in the last 24 hours for these stocks: ${codeList}
 
 For each stock, respond with:
 {"code":"TICKER","action":"URGENT_SELL|SELL_WARNING|POSITIVE|NEUTRAL","headline":"one-line summary","reasoning":"brief explanation","confidence":0.0-1.0}
@@ -70,7 +98,7 @@ Rules:
 - Only flag REAL news events, not speculation
 
 Respond as JSON array: [...]`,
-      { temperature: 0.1, maxOutputTokens: 500, label: '그라운딩-보유종목뉴스', grounded: true },
+      { temperature: 0.1, maxOutputTokens: 500, label: '그라운딩-보유종목뉴스', grounded: useGrounded },
     );
 
     // 쿨다운 갱신
@@ -121,18 +149,30 @@ export async function checkMacroEvents(): Promise<MacroSignal[]> {
   if (now - _lastMacroCheck < MACRO_COOLDOWN_MS) return [];
   _lastMacroCheck = now;
 
+  // 일일 쿼터 체크
+  let useGrounded = true;
+  if (!checkGroundedQuota()) {
+    useGrounded = false;
+    logger.warn(`⚠️ 그라운딩 일일 한도 도달 (${GROUNDED_DAILY_LIMIT}회) → grounded=false 폴백`, { component: 'GROUNDED_INTEL' });
+    try {
+      const { sendTelegramMessage } = await import('../notifications/telegram.js');
+      sendTelegramMessage(`⚠️ 그라운딩 일일 쿼터 ${GROUNDED_DAILY_LIMIT}회 도달 — grounded=false 폴백 중`).catch(() => {});
+    } catch {}
+  }
+
   try {
     const result = await callVertexGemini(
-      `You are a macro economist monitoring US market-moving events. Current time: ${new Date().toISOString()}.
+      `You are a macro economist monitoring US market-moving events.
 Only report events from the LAST 6 HOURS that could move the US stock market significantly.`,
-      `What major economic events, Fed announcements, geopolitical developments, or market-moving news happened in the last 6 hours?
+      `Current time: ${new Date().toISOString()}.
+What major economic events, Fed announcements, geopolitical developments, or market-moving news happened in the last 6 hours?
 
 Respond as JSON array:
 [{"event":"brief description","impact":"RISK_OFF|RISK_ON|NEUTRAL","severity":1-3,"reasoning":"why this matters"}]
 
 severity: 1=minor, 2=moderate (+/-1% market), 3=major (+/-2%+ market)
 If nothing significant, respond: []`,
-      { temperature: 0.1, maxOutputTokens: 400, label: '그라운딩-매크로이벤트', grounded: true },
+      { temperature: 0.1, maxOutputTokens: 400, label: '그라운딩-매크로이벤트', grounded: useGrounded },
     );
 
     const cleaned = result

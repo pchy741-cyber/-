@@ -1,3 +1,12 @@
+// ── HTTP keep-alive 전역 설정 (KIS, SerpApi, FRED 등 fetch() 자동 적용) ──
+import { Agent, setGlobalDispatcher } from 'undici';
+setGlobalDispatcher(new Agent({
+  keepAliveTimeout: 30_000,
+  keepAliveMaxTimeout: 60_000,
+  connections: 16,
+  pipelining: 1,
+}));
+
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
@@ -26,7 +35,7 @@ import { setupMonitoring } from './automation/gcp-monitoring.js';
 import { backtestRoutes } from './backtest/api.js';
 import { initRedisCache } from './cache/redis.js';
 import { runWithMode } from './config/context.js';
-import { baseIsPaper, config, setTradingModeOverride } from './config/index.js';
+import { baseIsPaper, config, reportConfigDrift, setTradingModeOverride } from './config/index.js';
 import {
   checkDb,
   checkDbWithRetry,
@@ -245,6 +254,9 @@ async function bootstrap() {
   }
 
   logger.info('========================================');
+
+  // 0. Config-drift 리포트 — env가 코드 기본값을 덮어쓰는지 감지
+  reportConfigDrift();
 
   // 1. PostgreSQL 연결 확인 (최대 12회 재시도, 15초 간격 = 최대 3분 대기)
   //    Cloud SQL 기상 소요시간 2~3분 — 기존 20초(4×5s)로는 부족

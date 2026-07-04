@@ -84,6 +84,23 @@ if (!parsed.success) {
 
 const env = parsed.data;
 
+// ── Config-drift 리포터: Zod default vs env 실측값 비교 (부팅 시 1회) ──
+export function reportConfigDrift(): void {
+  const driftDefaults: Record<string, number | string> = {
+    RISK_MAX_TOTAL_INVESTED_PCT: 80,
+    RISK_MAX_CONCURRENT_POSITIONS: 12,
+    RISK_MAX_DAILY_TRADES: 5,
+    RISK_MAX_DAILY_DRAWDOWN_KRW: 3_000_000,
+    RISK_MAX_POSITION_KRW: 10_000_000,
+  };
+  for (const [key, codeDefault] of Object.entries(driftDefaults)) {
+    const envVal = process.env[key];
+    if (envVal !== undefined && String(codeDefault) !== envVal) {
+      console.warn(`⚠️ Config drift: ${key} code=${codeDefault} env=${envVal}`);
+    }
+  }
+}
+
 // ── 거래 모드 런타임 오버라이드 (DB 기반, 재시작 없이 전환) ──
 let _tradingModeOverride: 'paper' | 'live' | null = null;
 
