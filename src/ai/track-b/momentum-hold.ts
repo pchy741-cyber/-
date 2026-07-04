@@ -35,7 +35,7 @@ export interface MomentumHoldResult {
  *
  * 안전 한도 (force sell — 모멘텀 무시):
  * 1. holdCount >= maxHold → 동적 한도 초과 시 반드시 매도
- *    curPeak >= 10%: 6회(12분), >= 5%: 5회(10분), 기본: 3회(6분)
+ *    curPeak >= 10%: 9회(18분), >= 5%: 7회(14분), 기본: 4회(8분)
  * 2. pnlPct < 0.5% → 수익 거의 소진 → 본절 방어 우선
  * 3. curPeak >= 15% && dropFromPeakAbs >= 5% → 대형 고점 이탈 = 진짜 반전
  *
@@ -48,7 +48,7 @@ export interface MomentumHoldResult {
  *
  * 러너: 3/5 충족 (2개 실패 허용 — 폭발 모멘텀 보호)
  * 고점 8%+ 비러너: 4/5 충족 (1개 실패 허용 — 이미 검증된 추세)
- * 기본 비러너: 5/5 전부 충족
+ * 기본 비러너: 4/5 충족 (1개 실패 허용 — 조기 매도 방지)
  */
 export async function shouldMomentumHold(input: MomentumHoldInput): Promise<MomentumHoldResult> {
   const { tech, pnlPct, curPeak, dropFromPeakAbs, chainId, stockCode, isRunner } = input;
@@ -69,7 +69,8 @@ export async function shouldMomentumHold(input: MomentumHoldInput): Promise<Mome
   // ── 안전 한도 체크 (force sell) ──
 
   // 1. 최대 홀드 횟수 초과 (고점이 높을수록 pullback 구간 길어짐 → 추가 관찰)
-  const maxHold = curPeak >= 10 ? 6 : curPeak >= 5 ? 5 : 3;
+  // v20: 한도 확대 — 이전 6/5/3 → 9/7/4 (정상 눌림에서 조기 매도 방지 → 평균 수익 확대)
+  const maxHold = curPeak >= 10 ? 9 : curPeak >= 5 ? 7 : 4;
   if (meta.holdCount >= maxHold) {
     logger.info(
       `🔋→📉 모멘텀홀드 해제: ${stockCode} 최대 횟수(${meta.holdCount}/${maxHold}) 도달 → 매도 진행`,
@@ -135,8 +136,9 @@ export async function shouldMomentumHold(input: MomentumHoldInput): Promise<Mome
     failReasons.push(`vol=${tech.volumeRatio.toFixed(1)}<0.6`);
   }
 
-  // 러너: 3/5 (폭발 모멘텀 보호), 고점8%+ 비러너: 4/5 (검증된 추세), 기본: 5/5
-  const requiredPass = isRunner ? 3 : curPeak >= 8 ? 4 : 5;
+  // 러너: 3/5 (폭발 모멘텀 보호), 고점8%+ 비러너: 4/5 (검증된 추세), 기본: 4/5
+  // v20: 비러너 기본 5→4 (5/5 = 사실상 홀드 불가 → 조기 매도 과다)
+  const requiredPass = isRunner ? 3 : curPeak >= 8 ? 4 : 4;
   if (passCount < requiredPass) {
     logger.info(
       `🔋→📉 모멘텀홀드 해제: ${stockCode} 조건 미충족 ${passCount}/${requiredPass} [${failReasons.join(', ')}] → 매도 진행`,

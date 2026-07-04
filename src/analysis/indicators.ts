@@ -291,6 +291,11 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
     momentumScore += p.bullish ? pts : -pts;
   }
 
+  // v20: RSI 다이버전스 반영 — 가격↑ + RSI↓ = 모멘텀 약화 조기 경보
+  const rsiDiv = detectRsiDivergence(closes, [...rsiValues].reverse(), 14);
+  if (rsiDiv.type === 'BEARISH') momentumScore -= 5;
+  else if (rsiDiv.type === 'BULLISH') momentumScore += 3;
+
   momentumScore = Math.max(-25, Math.min(25, momentumScore));
 
   // ── 카테고리 3: 변동성/돌파 (Volatility) — cap ±25 ──
@@ -464,7 +469,7 @@ export function analyzeTechnicals(candles: OHLCV[]): TechnicalSummary | null {
     pullbackSignal,
     volumeConsistency,
     fibResult: calcFibonacciLevels(candles, current),
-    rsiDivergence: detectRsiDivergence(closes, [...rsiValues].reverse(), 14),
+    rsiDivergence: rsiDiv,
     // v4: 카테고리별 점수 (자기학습 피드백용)
     catTrend: trendScore,
     catMomentum: momentumScore,

@@ -237,7 +237,7 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
       if (_rTech.volumeRatio >= 2.0) s++;     // v16.2: 1.5→2.0 복원 (1.5x는 평범한 거래량)
       if (_rTech.volumeRatio >= 3.0) s++;     // v16.2: 2.5→3.0 (진짜 폭발만 추가 가산)
       if (_rTech.adx14 >= 25) s++;
-      if (_rTech.rsi14 >= 45 && _rTech.rsi14 <= 75) s++;  // v16.2: 78→75 복원 (과매수 진입 차단)
+      if (_rTech.rsi14 >= 45 && _rTech.rsi14 <= 78) s++;  // v20: 75→78 (강한 모멘텀 러너 RSI 78까지 허용)
       if (price.currentPrice > _rTech.sma5 && _rTech.sma5 > _rTech.sma20) s++;
       if (_rTech.macdCrossover === 'BULLISH') s++;
       return s >= 2; // v16.2: 항상 2개+ 조건 필요 (5%+ 1개 조건=거짓양성 과다)
@@ -388,9 +388,10 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
         const sniperTypeMatch = triggerSrcForTrail?.match(/SNIPER[_\s]?(\w+)/);
         const chainSniperType = sniperTypeMatch?.[1] ?? null;
         const learnedMult = chainSniperType ? learnedParams.trailingStopMultipliers[chainSniperType] : undefined;
-        // v11: -2.5→-1.8 (전수조사: -2.5% 너무 느슨 → 0.2-0.4%/거래 수익 유실)
-        // 러너(폭발 모멘텀)만 -3.0으로 넓게 유지 (56,555건 연구 — 러너는 더 넓은 트레일이 수익)
-        let baseTrailDrop = learnedMult != null ? -Math.max(0.5, Math.min(5.0, learnedMult)) : isRunner ? -3.0 : -1.8;
+        // v20: 트레일링 드롭 확대 — 손익비 개선 (이전 -1.8/-3.0 → -2.5/-4.0)
+        // 너무 타이트한 트레일 = 정상 눌림에서 조기 매도 → 평균 수익 축소
+        // 러너(폭발 모멘텀): -4.0 (넓게 유지), 일반: -2.5 (적정 숨고르기 허용)
+        let baseTrailDrop = learnedMult != null ? -Math.max(0.5, Math.min(5.0, learnedMult)) : isRunner ? -4.0 : -2.5;
 
         // 캔들+볼륨 보정 (근거: VWAP 연구 Sharpe 3.99, 캔들 종가 기준)
         const _trailChartData = chartData?.get(chain.stock_code);
@@ -407,6 +408,9 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
             if (_trailTech.rsi14 < 40) baseTrailDrop *= 0.85; // RSI 약세
           }
         }
+
+        // v20: 부분 익절(PROFIT_TAKING) 후 트레일링 완화 — 나머지 포지션 추가 상승 여유
+        if (chain.status === 'PROFIT_TAKING') baseTrailDrop -= 2.0;
 
         // 고점 수익률 비례 숨고르기 허용폭 확장
         const momentumBonus = curPeak >= 15 ? 4.5 : curPeak >= 10 ? 3.0 : curPeak >= 5 ? 1.5 : 0;
@@ -427,7 +431,7 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
             currentPrice: price.currentPrice,
           });
           if (mhResult.shouldHold) {
-            const _mhMax = curPeak >= 10 ? 6 : curPeak >= 5 ? 5 : 3;
+            const _mhMax = curPeak >= 10 ? 9 : curPeak >= 5 ? 7 : 4;
             logger.info(
               `🔋 모멘텀홀드: ${chain.stock_code} TrailingStop 억제 (${mhResult.holdCount}/${_mhMax}) | 고점+${curPeak.toFixed(1)}%→현재+${pnlPct.toFixed(1)}% | ${mhResult.reason}`,
               { component: 'MOMENTUM_HOLD' },
@@ -771,7 +775,8 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
     }
 
     // AI 약세 전환 + 수익 구간 → 빠른 수익 확정
-    if (realtimeAiScore > 0 && realtimeAiScore < 55 && pnlPct > 1.0 && !isRunner) {
+    // v20: <55→<45 (AI 점수 55 미만 = 중립~약세 → 과도한 조기 익절 방지, 45 미만만 실제 약세)
+    if (realtimeAiScore > 0 && realtimeAiScore < 45 && pnlPct > 1.0 && !isRunner) {
       // 러너: AI 약세에도 기술적 모멘텀 우선
       effectiveTp = Math.min(effectiveTp, Math.max(pnlPct - 0.5, 1.0));
     }
