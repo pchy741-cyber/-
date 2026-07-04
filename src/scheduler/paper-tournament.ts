@@ -92,6 +92,19 @@ export async function runPaperTournament(): Promise<void> {
           if (filtered.length > 0) {
             await tradeExecutor.processDecisions(filtered, mode, 'TOURNAMENT');
             executed += filtered.length;
+
+            // 전략별 일일 성과 기록 (tournament_results)
+            const buys = filtered.filter((d) => d.action === 'BUY' || d.action === 'AVERAGE_DOWN').length;
+            const sells = filtered.filter((d) => ['SELL', 'PARTIAL_SELL', 'FORCE_CLOSE'].includes(d.action)).length;
+            await pool.query(
+              `INSERT INTO tournament_results (strategy_mode, run_date, decisions_count, buys, sells)
+               VALUES ($1, CURRENT_DATE, $2, $3, $4)
+               ON CONFLICT (strategy_mode, run_date)
+               DO UPDATE SET decisions_count = tournament_results.decisions_count + $2,
+                             buys = tournament_results.buys + $3,
+                             sells = tournament_results.sells + $4`,
+              [mode, filtered.length, buys, sells],
+            ).catch((e) => logger.warn(`토너먼트 성과 기록 실패: ${e}`, { component: COMP }));
           }
         } catch (e) {
           logger.warn(`📊 ${mode} 토너먼트 실패: ${e}`, { component: COMP });

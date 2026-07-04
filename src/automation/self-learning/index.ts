@@ -511,12 +511,12 @@ export async function getLearnedInsightsForPrompt(): Promise<string> {
 }
 
 export async function autoApplyInsights(insights: LearnedInsight[]): Promise<void> {
-  // Live 모드 점진적 자동적용 (신뢰도 0.75+ & 표본 8건+, blendWeight로 변경폭 조절)
-  // Paper: 신뢰도 0.7+ (기존 유지)
-  // Live:  신뢰도 0.75+ & sampleCount 8+ (blendWeight 점진 적용)
+  // Paper/Live 동일 신뢰도 기준 (데이터스누핑 방지 — 저품질 인사이트 노이즈 차단)
+  // Paper: 신뢰도 0.75+, sampleCount 5+ (v-tune: 0.7→0.75, 0→5)
+  // Live:  신뢰도 0.75+, sampleCount 8+ (blendWeight 점진 적용)
   const isPaper = getCtxIsPaper();
-  const minConfidence = isPaper ? 0.7 : 0.75;
-  const minSamples = isPaper ? 0 : 8;
+  const minConfidence = 0.75;
+  const minSamples = isPaper ? 5 : 8;
   const toApply = insights.filter(
     (i) => i.confidence >= minConfidence && i.paramChange && !i.isApplied && (i.sampleCount ?? 0) >= minSamples,
   );
@@ -581,12 +581,16 @@ export async function autoApplyInsights(insights: LearnedInsight[]): Promise<voi
       }
       const oldVal = current[field];
       // 점진적 가중치: Live 낮은 신뢰도 인사이트는 변경폭 축소
-      // confidence 0.75 + samples 8 → ~60% 적용, 0.85 + 15 → 100% 적용
+      // v-tune: WFE(Walk-Forward Efficiency) 반영 추가 — 과적합 인사이트 영향 축소
+      // confidence 0.75 + samples 8 + WFE 0.5 → ~40% 적용, 0.85 + 15 + WFE 1.0 → 100% 적용
       let effectiveValue = value;
       if (!isPaper && field !== 'mode' && typeof value === 'number' && typeof oldVal === 'number') {
         const confWeight = Math.max(0, Math.min((insight.confidence - 0.7) / (0.85 - 0.7), 1)); // 0.7→0, 0.85→1
         const sampleWeight = Math.max(0, Math.min(((insight.sampleCount ?? 0) - 5) / (15 - 5), 1)); // 5→0, 15→1
-        const blendWeight = confWeight * 0.6 + sampleWeight * 0.4;
+        // WFE: details에 저장된 walk-forward efficiency (없으면 0.7 기본값)
+        const wfe = Number((insight as any).details?.wfe ?? 0.7);
+        const wfeWeight = Math.max(0, Math.min((wfe - 0.3) / (1.0 - 0.3), 1)); // 0.3→0, 1.0→1
+        const blendWeight = confWeight * 0.45 + sampleWeight * 0.3 + wfeWeight * 0.25;
         effectiveValue = Math.round((oldVal + (value - oldVal) * blendWeight) * 100) / 100;
       }
       if (oldVal === effectiveValue) continue;

@@ -58,7 +58,7 @@ export async function loadPipelineData(): Promise<PipelineData> {
         getActiveWatchlist(),
         getOpenChains(getCtxIsPaper()),
         getActiveStrategy(),
-        getRecentLossStocks(getCtxIsPaper() ? 1 : 5), // Paper: 1일 쿨다운 (7일 → 적극적 데이터 수집)
+        getRecentLossStocks(getCtxIsPaper() ? 0 : 5), // Paper: 쿨다운 0일 (전수조사 극대화 — 데이터 수집 우선)
         getRecentManuallySoldStocks(24),
       ]);
     } catch (dbErr: unknown) {

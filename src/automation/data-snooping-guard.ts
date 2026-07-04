@@ -366,18 +366,31 @@ async function runStatisticalAudit(auditData: string): Promise<SnoopingReport> {
     }
   } catch { /* ignore */ }
 
-  // 파라미터 진동 체크
+  // 파라미터 진동 체크 + 자동 차단 (순환 과적합 원천 차단)
   try {
     const { rows } = await getPool().query(
-      `SELECT (param_change->>'field') AS field, COUNT(*) AS cnt
+      `SELECT (param_change->>'field') AS field, COUNT(*) AS cnt, is_paper
        FROM learned_insights
        WHERE param_change IS NOT NULL AND last_updated >= NOW() - INTERVAL '14 days'
-       GROUP BY (param_change->>'field')
-       HAVING COUNT(*) >= 4`,
+         AND COALESCE(is_dismissed, false) IS NOT TRUE
+       GROUP BY (param_change->>'field'), is_paper
+       HAVING COUNT(*) >= 3`,
     );
     for (const r of rows) {
-      findings.push(`${r.field} 파라미터 ${r.cnt}회 변경시도 (14일) — 학습 불안정`);
+      findings.push(`${r.field} 파라미터 ${r.cnt}회 변경시도 (14일, ${r.is_paper ? 'Paper' : 'Live'}) — 학습 불안정`);
       recommendations.push(`${r.field} 변경 주기를 최소 7일로 제한`);
+      // 3회 이상 진동 → 미적용 인사이트 자동 dismiss (순환 과적합 원천 차단)
+      if (Number(r.cnt) >= 3) {
+        await getPool().query(
+          `UPDATE learned_insights SET is_dismissed = true, dismissed_at = NOW()
+           WHERE (param_change->>'field') = $1
+             AND is_paper = $2
+             AND COALESCE(is_applied, false) IS NOT TRUE
+             AND COALESCE(is_dismissed, false) IS NOT TRUE`,
+          [r.field, r.is_paper],
+        ).catch(() => {});
+        findings.push(`→ ${r.field} 미적용 인사이트 자동 dismiss 처리됨 (순환 과적합 차단)`);
+      }
     }
   } catch { /* ignore */ }
 

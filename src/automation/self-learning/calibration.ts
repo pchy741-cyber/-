@@ -7,6 +7,26 @@ import type { InsightParamChange, LearnedInsight } from './index.js';
 // 모듈 레벨 stale timestamp 제거 — 사용 시점에서 생성
 // (이전: const now = new Date().toISOString() 모듈 로드 시 1회 평가 → 장기 운영 시 고정)
 
+/** 동적 Holdout Gap — 최근 30일 거래빈도 기반 (빈도 높으면 7일, 낮으면 21일, 기본 14일) */
+async function getAdaptiveHoldoutDays(isPaper: boolean): Promise<number> {
+  try {
+    const { rows } = await getPool().query(
+      `SELECT COUNT(*)::int AS cnt FROM score_accuracy
+       WHERE recorded_at >= NOW() - INTERVAL '30 days' AND is_paper = $1`,
+      [isPaper],
+    );
+    const tradeCount = rows[0]?.cnt ?? 0;
+    // 50건+/30일: 충분한 데이터 → holdout 7일 (표본 크기 보장)
+    // 20건 미만: 데이터 부족 → holdout 21일 (안전하게)
+    // 그 사이: 기본 14일
+    if (tradeCount >= 50) return 7;
+    if (tradeCount < 20) return 21;
+    return 14;
+  } catch {
+    return 14; // 기본값
+  }
+}
+
 // SQL injection 방지: 동적 컬럼명을 화이트리스트 매핑으로 안전하게 치환
 const SAFE_COLUMN_MAP: Record<string, string> = {
   stop_loss_pct: 'stop_loss_pct',
@@ -21,22 +41,24 @@ function safeColumnName(field: string): string | null {
 
 export async function analyzeBuyThreshold(): Promise<LearnedInsight[]> {
   try {
+    const isPaper = getCtxIsPaper();
     const { rows: cfgRows } = await getPool().query(
       `SELECT buy_threshold FROM strategy_config WHERE is_active = true AND is_paper = $1 LIMIT 1`,
-      [getCtxIsPaper()],
+      [isPaper],
     );
     const currentThreshold: number = cfgRows[0]?.buy_threshold ?? 58;
 
-    // v9-fix: 데이터 스누핑 방지 — 최근 14일 데이터 제외 (holdout gap)
-    // 학습 데이터(14~90일 전)와 적용 기간(최근 14일)을 분리하여 오버피팅 방지
+    // 동적 Holdout Gap — 거래 빈도 기반 (빈도 높으면 7일, 낮으면 21일, 기본 14일)
+    const holdoutDays = await getAdaptiveHoldoutDays(isPaper);
+
     const { rows } = await getPool().query(
       `SELECT entry_score, outcome, realized_pnl_pct, market_regime
          FROM score_accuracy
-        WHERE recorded_at BETWEEN NOW() - INTERVAL '90 days' AND NOW() - INTERVAL '14 days'
+        WHERE recorded_at BETWEEN NOW() - INTERVAL '90 days' AND NOW() - INTERVAL '${holdoutDays} days'
           AND entry_score IS NOT NULL
           AND is_paper = $1
         ORDER BY entry_score`,
-      [getCtxIsPaper()],
+      [isPaper],
     );
 
     if (rows.length < 30) return []; // v9: 15→30 최소 샘플 강화
@@ -477,7 +499,8 @@ export async function validatePromotedInsights(): Promise<void> {
 
     const winRate = wins / total;
 
-    if (winRate >= 0.55) {
+    // v-tune: 검증 기준 55%→50% (유효 인사이트 탈락 방지, 50%=랜덤 이상이면 가치 있음)
+    if (winRate >= 0.50) {
       await getPool().query(
         `UPDATE learned_insights
          SET live_validation_status = 'validated',
@@ -512,7 +535,7 @@ export async function validatePromotedInsights(): Promise<void> {
 /**
  * 적용된 인사이트의 효과를 추적하고 악화 시 자동 롤백
  *
- * 적용 후 14일 경과한 인사이트만 평가:
+ * 적용 후 21일 경과한 인사이트만 평가 (v-tune: 14→21일, 표본 신뢰성 강화):
  * - score_accuracy 테이블에서 적용 전후 승률/PnL 비교
  * - 성과 악화 판정: 승률 10%p 이상 하락 OR 평균 PnL 부호 반전
  * - 악화 시: strategy_config 롤백 + is_applied=false + is_dismissed=true
@@ -524,7 +547,7 @@ export async function evaluateAppliedInsights(): Promise<void> {
       `SELECT * FROM learned_insights
        WHERE is_applied = true
          AND applied_at IS NOT NULL
-         AND applied_at <= NOW() - INTERVAL '14 days'
+         AND applied_at <= NOW() - INTERVAL '21 days'
          AND COALESCE(is_dismissed, false) IS NOT TRUE
          AND is_paper = $1`,
       [isPaper],
@@ -536,26 +559,26 @@ export async function evaluateAppliedInsights(): Promise<void> {
       const appliedAt = insight.applied_at;
       if (!appliedAt) continue;
 
-      // 적용 전 14일간의 성과
+      // 적용 전 21일간의 성과
       const { rows: beforeRows } = await getPool().query(
         `SELECT
            COUNT(*)::int AS total,
            SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END)::int AS wins,
            ROUND(AVG(realized_pnl_pct)::numeric, 2) AS avg_pnl
          FROM score_accuracy
-         WHERE recorded_at BETWEEN ($1::timestamptz - INTERVAL '14 days') AND $1::timestamptz
+         WHERE recorded_at BETWEEN ($1::timestamptz - INTERVAL '21 days') AND $1::timestamptz
            AND is_paper = $2`,
         [appliedAt, isPaper],
       );
 
-      // 적용 후 14일간의 성과
+      // 적용 후 21일간의 성과
       const { rows: afterRows } = await getPool().query(
         `SELECT
            COUNT(*)::int AS total,
            SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END)::int AS wins,
            ROUND(AVG(realized_pnl_pct)::numeric, 2) AS avg_pnl
          FROM score_accuracy
-         WHERE recorded_at BETWEEN $1::timestamptz AND ($1::timestamptz + INTERVAL '14 days')
+         WHERE recorded_at BETWEEN $1::timestamptz AND ($1::timestamptz + INTERVAL '21 days')
            AND is_paper = $2`,
         [appliedAt, isPaper],
       );

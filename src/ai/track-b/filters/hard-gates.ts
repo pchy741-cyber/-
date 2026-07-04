@@ -100,7 +100,7 @@ export function isHardBlocked(input: HardGateInput): boolean {
     }
     if (lossBlockedCodes?.has(code)) {
       const aiForCooldown = aiScoreMap.get(code) ?? 0;
-      const threshold = isPaper ? 60 : 80;
+      const threshold = isPaper ? 45 : 80; // Paper: 45점 이상이면 쿨다운 해제 (전수조사 극대화)
       if (!Number.isFinite(aiForCooldown) || aiForCooldown < threshold) {
         logger.info(`  🚫 ${code}(${name}): 손절 쿨다운 (폴백)`, { component: 'TRACK_B' });
         return true;
@@ -161,7 +161,7 @@ export function isHardBlocked(input: HardGateInput): boolean {
 
   // 3) 구조적 패배 종목: 90일 내 승률 < 25%, 5건 이상 — 대형주 면제
   const stockWr = winRates?.get(code);
-  const minWinRate = isPaper ? 0.15 : 0.25;
+  const minWinRate = isPaper ? 0.10 : 0.25; // Paper: 10%까지 허용 (극단 케이스 학습)
   if (stockWr && stockWr.sampleCount >= 5 && stockWr.winRate < minWinRate) {
     // v22.3: 대형주는 봇 성능 문제이지 종목 문제 아님 → 면제
     if (!MEGA_CAP_PRIORITY_CODES.has(code)) {
