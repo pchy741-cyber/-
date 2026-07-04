@@ -1,3 +1,4 @@
+-- DESTRUCTIVE_APPROVED
 -- 114: overseas_state 데드 키 정리 v2
 -- partialtpdone_* (partial_tp_stage_*로 대체됨) 잔류 키 제거
 -- 048에서 prefix-less 키 삭제했지만 mode-prefixed 버전(p_/l_) 잔류 가능
