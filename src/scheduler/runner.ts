@@ -257,10 +257,12 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 📊 일일 학습 리포트 — 매일 18:30 KST (paper + live, Telegram)
+  // 📊 일일 학습 리포트 — 평일 18:30 KST (paper + live, Telegram) — Claude Haiku 호출
   cron.schedule(
-    '30 18 * * *',
-    () => {
+    '30 18 * * 1-5',
+    async () => {
+      const { isTradingDay } = await import('../utils/holidays.js');
+      if (!isTradingDay()) return; // 공휴일 AI 토큰 절약
       import('../automation/daily-learning-report.js')
         .then((m) => m.runDailyLearningReport())
         .catch((e) => logger.error(`일일 리포트 실패: ${e}`, { component: 'SCHEDULER' }));
@@ -584,7 +586,9 @@ export function startScheduler(): void {
   // 🌅 08:55 — 개장 워밍업: 차트+시세 선행 캐시 + Gemini 사전 분석
   cron.schedule(
     '55 8 * * 1-5',
-    () => {
+    async () => {
+      const { isTradingDay } = await import('../utils/holidays.js');
+      if (!isTradingDay()) return; // 공휴일 Gemini 토큰 절약
       resetOpeningBellDaily(); // 전일 캐시 무효화 (일간 차트 데이터 리셋)
       logger.info('🌅 개장 워밍업 시작 (08:55)', { component: 'SCHEDULER' });
       warmupOpeningBell().catch((e) => logger.error(`워밍업 실패: ${e}`, { component: 'SCHEDULER' }));
