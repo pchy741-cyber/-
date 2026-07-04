@@ -324,13 +324,19 @@ function stopWatchdog(chainId: string, reason: string): void {
 }
 
 async function saveState(entry: WatchdogEntry): Promise<void> {
-  await getPool()
-    .query(
-      `INSERT INTO system_state (key, value) VALUES ($1, $2)
-       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
-      [`watchdog_${entry.chainId}`, JSON.stringify(entry)],
-    )
-    .catch((e) => logger.debug(`워치독 상태 저장 실패: ${(e as Error).message}`, { component: 'WATCHDOG' }));
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      await getPool().query(
+        `INSERT INTO system_state (key, value) VALUES ($1, $2)
+         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+        [`watchdog_${entry.chainId}`, JSON.stringify(entry)],
+      );
+      return;
+    } catch (e) {
+      if (attempt === 0) await new Promise((r) => setTimeout(r, 500));
+      else logger.error(`워치독 상태 저장 2회 실패 (재시작 시 SL/TP 보호 손실 위험): ${(e as Error).message}`, { component: 'WATCHDOG' });
+    }
+  }
 }
 
 async function removeState(chainId: string): Promise<void> {

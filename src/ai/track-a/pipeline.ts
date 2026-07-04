@@ -238,9 +238,9 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
       : geminiBase || undefined;
     const customGptPrompt = strategy?.gpt_prompt;
 
-    // 3. 종목별 차트 데이터 수집 — 5개씩 병렬 (kisRateLimiter가 내부 12/sec 관리)
+    // 3. 종목별 차트 데이터 수집 — 8개씩 병렬 (kisRateLimiter가 내부 12/sec 관리)
     const chartData = new Map<string, DailyCandle[]>();
-    const CHART_BATCH = 5;
+    const CHART_BATCH = 8;
     for (let i = 0; i < allStocks.length; i += CHART_BATCH) {
       const batch = allStocks.slice(i, i + CHART_BATCH);
       const results = await Promise.allSettled(batch.map((w) => getDailyChart(w.stock_code, 30)));

@@ -390,9 +390,12 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
       const latestCache = getSessionCache(region);
       const settled = await Promise.allSettled(
         batch.map(async (stock) => {
-          const price = await getOverseasPrice(stock.code, stock.exchange);
           const cached = latestCache?.techCache.get(stock.code);
-          const chart = cached ? null : await getOverseasDailyChart(stock.code, stock.exchange, 40);
+          // 가격+차트 병렬 조회 (캐시 히트 시 차트 스킵)
+          const [price, chart] = await Promise.all([
+            getOverseasPrice(stock.code, stock.exchange),
+            cached ? Promise.resolve(null) : getOverseasDailyChart(stock.code, stock.exchange, 40),
+          ]);
           return { stock, price, chart, cached };
         }),
       );

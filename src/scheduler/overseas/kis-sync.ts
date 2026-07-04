@@ -106,10 +106,12 @@ export async function syncHoldingsFromKIS(): Promise<void> {
         const debounceKey = `${modePrefix()}sync_sell_pending_${code}`;
         const now = Date.now();
 
-        // Clean up stale in-memory debounce entries
+        // Clean up stale in-memory debounce entries (안전한 반복: 삭제 대상 선수집)
+        const staleKeys: string[] = [];
         for (const [k, ts] of _sellDebounceMap) {
-          if (now - ts > SELL_DEBOUNCE_TTL_MS) _sellDebounceMap.delete(k);
+          if (now - ts > SELL_DEBOUNCE_TTL_MS) staleKeys.push(k);
         }
+        for (const k of staleKeys) _sellDebounceMap.delete(k);
 
         const inMemoryFirstSeen = _sellDebounceMap.get(code);
         const { rows: debounceRows } = await getPool()

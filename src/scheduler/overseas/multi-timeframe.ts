@@ -43,12 +43,19 @@ function setCache(code: string, result: MultiTFResult): void {
 // v10.8: 만료 엔트리 주기적 정리 (메모리 누수 방지)
 setInterval(() => {
   const now = Date.now();
+  const toDelete: string[] = [];
   for (const [k, v] of cache) {
-    if (now > v.expires) cache.delete(k);
+    if (now > v.expires) toDelete.push(k);
   }
+  for (const k of toDelete) cache.delete(k);
+  // 캐시 상한 초과 시 가장 오래된 엔트리만 제거 (O(n) sort 방지)
   if (cache.size > MTF_CACHE_MAX) {
-    const sorted = [...cache.entries()].sort((a, b) => a[1].expires - b[1].expires);
-    for (let i = 0; i < sorted.length - MTF_CACHE_MAX; i++) cache.delete(sorted[i][0]);
+    let oldest = '';
+    let oldestExp = Infinity;
+    for (const [k, v] of cache) {
+      if (v.expires < oldestExp) { oldest = k; oldestExp = v.expires; }
+    }
+    if (oldest) cache.delete(oldest);
   }
 }, 30 * 60 * 1000).unref();
 

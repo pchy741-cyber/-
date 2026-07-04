@@ -415,12 +415,20 @@ export class TradeExecutor {
           return;
         }
 
-      // 리스크 체크 (ETF 파킹/바닥낚시는 Kill Switch만 확인 — 포지션/한도 체크 제외)
+      // 리스크 체크 (ETF 파킹: Kill Switch + 포지션 상한만 확인)
       if (skipGates) {
         if (isKillSwitchActiveForMode('KR', isPaperSnapshot)) {
           releaseBuyIntent(stockCode);
           logger.warn(`🛑 Kill Switch 활성 → ETF 파킹 스킵: ${stockCode}`, { component: 'EXECUTOR' });
           return;
+        }
+        // 파킹도 단일 포지션 상한 검증 (과도한 익스포저 방지)
+        const positionKrw = estimatedPrice * gatedQuantity;
+        if (positionKrw > config.risk.maxPositionKrw * 1.5) {
+          const capped = Math.floor((config.risk.maxPositionKrw * 1.5) / estimatedPrice);
+          if (capped <= 0) { releaseBuyIntent(stockCode); return; }
+          logger.warn(`📊 파킹 포지션 캡: ${gatedQuantity}→${capped}주 (상한 ${Math.round(config.risk.maxPositionKrw * 1.5 / 10000)}만원)`, { component: 'EXECUTOR' });
+          gatedQuantity = capped;
         }
       } else {
         const riskCheck = await riskEngine.validateOrder({
@@ -648,18 +656,29 @@ export class TradeExecutor {
             chainCreated = true;
 
             // 워치독: 체결 즉시 TP 지정가 + SL 10초 폴링 (0-180초 무보호 갭 제거)
-            await startWatchdog({
-              chainId,
-              stockCode,
-              avgBuyPrice: fill.filledPrice,
-              quantity: filledQty,
-              stopLossPct,
-              takeProfitPct: targetProfitPct,
-              isPaper: isPaperSnapshot,
-              strategyMode: mode,
-            }).catch((e) =>
-              logger.warn(`워치독 시작 실패 (무시): ${stockCode} ${(e as Error).message}`, { component: 'EXECUTOR' }),
-            );
+            // 워치독 시작: 실패 시 1회 재시도 (SL/TP 즉시 보호 필수)
+            for (let wdAttempt = 0; wdAttempt < 2; wdAttempt++) {
+              try {
+                await startWatchdog({
+                  chainId,
+                  stockCode,
+                  avgBuyPrice: fill.filledPrice,
+                  quantity: filledQty,
+                  stopLossPct,
+                  takeProfitPct: targetProfitPct,
+                  isPaper: isPaperSnapshot,
+                  strategyMode: mode,
+                });
+                break;
+              } catch (e) {
+                if (wdAttempt === 0) {
+                  logger.warn(`워치독 시작 실패 → 500ms 후 재시도: ${stockCode}`, { component: 'EXECUTOR' });
+                  await new Promise((r) => setTimeout(r, 500));
+                } else {
+                  logger.error(`🚨 워치독 2회 시작 실패 — SL/TP 보호 없이 진행: ${stockCode} ${(e as Error).message}`, { component: 'EXECUTOR' });
+                }
+              }
+            }
 
             // ScaleIn 3분할: 체인 생성 성공 후 2차(60s)/3차(120s) 분할 진입 스케줄
             if (useScaleIn && secondTranche > 0) {
@@ -1676,9 +1695,9 @@ export class TradeExecutor {
             isPaper: boolean;
           };
 
-          // 스케줄 후 5분 이상 지났으면 복구 대상
+          // 스케줄 후 90초 이상 지났으면 복구 대상 (원래 setTimeout 60초 + 여유 30초)
           const scheduledMs = new Date(marker.scheduledAt).getTime();
-          if (Date.now() - scheduledMs < 3 * 60_000) {
+          if (Date.now() - scheduledMs < 90_000) {
             // 아직 원래 setTimeout이 실행 중일 수 있음 → 스킵
             continue;
           }

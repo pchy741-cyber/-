@@ -69,6 +69,11 @@ export async function reconcilePendingOrders(): Promise<void> {
       try {
         const fill = fillResult.status === 'fulfilled' ? fillResult.value : null;
 
+        // UNCONFIRMED 상태 명시적 처리: 체결 확인되면 로그 강화
+        if (fill && fill.filledQty > 0 && (order as any).kis_status === 'UNCONFIRMED') {
+          logger.info(`🔄 UNCONFIRMED→체결 확인: ${order.stock_code} ${order.side} ${fill.filledQty}주 @${fill.filledPrice}원`, { component: 'RECONCILER' });
+        }
+
         if (fill && fill.filledQty > 0) {
           const isFullFill = fill.filledQty >= fill.orderQty;
           await updateOrderByKisOrderNo(kisOrderNo, {
@@ -406,14 +411,19 @@ async function _reconcileKisSyncExternalSells(
       }
     }
 
-    // 매도 체결가 추정 (현재 시세 → 폴백 평단)
+    // 매도 체결가 추정 (현재 시세 → 1회 재시도 → 폴백 평단)
     let sellPrice = 0;
-    try {
-      sellPrice = (await getCurrentPrice(stockCode)).currentPrice;
-    } catch {
-      /* ignore */
+    for (let priceAttempt = 0; priceAttempt < 2 && sellPrice <= 0; priceAttempt++) {
+      try {
+        sellPrice = (await getCurrentPrice(stockCode)).currentPrice;
+      } catch {
+        if (priceAttempt === 0) await new Promise((r) => setTimeout(r, 500));
+      }
     }
-    if (sellPrice <= 0) sellPrice = snap.avgBuyPrice;
+    if (sellPrice <= 0) {
+      sellPrice = snap.avgBuyPrice;
+      logger.warn(`KIS_SYNC 외부매도: ${stockCode} 시세 조회 실패 → 평단가 ${sellPrice}원 폴백 (손익 부정확 가능)`, { component: 'RECONCILER' });
+    }
 
     const pnl = sellPrice * (1 - KR_FEE.SELL_FEE_PCT) * snap.quantity - snap.avgBuyPrice * (1 + KR_FEE.BUY_FEE_PCT) * snap.quantity;
     const pnlPct = snap.avgBuyPrice > 0 ? (((sellPrice - snap.avgBuyPrice) / snap.avgBuyPrice) * 100).toFixed(2) : '?';
