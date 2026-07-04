@@ -3,6 +3,9 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Button } from '@/components/ui';
 import { api, pc, FALLBACK_FX_RATE } from '../lib/utils';
+import TaxSimulatorPanel from '../panels/TaxSimulatorPanel';
+import TaxScreenerPanel from '../panels/TaxScreenerPanel';
+import ProjectionPanel from '../panels/ProjectionPanel';
 
 interface DividendViewProps {
   toast: (msg: string, type?: 'ok' | 'err' | 'info') => void;
@@ -244,6 +247,15 @@ export default function DividendView({ toast, viewMode, confirm, mpData, onRefre
           </div>
         </div>
       )}
+
+      {/* ── 세후 실수령 계산기 ── */}
+      <TaxSimulatorPanel viewMode={viewMode} toast={toast} />
+
+      {/* ── ETF 과세 효율 스크리너 ── */}
+      <TaxScreenerPanel viewMode={viewMode} toast={toast} />
+
+      {/* ── 장기 배당 프로젝션 ── */}
+      <ProjectionPanel viewMode={viewMode} toast={toast} />
 
       {/* ── ETF 유니버스 & 시뮬레이터 ── */}
       <div className="glass rounded-2xl border border-white/[0.04] overflow-hidden shadow-xl shadow-black/40">

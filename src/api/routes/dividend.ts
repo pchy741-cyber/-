@@ -9,6 +9,8 @@ import { Hono } from 'hono';
 import { fetchExchangeRate } from '../../automation/macro-data.js';
 import { FALLBACK_FX_RATE } from '../../config/constants.js';
 import { getPool } from '../../db/client.js';
+import { simulateDividendTax } from '../../dividend/tax-calculator.js';
+import { projectDividendGrowth } from '../../dividend/projection.js';
 import { logger } from '../../utils/logger.js';
 import { resolveIsPaper, resolveRequestMode, validateLivePin } from '../guards/live-pin.js';
 
@@ -949,6 +951,171 @@ dividendRoutes.post('/dividend/auto-setup-paper', async (c) => {
       fx,
       etfs: results,
     });
+  } catch (e: any) {
+    return c.json({ error: 'Internal server error' }, 500);
+  }
+});
+
+// ═══════════════════════════════════════════════════════
+// 배당 세후 실수령 시뮬레이터
+// ═══════════════════════════════════════════════════════
+
+dividendRoutes.get('/dividend/tax-simulator', async (c) => {
+  try {
+    const investmentKrw = Number(c.req.query('investment') || 1_000_000_000);
+    let weightedYieldPct = Number(c.req.query('yield') || 0);
+    const earnedIncomeKrw = Number(c.req.query('earned') || 0);
+    const otherFinancialKrw = Number(c.req.query('otherFinancial') || 0);
+    const insuranceType = (c.req.query('insurance') || 'local') as 'local' | 'employee';
+
+    // yield 미지정 시 보유 포트폴리오 가중평균 배당률 조회
+    if (!weightedYieldPct || weightedYieldPct <= 0) {
+      try {
+        const isPaper = resolveRequestMode(c);
+        const { rows } = await getPool().query(
+          `SELECT dh.quantity, dh.avg_price, dw.dividend_yield
+           FROM dividend_holdings dh
+           JOIN dividend_watchlist dw ON dh.stock_code = dw.stock_code
+           WHERE dh.is_paper = $1 AND dh.quantity > 0 AND dw.dividend_yield > 0`,
+          [isPaper],
+        );
+        let totalValue = 0;
+        let weightedSum = 0;
+        for (const r of rows) {
+          const val = Number(r.quantity) * Number(r.avg_price);
+          totalValue += val;
+          weightedSum += val * Number(r.dividend_yield);
+        }
+        weightedYieldPct = totalValue > 0 ? weightedSum / totalValue : 8.5;
+      } catch {
+        weightedYieldPct = 8.5;
+      }
+    }
+
+    const result = simulateDividendTax({
+      investmentKrw, weightedYieldPct, earnedIncomeKrw, otherFinancialKrw, insuranceType,
+    });
+    return c.json(result);
+  } catch (e: any) {
+    return c.json({ error: 'Internal server error' }, 500);
+  }
+});
+
+// ═══════════════════════════════════════════════════════
+// ETF 과세 효율 스크리너
+// ═══════════════════════════════════════════════════════
+
+dividendRoutes.get('/dividend/tax-screener', async (c) => {
+  try {
+    const otherFinancialKrw = Number(c.req.query('otherFinancial') || 0);
+    const insuranceType = (c.req.query('insurance') || 'local') as 'local' | 'employee';
+
+    const { rows } = await getPool().query(
+      `SELECT stock_code, name, dividend_yield, expense_ratio, aum_billion,
+              COALESCE(tax_standard_rate, 1.0) AS tax_standard_rate
+       FROM dividend_watchlist
+       WHERE dividend_yield IS NOT NULL AND dividend_yield > 0
+       ORDER BY dividend_yield DESC`,
+    );
+
+    const ONE_BILLION = 1_000_000_000;
+    const screened = rows.map((r: any) => {
+      const surfaceYield = Number(r.dividend_yield);
+      const taxStdRate = Number(r.tax_standard_rate);
+      const effectiveTaxableYield = surfaceYield * taxStdRate;
+      const availableThreshold = 20_000_000 - otherFinancialKrw;
+      const maxSafeInvestment = effectiveTaxableYield > 0
+        ? Math.floor(Math.max(0, availableThreshold) / (effectiveTaxableYield / 100))
+        : 0;
+
+      // 10억 기준 계산
+      const sim = simulateDividendTax({
+        investmentKrw: ONE_BILLION,
+        weightedYieldPct: effectiveTaxableYield,
+        earnedIncomeKrw: 0,
+        otherFinancialKrw,
+        insuranceType,
+      });
+
+      return {
+        code: r.stock_code,
+        name: r.name || r.stock_code,
+        surfaceYield: +surfaceYield.toFixed(1),
+        taxStandardRate: +taxStdRate.toFixed(2),
+        effectiveTaxableYield: +effectiveTaxableYield.toFixed(1),
+        maxSafeInvestment,
+        annualDivAt1B: sim.grossAnnualDiv,
+        netDivAt1B: sim.netAnnualDiv,
+        effectiveTaxRate: sim.effectiveTaxRate,
+        aum: r.aum_billion ? +Number(r.aum_billion).toFixed(1) : null,
+        expenseRatio: r.expense_ratio ? +Number(r.expense_ratio).toFixed(2) : null,
+      };
+    });
+
+    // 안전 투자 한도 높은 순 정렬
+    screened.sort((a: any, b: any) => b.maxSafeInvestment - a.maxSafeInvestment);
+
+    return c.json(screened);
+  } catch (e: any) {
+    return c.json({ error: 'Internal server error' }, 500);
+  }
+});
+
+// ═══════════════════════════════════════════════════════
+// 장기 배당 프로젝션
+// ═══════════════════════════════════════════════════════
+
+dividendRoutes.get('/dividend/projection', async (c) => {
+  try {
+    let initialKrw = Number(c.req.query('initial') || 0);
+    let dividendYieldPct = Number(c.req.query('yield') || 0);
+    const monthlyContribution = Number(c.req.query('monthly') || 1_000_000);
+    const years = Math.min(30, Math.max(1, Number(c.req.query('years') || 10)));
+    const priceGrowthPct = Number(c.req.query('growth') || 5);
+    const reinvestDividends = c.req.query('reinvest') !== 'false';
+    const inflationPct = Number(c.req.query('inflation') || 2.5);
+
+    // 기본값: 보유 포트폴리오 현재가치 + 가중평균 배당률
+    if (!initialKrw || !dividendYieldPct) {
+      try {
+        const isPaper = resolveRequestMode(c);
+        const fx = await fetchExchangeRate().catch(() => FALLBACK_FX_RATE);
+        const { rows } = await getPool().query(
+          `SELECT dh.quantity, dh.avg_price, dw.dividend_yield
+           FROM dividend_holdings dh
+           JOIN dividend_watchlist dw ON dh.stock_code = dw.stock_code
+           WHERE dh.is_paper = $1 AND dh.quantity > 0 AND dw.dividend_yield > 0`,
+          [isPaper],
+        );
+        let totalValueUsd = 0;
+        let weightedSum = 0;
+        for (const r of rows) {
+          const val = Number(r.quantity) * Number(r.avg_price);
+          totalValueUsd += val;
+          weightedSum += val * Number(r.dividend_yield);
+        }
+        if (!initialKrw && totalValueUsd > 0) initialKrw = Math.round(totalValueUsd * fx);
+        if (!dividendYieldPct && totalValueUsd > 0) dividendYieldPct = weightedSum / totalValueUsd;
+      } catch { /* use defaults */ }
+    }
+    if (!initialKrw) initialKrw = 100_000_000;
+    if (!dividendYieldPct) dividendYieldPct = 8.5;
+
+    // 실효세율: 간이 계산 (Feature1 연동)
+    const taxSim = simulateDividendTax({
+      investmentKrw: initialKrw,
+      weightedYieldPct: dividendYieldPct,
+      earnedIncomeKrw: 0,
+      otherFinancialKrw: 0,
+      insuranceType: 'local',
+    });
+    const taxRate = taxSim.effectiveTaxRate;
+
+    const result = projectDividendGrowth({
+      initialKrw, monthlyContribution, years, dividendYieldPct,
+      priceGrowthPct, reinvestDividends, inflationPct, taxRate,
+    });
+    return c.json(result);
   } catch (e: any) {
     return c.json({ error: 'Internal server error' }, 500);
   }

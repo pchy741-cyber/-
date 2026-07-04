@@ -17,8 +17,8 @@ export const tradeRoutes = new Hono();
 tradeRoutes.get('/trades', async (c) => {
   const market = c.req.query('market'); // 'KR' | 'OVERSEAS' | undefined
   const isOverseasFilter = market === 'OVERSEAS';
-  const defaultLimit = isOverseasFilter ? 2000 : 100;
-  const maxLimit = isOverseasFilter ? 5000 : 500;
+  const defaultLimit = isOverseasFilter ? 2000 : 500;
+  const maxLimit = isOverseasFilter ? 5000 : 2000;
   const rawLimit = Number(c.req.query('limit') ?? defaultLimit);
   const limit = Math.min(Math.max(1, Number.isFinite(rawLimit) ? rawLimit : defaultLimit), maxLimit);
   const viewIsPaper = resolveRequestMode(c);
@@ -313,8 +313,8 @@ tradeRoutes.patch('/withdraw/:id/status', async (c) => {
 tradeRoutes.get('/trades/daily-summary', async (c) => {
   const viewIsPaper = resolveRequestMode(c);
   const tradeMode = viewIsPaper ? 'paper' : 'live';
-  const rawDays = Number(c.req.query('days') ?? 30);
-  const days = Math.min(Math.max(1, Number.isFinite(rawDays) ? rawDays : 30), 365);
+  const rawDays = Number(c.req.query('days') ?? 90);
+  const days = Math.min(Math.max(1, Number.isFinite(rawDays) ? rawDays : 90), 365);
 
   try {
     // 일자별 매도 실현손익 집계 (FIFO 기반 — 체인 realized_pnl 사용)
@@ -517,7 +517,7 @@ tradeRoutes.get('/stats/win-rate-bands', async (c) => {
         COUNT(*) FILTER (WHERE outcome = 'BREAK_EVEN') AS break_evens,
         ROUND(AVG(realized_pnl_pct)::NUMERIC, 2)       AS avg_pnl
       FROM score_accuracy
-      WHERE recorded_at >= NOW() - INTERVAL '30 days'
+      WHERE recorded_at >= NOW() - INTERVAL '90 days'
         AND entry_score IS NOT NULL
         AND is_paper = $1
       GROUP BY band
@@ -536,7 +536,7 @@ tradeRoutes.get('/stats/win-rate-bands', async (c) => {
       avgPnlPct: Number(r.avg_pnl),
     }));
 
-    return c.json({ ok: true, bands, period: '30days' });
+    return c.json({ ok: true, bands, period: '90days' });
   } catch (err: any) {
     return c.json({ error: 'Internal server error' }, 500);
   }

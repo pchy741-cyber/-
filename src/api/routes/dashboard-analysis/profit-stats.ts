@@ -4,6 +4,7 @@ import { getDinnerMoneyStats } from '../../../automation/profit-withdraw.js';
 import { KR_FEE, OVERSEAS_FEE_PCT } from '../../../config/constants.js';
 import { getPool } from '../../../db/client.js';
 import { resolveRequestMode } from '../../guards/live-pin.js';
+import { computeStrategyHealth } from '../../../risk/strategy-health.js';
 
 export const profitStatsRoutes = new Hono();
 
@@ -129,7 +130,7 @@ profitStatsRoutes.get('/profit-stats', async (c) => {
 profitStatsRoutes.get('/equity-curve', async (c) => {
   try {
     const rawDays = Number(c.req.query('days') ?? 30);
-    const days = Math.min(90, Math.max(7, Number.isFinite(rawDays) ? rawDays : 30));
+    const days = Math.min(365, Math.max(7, Number.isFinite(rawDays) ? rawDays : 30));
     const isPaper = resolveViewIsPaper(c);
     const { rows } = await getPool().query(
       `SELECT
@@ -195,6 +196,22 @@ profitStatsRoutes.get('/market/tax-estimate', async (c) => {
       totalSellAmount: Number(r.total_sell_amount ?? 0),
     });
   } catch (err: any) {
+    return c.json({ error: 'Internal server error' }, 500);
+  }
+});
+
+// ── 전략 종합 성과 평가 (Strategy Health) ──
+profitStatsRoutes.get('/strategy-health', async (c) => {
+  try {
+    const rawDays = Number(c.req.query('days') ?? 90);
+    const days = Math.min(365, Math.max(7, Number.isFinite(rawDays) ? rawDays : 90));
+    const target = Number(c.req.query('target') ?? 5);
+    const monthlyTarget = Number.isFinite(target) ? target : 5;
+    const isPaper = resolveViewIsPaper(c);
+
+    const health = await computeStrategyHealth(isPaper, days, monthlyTarget);
+    return c.json(health);
+  } catch {
     return c.json({ error: 'Internal server error' }, 500);
   }
 });

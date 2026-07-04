@@ -1,5 +1,6 @@
 import { logger } from '../../utils/logger.js';
 import { logTokenUsage, calcGptCost } from '../../utils/ai-token-logger.js';
+import { callVertexGemini } from '../../utils/vertex-gemini.js';
 
 export interface OverseasStockInput {
   code: string;
@@ -134,7 +135,8 @@ JSON 배열로만 응답 (HOLD는 생략, code 대소문자 정확히):
 confidence: 0.0~1.0`;
 
 /**
- * GPT-4o-mini 기반 미국주식 매매 판단 (Gemini 대체 — 안정적 API)
+ * 해외주식 AI 매매 판단
+ * v21: Gemini AI Studio(무료) 우선 → GPT-4o-mini 폴백
  */
 export async function analyzeOverseasWithAI(
   stocks: OverseasStockInput[],
@@ -149,16 +151,13 @@ export async function analyzeOverseasWithAI(
     earningsRisk?: string[];
     breadthPct?: number;
     sectorMomentum?: string;
-    // 매크로 데이터 (FRED)
     fedFundsRate?: number;
     cpiYoY?: number;
     treasuryYield10Y?: number;
     yieldCurveSpread?: number;
     macroRiskScore?: number;
     macroReasons?: string[];
-    // 뉴스 센티먼트
     topHeadlines?: string[];
-    // v12.3: 뉴스 테마/감성 AI 프롬프트 주입
     newsSentiment?: string;
     newsSentimentScore?: number;
     newsTheme?: string;
@@ -169,9 +168,28 @@ export async function analyzeOverseasWithAI(
 ): Promise<OverseasAIDecision[]> {
   const context = buildContext(stocks, availableCash, holdingCount, perfSummary, userInsights, marketContext);
 
+  // ── 1차: Gemini AI Studio (무료, RPD 250 한도) ──
+  if (process.env.GEMINI_API_KEY) {
+    try {
+      const text = await callVertexGemini(SYSTEM_PROMPT, context, {
+        temperature: 0.1,
+        maxOutputTokens: 2000,
+        label: '해외-분석',
+      });
+      const decisions = parseAIResponse(text);
+      if (decisions.length > 0) {
+        logger.info(`🆓 해외 분석 Gemini 완료 (${decisions.length}건)`, { component: 'OVERSEAS_AI' });
+        return decisions;
+      }
+    } catch (e) {
+      logger.warn(`Gemini 해외분석 실패 → GPT 폴백: ${(e as Error).message}`, { component: 'OVERSEAS_AI' });
+    }
+  }
+
+  // ── 2차: GPT-4o-mini 폴백 ──
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
-    logger.warn('해외 AI 분석 스킵: OPENAI_API_KEY 미설정', { component: 'OVERSEAS_AI' });
+    logger.warn('해외 AI 분석 스킵: GEMINI/OPENAI API_KEY 미설정', { component: 'OVERSEAS_AI' });
     return [];
   }
 

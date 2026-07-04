@@ -5,9 +5,10 @@
  *   1. SerpApi Google News (SERPAPI_KEY 있으면) — 구조화, 정확
  *   2. Google News RSS 폴백 — API 키 불필요
  *
- * - Groq Llama 3.3 70B로 감성 분석 → -100~100 점수
- * - 배치 처리: 전 종목을 한 번의 Groq 호출로 처리 (rate limit 보호)
- * - 1시간 캐시 (SerpApi 월 250 한도 보호)
+ * - Claude Haiku로 감성 분석 → -100~100 점수 (폴백: Groq → NVIDIA → 키워드)
+ * - 배치 처리: 전 종목을 한 번의 AI 호출로 처리 (rate limit 보호)
+ * - 장중 15분/장외 1시간 캐시 (SerpApi 월 250 한도 보호)
+ * - v21: snippet/본문 추출 → 프롬프트에 포함 (AI 추가 비용 없음)
  */
 
 import { logger } from '../../utils/logger.js';
@@ -20,6 +21,12 @@ export interface GroqNewsSentiment {
   summary: string;
   articleCount: number;
   newsSource: 'serpapi' | 'rss';
+}
+
+/** 뉴스 항목: 제목 + 선택적 본문 요약 */
+interface NewsItem {
+  title: string;
+  snippet?: string;
 }
 
 // 황금시간(장중): 15분 캐시, 장외: 1시간 캐시
@@ -35,8 +42,17 @@ const CACHE_TTL_MS = 60 * 60 * 1000; // 기본값 (하위호환)
 const MAX_BATCH_STOCKS = 10; // 뉴스 배치 최대 종목 수 (rate limit 보호)
 const _cache = new Map<string, { data: GroqNewsSentiment; fetchedAt: number }>();
 
+/** 헤드라인 포맷: snippet 있으면 "- 제목: 요약(100자)", 없으면 "- 제목" */
+function formatHeadline(item: NewsItem): string {
+  if (item.snippet) {
+    const truncated = item.snippet.length > 100 ? item.snippet.slice(0, 100) + '…' : item.snippet;
+    return `- ${item.title}: ${truncated}`;
+  }
+  return `- ${item.title}`;
+}
+
 // ── SerpApi Google News 수집 ──────────────────────────────────────
-async function fetchNewsViaSerpApi(companyName: string): Promise<string[]> {
+async function fetchNewsViaSerpApi(companyName: string): Promise<NewsItem[]> {
   const apiKey = process.env.SERPAPI_KEY;
   if (!apiKey) throw new Error('SERPAPI_KEY 미설정');
 
@@ -47,17 +63,50 @@ async function fetchNewsViaSerpApi(companyName: string): Promise<string[]> {
   if (!res.ok) throw new Error(`SerpApi News HTTP ${res.status}`);
 
   const data = (await res.json()) as {
-    news_results?: Array<{ title?: string; snippet?: string }>;
+    news_results?: Array<{ title?: string; snippet?: string; link?: string }>;
   };
 
   return (data.news_results ?? [])
     .slice(0, 7)
-    .map((n) => n.title ?? n.snippet ?? '')
-    .filter(Boolean);
+    .filter((n) => n.title || n.snippet)
+    .map((n) => ({
+      title: n.title ?? n.snippet ?? '',
+      snippet: n.title && n.snippet ? n.snippet : undefined,
+    }));
+}
+
+// ── 기사 URL에서 meta description 추출 ─────────────────────────────
+async function fetchArticleDescription(articleUrl: string): Promise<string | undefined> {
+  try {
+    const res = await fetch(articleUrl, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; NewsBot/1.0)' },
+      signal: AbortSignal.timeout(3_000),
+      redirect: 'follow',
+    });
+    if (!res.ok) return undefined;
+    // 본문 전체 대신 상위 8KB만 읽기 (meta 태그는 <head>에 있음)
+    const reader = res.body?.getReader();
+    if (!reader) return undefined;
+    let html = '';
+    while (html.length < 8192) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      html += new TextDecoder().decode(value, { stream: true });
+    }
+    reader.cancel().catch(() => {});
+
+    // meta description 또는 og:description 추출
+    const metaMatch =
+      html.match(/<meta\s+(?:name|property)=["'](?:description|og:description)["']\s+content=["']([^"']+)["']/i) ??
+      html.match(/<meta\s+content=["']([^"']+)["']\s+(?:name|property)=["'](?:description|og:description)["']/i);
+    return metaMatch?.[1]?.trim() || undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 // ── Google News RSS 폴백 ──────────────────────────────────────────
-async function fetchNewsViaRss(companyName: string): Promise<string[]> {
+async function fetchNewsViaRss(companyName: string): Promise<NewsItem[]> {
   const query = encodeURIComponent(`${companyName} 주식`);
   const url = `https://news.google.com/rss/search?q=${query}&hl=ko&gl=KR&ceid=KR:ko`;
 
@@ -68,20 +117,44 @@ async function fetchNewsViaRss(companyName: string): Promise<string[]> {
   if (!res.ok) return [];
 
   const xml = await res.text();
-  const titles: string[] = [];
-  // v20: 구글뉴스 RSS는 CDATA 래핑 없이 평문 <title>로 내려와 기존 정규식이 항상 0건 매치였음
-  const re = /<title>([^<]+)<\/title>/g;
-  let m: RegExpExecArray | null = re.exec(xml);
-  while (m !== null) {
-    const t = m[1].trim();
-    if (!t.includes('Google 뉴스') && !t.includes('Google News')) titles.push(t);
-    if (titles.length >= 5) break;
-    m = re.exec(xml);
+
+  // RSS <item> 블록에서 title + link 추출
+  const items: Array<{ title: string; link?: string }> = [];
+  const itemRe = /<item>([\s\S]*?)<\/item>/g;
+  let itemMatch = itemRe.exec(xml);
+  while (itemMatch !== null && items.length < 5) {
+    const block = itemMatch[1];
+    const titleM = block.match(/<title>([^<]+)<\/title>/);
+    const linkM = block.match(/<link>([^<\s]+)/);
+    const t = titleM?.[1]?.trim();
+    if (t && !t.includes('Google 뉴스') && !t.includes('Google News')) {
+      items.push({ title: t, link: linkM?.[1]?.trim() });
+    }
+    itemMatch = itemRe.exec(xml);
   }
-  return titles;
+
+  // 상위 3개 기사만 본문 description 추출 (병렬, 3초 타임아웃)
+  const top3Links = items
+    .slice(0, 3)
+    .map((it) => it.link)
+    .filter(Boolean) as string[];
+
+  const descriptions = await Promise.allSettled(top3Links.map(fetchArticleDescription));
+  const descMap = new Map<string, string>();
+  top3Links.forEach((link, i) => {
+    const result = descriptions[i];
+    if (result.status === 'fulfilled' && result.value) {
+      descMap.set(link, result.value);
+    }
+  });
+
+  return items.map((it) => ({
+    title: it.title,
+    snippet: it.link ? descMap.get(it.link) : undefined,
+  }));
 }
 
-async function fetchHeadlines(companyName: string): Promise<{ headlines: string[]; source: 'serpapi' | 'rss' }> {
+async function fetchHeadlines(companyName: string): Promise<{ headlines: NewsItem[]; source: 'serpapi' | 'rss' }> {
   if (process.env.SERPAPI_KEY) {
     try {
       const headlines = await fetchNewsViaSerpApi(companyName);
@@ -98,7 +171,7 @@ async function fetchHeadlines(companyName: string): Promise<{ headlines: string[
 
 // ── Claude Haiku 배치 감성 분석 (2026-06-29: Groq → Claude 이동) ──
 async function analyzeWithClaude(
-  items: Array<{ stockCode: string; companyName: string; headlines: string[] }>,
+  items: Array<{ stockCode: string; companyName: string; headlines: NewsItem[] }>,
 ): Promise<Record<string, { score: number; summary: string }>> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return analyzeWithGroqFallback(items); // Claude 키 없으면 Groq 폴백
@@ -112,7 +185,7 @@ ${items
   .map(
     (it) => `종목: ${it.companyName} (${it.stockCode})
 헤드라인:
-${it.headlines.length > 0 ? it.headlines.map((h) => `- ${h}`).join('\n') : '- (헤드라인 없음)'}`,
+${it.headlines.length > 0 ? it.headlines.map(formatHeadline).join('\n') : '- (헤드라인 없음)'}`,
   )
   .join('\n\n')}
 
@@ -155,7 +228,7 @@ score 기준: 100(극호재), 50(호재), 0(중립), -50(악재), -100(극악재
 
 // ── Groq 폴백 (ANTHROPIC_API_KEY 없을 때) ────────────────────────
 async function analyzeWithGroqFallback(
-  items: Array<{ stockCode: string; companyName: string; headlines: string[] }>,
+  items: Array<{ stockCode: string; companyName: string; headlines: NewsItem[] }>,
 ): Promise<Record<string, { score: number; summary: string }>> {
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) return {};
@@ -169,7 +242,7 @@ ${items
   .map(
     (it) => `종목: ${it.companyName} (${it.stockCode})
 헤드라인:
-${it.headlines.length > 0 ? it.headlines.map((h) => `- ${h}`).join('\n') : '- (헤드라인 없음)'}`,
+${it.headlines.length > 0 ? it.headlines.map(formatHeadline).join('\n') : '- (헤드라인 없음)'}`,
   )
   .join('\n\n')}
 
@@ -209,7 +282,7 @@ score 기준: 100(극호재), 50(호재), 0(중립), -50(악재), -100(극악재
 
 // ── NVIDIA NIM 폴백 (Claude/Groq 둘 다 없을 때) ────────────────
 async function analyzeWithNvidiaFallback(
-  items: Array<{ stockCode: string; companyName: string; headlines: string[] }>,
+  items: Array<{ stockCode: string; companyName: string; headlines: NewsItem[] }>,
 ): Promise<Record<string, { score: number; summary: string }>> {
   const apiKey = process.env.NVIDIA_API_KEY;
   if (!apiKey) return {};
@@ -223,7 +296,7 @@ ${items
   .map(
     (it) => `종목: ${it.companyName} (${it.stockCode})
 헤드라인:
-${it.headlines.length > 0 ? it.headlines.map((h) => `- ${h}`).join('\n') : '- (헤드라인 없음)'}`,
+${it.headlines.length > 0 ? it.headlines.map(formatHeadline).join('\n') : '- (헤드라인 없음)'}`,
   )
   .join('\n\n')}
 
@@ -264,13 +337,13 @@ score 기준: 100(극호재), 50(호재), 0(중립), -50(악재), -100(극악재
   }
 }
 
-// ── 키워드 기반 간이 감성 분석 (GROQ_API_KEY 없을 때 폴백) ──
+// ── 키워드 기반 간이 감성 분석 (AI API 없을 때 폴백) ──
 const BULL_KEYWORDS = ['상승', '급등', '반등', '신고가', '호재', '돌파', '매수', '랠리', '회복', '호실적', '어닝서프라이즈', '수주', '계약', 'surge', 'rally', 'record', 'bullish', 'beat'];
 const BEAR_KEYWORDS = ['하락', '급락', '폭락', '악재', '매도', '붕괴', '적자', '하향', '위기', '리스크', '공포', 'plunge', 'crash', 'bearish', 'miss', 'downgrade'];
 
-function keywordSentiment(headlines: string[]): { score: number; summary: string } {
+function keywordSentiment(headlines: NewsItem[]): { score: number; summary: string } {
   if (headlines.length === 0) return { score: 0, summary: '뉴스 없음' };
-  const text = headlines.join(' ').toLowerCase();
+  const text = headlines.map((h) => `${h.title} ${h.snippet ?? ''}`).join(' ').toLowerCase();
   let bull = 0;
   let bear = 0;
   for (const kw of BULL_KEYWORDS) if (text.includes(kw)) bull++;
@@ -283,8 +356,7 @@ function keywordSentiment(headlines: string[]): { score: number; summary: string
 
 /**
  * 감시목록 종목들의 뉴스 감성 분석
- * GROQ_API_KEY 있으면 → Groq AI 분석
- * GROQ_API_KEY 없으면 → RSS + 키워드 기반 간이 분석 (빈 배열 X)
+ * ANTHROPIC_API_KEY 있으면 → Claude AI 분석 (폴백: Groq → NVIDIA → 키워드)
  */
 export async function analyzeNewsWithGroq(
   stocks: Array<{ stockCode: string; companyName: string }>,
@@ -321,11 +393,16 @@ export async function analyzeNewsWithGroq(
     const items = targets.map((s, i) => ({
       stockCode: s.stockCode,
       companyName: s.companyName,
-      headlines: headlineResults[i].status === 'fulfilled' ? headlineResults[i].value.headlines : [],
+      headlines: headlineResults[i].status === 'fulfilled' ? headlineResults[i].value.headlines : ([] as NewsItem[]),
     }));
     const sources = targets.map((_, i) =>
       headlineResults[i].status === 'fulfilled' ? headlineResults[i].value.source : ('rss' as const),
     );
+
+    // snippet 포함 여부 로그
+    const snippetCount = items.reduce((acc, it) => acc + it.headlines.filter((h) => h.snippet).length, 0);
+    const totalHeadlines = items.reduce((acc, it) => acc + it.headlines.length, 0);
+    logger.debug(`뉴스 수집 완료: ${totalHeadlines}건 헤드라인, ${snippetCount}건 본문요약 포함`, { component: 'GROQ_NEWS' });
 
     const groqResult = useClaude
       ? await analyzeWithClaude(items)
@@ -352,7 +429,7 @@ export async function analyzeNewsWithGroq(
     const serpCount = fresh.filter((f) => f.newsSource === 'serpapi').length;
     const engine = useClaude ? 'Claude' : useGroq ? 'Groq' : useNvidia ? 'NVIDIA' : 'Keyword';
     logger.info(
-      `${engine} 뉴스 분석 ${fresh.length}종목 완료 (SerpApi ${serpCount}건, RSS ${fresh.length - serpCount}건, 캐시 ${cached.length}건)`,
+      `${engine} 뉴스 분석 ${fresh.length}종목 완료 (SerpApi ${serpCount}건, RSS ${fresh.length - serpCount}건, 캐시 ${cached.length}건, 본문${snippetCount}건)`,
       { component: 'CLAUDE_NEWS' },
     );
 

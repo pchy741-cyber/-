@@ -12,6 +12,7 @@ import AiTransparencyPanel from '../panels/AiTransparencyPanel';
 import PerformancePanel from '../panels/PerformancePanel';
 import InsightsPanel from '../panels/InsightsPanel';
 import InvestorFlowPanel from '../panels/InvestorFlowPanel';
+import StrategyHealthCard from '../panels/StrategyHealthCard';
 
 // SSE 가격 틱(3초)마다 불필요한 리렌더 방지 — props 변경 없으면 skip
 const MemoMoneyStats = React.memo(MoneyStatsPanel);
@@ -28,6 +29,7 @@ const MemoPerformance = React.memo(PerformancePanel);
 const MemoInsights = React.memo(InsightsPanel);
 const MemoInvestorFlow = React.memo(InvestorFlowPanel);
 const MemoOverseasScore = React.memo(OverseasScorePanel);
+const MemoStrategyHealth = React.memo(StrategyHealthCard);
 import { Panel } from '@/components/ui';
 import StatusBanners from './home/StatusBanners';
 import PortfolioSection from './home/PortfolioSection';
@@ -346,6 +348,7 @@ function HomeView({ dash, health, killSwitch, trades, usDash, withdrawConfig, wa
       </div>
 
       <MemoMoneyStats key={`${viewMode}-${holdingsTab}`} market={holdingsTab} viewMode={viewMode} totalValue={holdingsTab === 'KR' ? totalValue : undefined} />
+      <MemoStrategyHealth viewMode={viewMode} />
 
       {(() => {
         const dailyLossPct = unrealizedPnl < 0 ? Math.min(100, Math.round((Math.abs(unrealizedPnl) / dailyLossLimit) * 100)) : 0;
