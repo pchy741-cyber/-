@@ -38,12 +38,28 @@ import { runTrackAJob } from './track-a-job.js';
 import { runTrackBJob } from './track-b-job.js';
 import { runUnfilledOrderCheck } from './unfilled-order-job.js';
 
+// v26: dual-run mutex — 이전 실행이 진행 중이면 다음 cron 스킵 (겹침 방지)
+const _dualRunLocks = new Set<string>();
+
 /**
  * paper → live 순으로 동일 작업을 실행 (국내 이중 모드 병행운영)
  * overseas-job의 runOverseasDual() 패턴과 동일
  * PAPER_ONLY=true 시 live 스킵 (자율학습 모드 — API 호출·비용 절약)
  */
 async function runDomesticDual(label: string, fn: () => Promise<unknown>): Promise<void> {
+  if (_dualRunLocks.has(label)) {
+    logger.debug(`⏭️ ${label} 이미 실행 중 — 스킵`, { component: 'SCHEDULER' });
+    return;
+  }
+  _dualRunLocks.add(label);
+  try {
+    await _runDomesticDualInner(label, fn);
+  } finally {
+    _dualRunLocks.delete(label);
+  }
+}
+
+async function _runDomesticDualInner(label: string, fn: () => Promise<unknown>): Promise<void> {
   // 공휴일·주말 가드 — 한국 장 안 열리는 날은 전체 스킵
   const { isTradingDay } = await import('../utils/holidays.js');
   if (!isTradingDay()) {

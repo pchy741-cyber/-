@@ -62,8 +62,10 @@ export async function getLatestScores(stockCodes: string[]): Promise<AIScore[]> 
   const placeholders = validCodes.map((_, i) => `$${i + 1}`).join(',');
 
   // 오늘 스코어 먼저 조회
+  // v26: SELECT * → 필요 컬럼만 (네트워크 바이트 ~20% 절감)
+  const SCORE_COLS = 'stock_code, score_date, composite_score, fundamental_score, technical_score, sentiment_score, confidence, signal, reasoning, target_price, stop_loss_price, gemini_summary, created_at';
   const { rows } = await queryWithRetry(
-    `SELECT * FROM ai_scores WHERE stock_code IN (${placeholders}) AND score_date = $${validCodes.length + 1}
+    `SELECT ${SCORE_COLS} FROM ai_scores WHERE stock_code IN (${placeholders}) AND score_date = $${validCodes.length + 1}
      AND composite_score > 0
      ORDER BY composite_score DESC`,
     [...validCodes, today],
@@ -74,7 +76,7 @@ export async function getLatestScores(stockCodes: string[]): Promise<AIScore[]> 
   // 오늘 없으면 최근 7일 이내 스코어 fallback (설날/추석 등 장기 연휴 5일+ 대비)
   const threeDaysAgo = kstDateStr(new Date(getKSTNow().getTime() - 7 * 24 * 60 * 60 * 1000));
   const { rows: fallbackRows } = await queryWithRetry(
-    `SELECT DISTINCT ON (stock_code) * FROM ai_scores
+    `SELECT DISTINCT ON (stock_code) ${SCORE_COLS} FROM ai_scores
      WHERE stock_code IN (${placeholders}) AND score_date >= $${validCodes.length + 1}
      AND composite_score > 0
      ORDER BY stock_code, score_date DESC, composite_score DESC`,
@@ -88,15 +90,16 @@ export async function getLatestScores(stockCodes: string[]): Promise<AIScore[]> 
 export async function getAllRecentScores(): Promise<AIScore[]> {
   if (isMemoryMode()) return [];
   const today = kstDateStr(getKSTNow());
+  const ALL_SCORE_COLS = 'stock_code, score_date, composite_score, fundamental_score, technical_score, sentiment_score, confidence, signal, reasoning, target_price, stop_loss_price, gemini_summary, created_at';
   const { rows } = await queryWithRetry(
-    `SELECT * FROM ai_scores WHERE score_date = $1 AND composite_score > 0 ORDER BY composite_score DESC`,
+    `SELECT ${ALL_SCORE_COLS} FROM ai_scores WHERE score_date = $1 AND composite_score > 0 ORDER BY composite_score DESC`,
     [today],
   );
   if (rows.length > 0) return rows;
   // 오늘 없으면 최근 2일 fallback
   const twoDaysAgo = kstDateStr(new Date(getKSTNow().getTime() - 2 * 24 * 60 * 60 * 1000));
   const { rows: fallback } = await queryWithRetry(
-    `SELECT DISTINCT ON (stock_code) * FROM ai_scores WHERE score_date >= $1 AND composite_score > 0 ORDER BY stock_code, score_date DESC`,
+    `SELECT DISTINCT ON (stock_code) ${ALL_SCORE_COLS} FROM ai_scores WHERE score_date >= $1 AND composite_score > 0 ORDER BY stock_code, score_date DESC`,
     [twoDaysAgo],
   );
   return fallback;

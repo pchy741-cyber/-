@@ -65,17 +65,9 @@ export async function runGeminiAnalysis(params: {
       const rsiStr = tech ? ` RSI=${tech.rsi14.toFixed(0)}` : '';
       const volStr = tech ? ` 거래량비율=${tech.volumeRatio.toFixed(1)}x` : '';
 
-      return `${stock.stock_name}(${stock.stock_code}):
-  최근 종가: ${latest?.close}, 52주 고가: ${high52w}, 고점 대비: ${dropFromHigh}%${dvrText}
-  ${pullbackStr}${rsiStr}${volStr}
-  최근 5일 거래량: ${candles
-    .slice(0, 5)
-    .map((c) => c.volume)
-    .join(', ')}
-  최근 5일 종가: ${candles
-    .slice(0, 5)
-    .map((c) => c.close)
-    .join(', ')}`;
+      // v26: 압축 포맷 (토큰 ~40% 절감)
+      const c5 = candles.slice(0, 5);
+      return `${stock.stock_name}(${stock.stock_code}): close=${latest?.close} high52w=${high52w} drop=${dropFromHigh}%${dvrText} ${pullbackStr}${rsiStr}${volStr} closes=[${c5.map((c) => c.close).join(',')}] vols=[${c5.map((c) => c.volume).join(',')}]`;
     })
     .join('\n\n');
 

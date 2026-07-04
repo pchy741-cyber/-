@@ -49,8 +49,17 @@ export async function syncHoldingsFromKIS(): Promise<void> {
     const successExchanges = new Set<string>(); // API 성공한 거래소만 추적
     let syncChanged = false; // 매매 변동 감지 시 캐시 무효화
 
+    // v26: retry wrapper — 단일 네트워크 플리커 시 1회 재시도 (100ms 백오프)
+    const fetchBalanceWithRetry = async (exch: string) => {
+      try {
+        return await getOverseasBalance(exch);
+      } catch (e) {
+        await new Promise((r) => setTimeout(r, 100));
+        return getOverseasBalance(exch); // 1회 재시도
+      }
+    };
     // v10.11: 5개 거래소 병렬 조회 (기존: 순차 → 1~2.5초. 병렬 → ~500ms)
-    const exchResults = await Promise.allSettled(exchanges.map((exch) => getOverseasBalance(exch).then((items) => ({ exch, items }))));
+    const exchResults = await Promise.allSettled(exchanges.map((exch) => fetchBalanceWithRetry(exch).then((items) => ({ exch, items }))));
     for (const r of exchResults) {
       if (r.status === 'fulfilled') {
         const { exch, items } = r.value;
@@ -81,6 +90,47 @@ export async function syncHoldingsFromKIS(): Promise<void> {
         rows: [] as Array<{ stock_code: string; exchange: string; quantity: string; avg_price: string }>,
       }));
 
+    // v26: 전량매도 후보 가격을 병렬 조회 (순차 → 병렬, 종목당 100~300ms 절약)
+    const fullSellCandidates = dbRows.filter((row) => {
+      if (!successExchanges.has(String(row.exchange))) return false;
+      const kisItem = allHoldings.get(String(row.stock_code));
+      return !kisItem || kisItem.qty === 0;
+    });
+    const sellPriceMap = new Map<string, number>();
+    if (fullSellCandidates.length > 0) {
+      const prices = await Promise.allSettled(
+        fullSellCandidates.map((row) => estimateSellPrice(String(row.stock_code), row.exchange)),
+      );
+      for (let i = 0; i < fullSellCandidates.length; i++) {
+        const code = String(fullSellCandidates[i].stock_code);
+        const r = prices[i];
+        sellPriceMap.set(code, r.status === 'fulfilled' ? r.value : 0);
+      }
+    }
+
+    // v26: debounce 상태 배치 사전조회 (N개 개별 쿼리 → 1개 IN 쿼리)
+    const debounceKeysToCheck = fullSellCandidates
+      .filter((row) => (sellPriceMap.get(String(row.stock_code)) ?? 0) > 0)
+      .map((row) => `${modePrefix()}sync_sell_pending_${row.stock_code}`);
+    const debounceExistingKeys = new Set<string>();
+    if (debounceKeysToCheck.length > 0) {
+      const { rows: dbKeys } = await getPool()
+        .query(`SELECT key FROM overseas_state WHERE key = ANY($1::text[])`, [debounceKeysToCheck])
+        .catch(() => ({ rows: [] as Array<{ key: string }> }));
+      for (const r of dbKeys) debounceExistingKeys.add(r.key);
+    }
+
+    // stale debounce cleanup (1회만)
+    const now = Date.now();
+    for (const [k, ts] of _sellDebounceMap) {
+      if (now - ts > SELL_DEBOUNCE_TTL_MS) _sellDebounceMap.delete(k);
+    }
+    // v26: _sellDebounceMap 상한 500 (메모리 누수 방지)
+    if (_sellDebounceMap.size > 500) {
+      const entries = [..._sellDebounceMap.entries()].sort((a, b) => a[1] - b[1]);
+      entries.slice(0, entries.length - 400).forEach(([k]) => _sellDebounceMap.delete(k));
+    }
+
     for (const row of dbRows) {
       // API 성공한 거래소만 처리 — 실패한 거래소(마감/오류)는 스킵 (ghost 방지)
       if (!successExchanges.has(String(row.exchange))) continue;
@@ -91,7 +141,7 @@ export async function syncHoldingsFromKIS(): Promise<void> {
 
       if (!kisItem || kisItem.qty === 0) {
         // ── 전량 수동매도 감지 → SELL 기록 남기기 ──
-        const sellPrice = await estimateSellPrice(code, row.exchange);
+        const sellPrice = sellPriceMap.get(code) ?? 0;
 
         // 가격 0 = 시장 마감 / API 오류 → 스킵 (phantom $0 레코드 방지)
         if (sellPrice <= 0) {
@@ -101,24 +151,12 @@ export async function syncHoldingsFromKIS(): Promise<void> {
         }
 
         // 디바운스: KIS API 플래핑 방지 — 2회 연속 감지 시에만 SELL 처리
-        // In-memory + DB double-check to prevent race condition between concurrent sync cycles
-        // positionStateKeys() cleanup과 동일한 prefix 사용 (prefix 누락 → 고아키 버그 수정)
         const debounceKey = `${modePrefix()}sync_sell_pending_${code}`;
-        const now = Date.now();
-
-        // Clean up stale in-memory debounce entries (안전한 반복: 삭제 대상 선수집)
-        const staleKeys: string[] = [];
-        for (const [k, ts] of _sellDebounceMap) {
-          if (now - ts > SELL_DEBOUNCE_TTL_MS) staleKeys.push(k);
-        }
-        for (const k of staleKeys) _sellDebounceMap.delete(k);
 
         const inMemoryFirstSeen = _sellDebounceMap.get(code);
-        const { rows: debounceRows } = await getPool()
-          .query('SELECT value FROM overseas_state WHERE key = $1', [debounceKey])
-          .catch(() => ({ rows: [] as Array<{ value: string }> }));
+        const debounceExistsInDb = debounceExistingKeys.has(debounceKey);
 
-        if (debounceRows.length === 0 && !inMemoryFirstSeen) {
+        if (!debounceExistsInDb && !inMemoryFirstSeen) {
           // 첫 감지: debounce 상태 저장 (in-memory + DB) + 즉시 재매수 쿨다운 설정
           // (2회 확인 전이라도 이번 사이클에서 재매수 금지 — 예약매도 후 재매수 버그 방지)
           _sellDebounceMap.set(code, now);
@@ -294,14 +332,22 @@ export async function syncHoldingsFromKIS(): Promise<void> {
 
     // ── 워치리스트에 있는 신규 수동매수 ──
     const watchCodes = new Set(GLOBAL_WATCHLIST.map((s) => s.code));
+    // v26: 수동매도 쿨다운 배치 조회 (N개 → 1개 쿼리)
+    const cdCheckCodes = [...allHoldings.keys()].filter((c) => watchCodes.has(c));
+    const cdKeys = cdCheckCodes.map((c) => `manual_sell_cd_${c}`);
+    const cooldownActiveSet = new Set<string>();
+    if (cdKeys.length > 0) {
+      const { rows: cdBatchRows } = await getPool()
+        .query(`SELECT key FROM overseas_state WHERE key = ANY($1::text[])`, [cdKeys])
+        .catch(() => ({ rows: [] as Array<{ key: string }> }));
+      for (const r of cdBatchRows) cooldownActiveSet.add(r.key);
+    }
+
     for (const [code, item] of allHoldings) {
       if (!watchCodes.has(code)) continue;
 
       // 수동매도 쿨다운 중이면 재삽입 스킵 (T+1 결제: KIS API가 매도 종목을 아직 반환)
-      const { rows: cdRows } = await getPool()
-        .query('SELECT value FROM overseas_state WHERE key = $1', [`manual_sell_cd_${code}`])
-        .catch(() => ({ rows: [] as Array<{ value: string }> }));
-      if (cdRows.length > 0) {
+      if (cooldownActiveSet.has(`manual_sell_cd_${code}`)) {
         logger.info(`⏭️ KIS동기화: ${code} 수동매도 쿨다운 중 → 재매수 감지 스킵 (T+1 결제 대기)`, {
           component: 'OVERSEAS',
         });

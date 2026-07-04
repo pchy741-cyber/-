@@ -15,7 +15,7 @@ export async function getActiveWatchlist(): Promise<WatchlistItem[]> {
   const { cacheGet, cacheSet } = await import('../../cache/memory.js');
   const cached = cacheGet<WatchlistItem[]>('db:watchlist:active');
   if (cached) return cached;
-  const { rows } = await queryWithRetry('SELECT * FROM watchlist WHERE is_active = true ORDER BY added_at ASC');
+  const { rows } = await queryWithRetry('SELECT stock_code, stock_name, market, source, is_active, added_at FROM watchlist WHERE is_active = true ORDER BY added_at ASC');
   cacheSet('db:watchlist:active', rows, getWatchlistTtl());
   return rows;
 }

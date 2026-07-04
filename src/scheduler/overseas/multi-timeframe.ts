@@ -48,14 +48,11 @@ setInterval(() => {
     if (now > v.expires) toDelete.push(k);
   }
   for (const k of toDelete) cache.delete(k);
-  // 캐시 상한 초과 시 가장 오래된 엔트리만 제거 (O(n) sort 방지)
+  // v26: 캐시 상한 초과 시 20% 일괄 삭제 (기존 1건씩 → 즉시 복구)
   if (cache.size > MTF_CACHE_MAX) {
-    let oldest = '';
-    let oldestExp = Infinity;
-    for (const [k, v] of cache) {
-      if (v.expires < oldestExp) { oldest = k; oldestExp = v.expires; }
-    }
-    if (oldest) cache.delete(oldest);
+    const entries = [...cache.entries()].sort((a, b) => a[1].expires - b[1].expires);
+    const removeCount = Math.ceil(entries.length * 0.2);
+    for (let i = 0; i < removeCount; i++) cache.delete(entries[i][0]);
   }
 }, 30 * 60 * 1000).unref();
 

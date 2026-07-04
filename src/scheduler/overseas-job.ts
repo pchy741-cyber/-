@@ -224,7 +224,11 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
     // ── 🛡️ KIS API 건강 프로브 — AAPL 가격 1회 조회로 점검 모드 감지 ──
     // KIS가 업데이트/점검 중이면 모든 종목 currentPrice=0 반환 → 전체 사이클 스킵
     try {
-      const probePrice = await getOverseasPrice('AAPL', 'NASD');
+      // v26: 5초 타임아웃 — KIS hang 시 전체 사이클 블록 방지
+      const probePrice = await Promise.race([
+        getOverseasPrice('AAPL', 'NASD'),
+        new Promise<OverseasPrice>((_, rej) => setTimeout(() => rej(new Error('probe timeout 5s')), 5000)),
+      ]);
       if (probePrice.currentPrice <= 0) {
         logger.warn('🛑 KIS API 건강 프로브 실패: AAPL 가격=0 → API 점검 모드 감지, 전체 사이클 스킵', { component: 'OVERSEAS' });
         await activateKillSwitch('KIS API 점검 모드 (AAPL 가격=0)', false, SCOPE, isPaper());
@@ -398,7 +402,7 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
     // ── 1. 시세 + 차트 병렬 수집 ──
     const techResults: TechResult[] = [];
 
-    const BATCH = 8;
+    const BATCH = 4; // v26: 8→4 (KIS rate limit 20/s 안전 마진 + keep-alive 효율)
     for (let i = 0; i < activeStocks.length; i += BATCH) {
       const batch = activeStocks.slice(i, i + BATCH);
       const latestCache = getSessionCache(region);

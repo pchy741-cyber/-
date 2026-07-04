@@ -115,6 +115,12 @@ export class TradeExecutor {
       }
       this._lastKeyCleanup = now.getTime();
     }
+    // v26: hard cap 10,000 (메모리 누수 방지)
+    if (this._recentOrderKeys.size > 10_000) {
+      const arr = [...this._recentOrderKeys];
+      this._recentOrderKeys.clear();
+      for (const k of arr.slice(-8_000)) this._recentOrderKeys.add(k);
+    }
     const mode = getCtxIsPaper() ? 'paper' : 'live';
     return `${mode}-${stockCode}-${action}-${ymd}`;
   }

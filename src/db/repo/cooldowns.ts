@@ -125,6 +125,56 @@ export async function getBigLossBlockedStocks(): Promise<Set<string>> {
   }
 }
 
+/**
+ * v26: 배치 조회 — getRecentLossStocks + getBigLossBlockedStocks를 1회 DB 호출로 통합
+ * overseas-job에서 2번 개별 호출 대신 이 함수 1회로 교체
+ */
+export async function getLossCooldownsBatch(): Promise<{ recentLoss: Set<string>; bigLoss: Set<string> }> {
+  const cacheKey = String(getCtxIsPaper());
+  if (isMemoryMode()) {
+    return {
+      recentLoss: _lossStocksCache.get(cacheKey) ?? new Set(),
+      bigLoss: _bigLossStocksCache.get(cacheKey) ?? new Set(),
+    };
+  }
+  try {
+    const { rows } = await queryWithRetry(
+      `SELECT stock_code, category FROM (
+         SELECT stock_code, 'recent' AS category FROM transaction_chains
+         WHERE status = 'CLOSED' AND is_paper = $1
+           AND ((realized_pnl < -5000 AND closed_at > NOW() - INTERVAL '3 days')
+                OR (realized_pnl < -50000 AND closed_at > NOW() - INTERVAL '7 days'))
+         UNION ALL
+         SELECT stock_code, 'recent' AS category FROM orders
+         WHERE side = 'SELL' AND status = 'FILLED' AND is_paper = $1
+           AND created_at > NOW() - INTERVAL '3 days'
+           AND (ai_reasoning LIKE '%손절%' OR ai_reasoning LIKE '%ATR트레일%'
+                OR ai_reasoning LIKE '%FORCE_CLOSE%' OR ai_reasoning LIKE '%시간 손절%')
+         UNION ALL
+         SELECT stock_code, 'big' AS category FROM transaction_chains
+         WHERE status = 'CLOSED' AND is_paper = $1
+           AND pnl_pct < -5.0
+           AND closed_at > NOW() - INTERVAL '14 days'
+       ) sub`,
+      [getCtxIsPaper()],
+    );
+    const recentLoss = new Set<string>();
+    const bigLoss = new Set<string>();
+    for (const r of rows) {
+      if (r.category === 'recent') recentLoss.add(r.stock_code);
+      else bigLoss.add(r.stock_code);
+    }
+    _lossStocksCache.set(cacheKey, recentLoss);
+    _bigLossStocksCache.set(cacheKey, bigLoss);
+    return { recentLoss, bigLoss };
+  } catch (e) {
+    return {
+      recentLoss: _lossStocksCache.get(cacheKey) ?? new Set(),
+      bigLoss: _bigLossStocksCache.get(cacheKey) ?? new Set(),
+    };
+  }
+}
+
 /** 손실 이력 레코드 (smart re-entry 판단용) */
 export interface LossRecord {
   lossAmt: number;
