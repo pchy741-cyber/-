@@ -88,10 +88,20 @@ export function DailySummaryPanel({
                       const apiPnl = typeof t.realized_pnl === 'number' ? t.realized_pnl : null;
                       const apiPnlPct = typeof t.realized_pnl_pct === 'number' ? t.realized_pnl_pct : null;
                       const apiPnlUsd = typeof t.realized_pnl_usd === 'number' ? t.realized_pnl_usd : null;
-                      const calcPnl = avgBuy > 0 && fillPrice > 0 ? (fillPrice - avgBuy) * qty : null;
-                      const calcPct = avgBuy > 0 && fillPrice > 0 ? ((fillPrice - avgBuy) / avgBuy) * 100 : null;
-                      const tradePnl = os ? (apiPnlUsd ?? calcPnl) : (apiPnl ?? calcPnl);
-                      const tradePnlPct = apiPnlPct ?? calcPct;
+                      // Fallback: 수수료 반영 (국내 매도 0.195%, 해외 매수+매도 각 0.35%)
+                      const KR_SELL_FEE = 0.00195;
+                      const OS_FEE = 0.0035;
+                      const fallbackPnl = !os && isSell && avgBuy > 0 && fillPrice > 0
+                        ? (fillPrice * (1 - KR_SELL_FEE) - avgBuy) * qty : null;
+                      const fallbackPct = !os && isSell && avgBuy > 0 && fillPrice > 0
+                        ? ((fillPrice * (1 - KR_SELL_FEE) - avgBuy) / avgBuy) * 100 : null;
+                      const osCostBasis = avgBuy * (1 + OS_FEE);
+                      const osFallbackPnl = os && isSell && avgBuy > 0 && fillPrice > 0
+                        ? (fillPrice * (1 - OS_FEE) - osCostBasis) * qty : null;
+                      const osFallbackPct = os && isSell && avgBuy > 0 && fillPrice > 0
+                        ? ((fillPrice * (1 - OS_FEE) - osCostBasis) / osCostBasis) * 100 : null;
+                      const tradePnl = os ? (apiPnlUsd ?? osFallbackPnl) : (apiPnl ?? fallbackPnl);
+                      const tradePnlPct = apiPnlPct ?? (os ? osFallbackPct : fallbackPct);
 
                       return (
                         <div key={t.id || i} className="flex items-center gap-2 bg-white/[0.02] hover:bg-white/[0.04] rounded-xl px-3 py-2 transition-colors">

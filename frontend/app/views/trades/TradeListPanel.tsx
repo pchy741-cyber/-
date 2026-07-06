@@ -53,21 +53,25 @@ export function TradeListPanel({
           const overseas = isOverseas(t);
           const avgBuy = Number(chain?.avg_buy_price) || 0;
           const filledPrice = Number(t.filled_price) || 0;
-          const qty = Number(t.quantity) || 0;
+          const qty = Number(t.filled_quantity ?? t.quantity) || 0;
+          // v23: API 값 우선 신뢰, fallback에 수수료 반영
           const apiPnl = typeof t.realized_pnl === 'number' ? Number(t.realized_pnl) : null;
           const apiPnlPct = typeof t.realized_pnl_pct === 'number' ? Number(t.realized_pnl_pct) : null;
           const apiPnlUsd = typeof t.realized_pnl_usd === 'number' ? Number(t.realized_pnl_usd) : null;
-          const fallbackPnl = !overseas && isSell && avgBuy > 0 && filledPrice > 0 ? (filledPrice - avgBuy) * qty : null;
-          const fallbackPnlPct = !overseas && isSell && avgBuy > 0 && filledPrice > 0 ? ((filledPrice - avgBuy) / avgBuy) * 100 : null;
-          const overseasFallbackPnl = overseas && isSell && avgBuy > 0 && filledPrice > 0 ? (filledPrice - avgBuy) * qty : null;
-          const overseasFallbackPnlPct = overseas && isSell && avgBuy > 0 && filledPrice > 0 ? ((filledPrice - avgBuy) / avgBuy) * 100 : null;
-          const overseasReasonPct = overseas && isSell && apiPnlPct === null
-            ? (() => { const m = String(t.ai_reasoning || '').match(/[익손절]+\(([+-]?[\d.]+)%\)/); return m ? Number(m[1]) : null; })()
-            : null;
-          const overseasPnlUsdAmt = overseasReasonPct !== null && filledPrice > 0 && qty > 0
-            ? filledPrice * qty * (overseasReasonPct / 100) : null;
-          const tradePnl = overseas ? (apiPnlUsd ?? overseasPnlUsdAmt ?? overseasFallbackPnl) : (apiPnl ?? fallbackPnl);
-          const tradePnlPct = apiPnlPct ?? (overseas ? (overseasReasonPct ?? overseasFallbackPnlPct) : fallbackPnlPct);
+          // Fallback: 수수료 반영 (국내 매도 0.195%, 해외 매수+매도 각 0.35%)
+          const KR_SELL_FEE = 0.00195;
+          const OS_FEE = 0.0035;
+          const fallbackPnl = !overseas && isSell && avgBuy > 0 && filledPrice > 0
+            ? (filledPrice * (1 - KR_SELL_FEE) - avgBuy) * qty : null;
+          const fallbackPnlPct = !overseas && isSell && avgBuy > 0 && filledPrice > 0
+            ? ((filledPrice * (1 - KR_SELL_FEE) - avgBuy) / avgBuy) * 100 : null;
+          const osCostBasis = avgBuy * (1 + OS_FEE);
+          const overseasFallbackPnl = overseas && isSell && avgBuy > 0 && filledPrice > 0
+            ? (filledPrice * (1 - OS_FEE) - osCostBasis) * qty : null;
+          const overseasFallbackPnlPct = overseas && isSell && avgBuy > 0 && filledPrice > 0
+            ? ((filledPrice * (1 - OS_FEE) - osCostBasis) / osCostBasis) * 100 : null;
+          const tradePnl = overseas ? (apiPnlUsd ?? overseasFallbackPnl) : (apiPnl ?? fallbackPnl);
+          const tradePnlPct = apiPnlPct ?? (overseas ? overseasFallbackPnlPct : fallbackPnlPct);
 
           const stratMode = chain?.strategy_mode;
           const stratLabel = stratMode ? (STRATEGY_LABELS[stratMode] ?? stratMode) : null;

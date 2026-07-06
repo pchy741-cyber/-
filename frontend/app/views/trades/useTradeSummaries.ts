@@ -31,8 +31,15 @@ export function useTradeSummaries(filtered: Trade[], isOverseas: (t: Trade) => b
         const qty = Number(t.filled_quantity ?? t.quantity) || 0;
         const apiPnl = typeof t.realized_pnl === 'number' ? Number(t.realized_pnl) : null;
         const apiPnlUsd = typeof t.realized_pnl_usd === 'number' ? Number(t.realized_pnl_usd) : null;
-        const calcPnl = avgBuy > 0 && fillPrice > 0 ? (fillPrice - avgBuy) * qty : null;
-        const tradePnl = os ? (apiPnlUsd ?? calcPnl) : (apiPnl ?? calcPnl);
+        // Fallback: 수수료 반영 (국내 매도 0.195%, 해외 매수+매도 각 0.35%)
+        const KR_SELL_FEE = 0.00195;
+        const OS_FEE = 0.0035;
+        const fallbackPnl = !os && avgBuy > 0 && fillPrice > 0
+          ? (fillPrice * (1 - KR_SELL_FEE) - avgBuy) * qty : null;
+        const osCostBasis = avgBuy * (1 + OS_FEE);
+        const osFallbackPnl = os && avgBuy > 0 && fillPrice > 0
+          ? (fillPrice * (1 - OS_FEE) - osCostBasis) * qty : null;
+        const tradePnl = os ? (apiPnlUsd ?? osFallbackPnl) : (apiPnl ?? fallbackPnl);
 
         if (tradePnl !== null) {
           if (os) pnlUsd += tradePnl;
