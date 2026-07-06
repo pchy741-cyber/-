@@ -105,15 +105,12 @@ export async function runDailyBriefing(market: Market): Promise<void> {
       const bmStr = h.benchmark.available
         ? `벤치 ${h.benchmark.benchmarkCagr >= 0 ? '+' : ''}${h.benchmark.benchmarkCagr}% | 알파 ${h.benchmark.alpha >= 0 ? '+' : ''}${h.benchmark.alpha}%`
         : '';
-      const uwStr = h.risk.maxUnderwaterDays < 0
-        ? `uw ${Math.abs(h.risk.maxUnderwaterDays)}일째`
-        : '';
       const psrStr = h.efficiency.psrSignificant
         ? `확정`
         : `${h.efficiency.minTRL - h.period.tradingDays}일 더`;
       healthHeader = [
-        `TWR ${h.returns.cumulativePct >= 0 ? '+' : ''}${h.returns.cumulativePct}%${bmStr ? ` | ${bmStr}` : ''}`,
-        `MDD -${h.risk.maxDrawdownPct}%${uwStr ? ` (${uwStr})` : ''} | 월 ${h.goal.currentMonthPct >= 0 ? '+' : ''}${h.goal.currentMonthPct}%/목표5%`,
+        `TWR ${h.returns.cumulativePct >= 0 ? '+' : ''}${h.returns.cumulativePct}% (${h.period.totalTrades}건)${bmStr ? ` | ${bmStr}` : ''}`,
+        `MDD -${h.risk.maxDrawdownPct}% | 월 ${h.goal.currentMonthPct >= 0 ? '+' : ''}${h.goal.currentMonthPct}%/목표5%`,
         `Sharpe ${h.efficiency.sharpeRatio} (PSR ${h.efficiency.psr}, ${psrStr}) | Sortino ${h.efficiency.sortinoRatio}`,
         `등급 ${h.grade}${!h.goal.goalRealistic ? ' ⚠️목표 필요샤프 ' + h.goal.requiredSharpe + ' (비현실적)' : ''}`,
       ].join('\n');
