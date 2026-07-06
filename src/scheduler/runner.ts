@@ -1255,8 +1255,8 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 🔥 11:30, 13:30 — 핫 업종 추가 스캔 (10:00 이후 섹터 로테이션 포착)
-  for (const time of ['30 11', '30 13']) {
+  // 🔥 11:30, 13:30, 14:30 — 핫 업종 추가 스캔 (v23: 14:30 추가, 후반 급등 포착)
+  for (const time of ['30 11', '30 13', '30 14']) {
     cron.schedule(
       `${time} * * 1-5`,
       () => {

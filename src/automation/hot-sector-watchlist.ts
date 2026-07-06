@@ -22,7 +22,8 @@ const COMPONENT = 'HOT_SECTOR';
 // 핫 업종 판정 기준: 당일 등락률 +1.5% 이상
 const HOT_SECTOR_CHANGE_PCT = 1.5;
 // 워치리스트 편입 최소 AI 스코어 (최근 3일 평균) — 없어도 신규 발굴 허용
-const MIN_AI_SCORE = 60;
+// v23: 60→50 하향 (신규 섹터 초기 편입률 개선, 기존 60점은 진입 절벽)
+const MIN_AI_SCORE = 50;
 // 편입 최대 종목 수 (1회 실행당)
 const MAX_ADD_PER_RUN = 8;
 // 최소 거래량 — 잡주 차단 (일 10만주 이상 거래되는 종목만)
@@ -34,8 +35,9 @@ const MIN_PRICE = 1_000;
 const MAX_PRICE = 5_000_000;
 
 // 자동 추가 종목 가지치기 기준
-const PRUNE_NO_TRADE_DAYS = 7;   // 7거래일 동안 시스템이 한 번도 매매 안 한 종목
-const PRUNE_LOW_SCORE_DAYS = 3;  // AI 스코어 40 미만이 3일 연속이면 제거
+// v23: 7→10일로 확장 (신규 편입 종목이 Track A 분석+스코어 형성할 시간 확보)
+const PRUNE_NO_TRADE_DAYS = 10;  // 10거래일 동안 시스템이 한 번도 매매 안 한 종목
+const PRUNE_LOW_SCORE_DAYS = 4;  // AI 스코어 40 미만이 4일 연속이면 제거 (v23: 3→4일)
 const PRUNE_LOW_SCORE_THRESHOLD = 40;
 
 // KIS 업종 코드 → 한국어 이름
@@ -213,6 +215,7 @@ async function getActiveWatchlistCodes(): Promise<Set<string>> {
 
 /**
  * 워치리스트에 종목 추가 (없으면 INSERT, 비활성이면 활성화)
+ * v23: provisional_score 55점 주입 — Track A 분석 전 가지치기 방지
  */
 async function addToWatchlist(stockCode: string, stockName: string, sectorName: string): Promise<boolean> {
   try {
@@ -225,7 +228,25 @@ async function addToWatchlist(stockCode: string, stockName: string, sectorName: 
        WHERE watchlist.is_active = false`,
       [stockCode, stockName, `HOT_SECTOR:${sectorName}`],
     );
-    return (rowCount ?? 0) > 0;
+    const added = (rowCount ?? 0) > 0;
+
+    // v23: 신규 편입 종목에 provisional ai_score 주입
+    // AI 스코어 순환참조 문제 해결: 스코어 없으면 → 가지치기 당함 → 분석 전 제거
+    // 55점(MIN_AI_SCORE 이상)으로 주입하여 최소 3~5일 생존 보장
+    if (added) {
+      try {
+        await pool.query(
+          `INSERT INTO ai_scores (stock_code, score_date, composite_score, analysis_source, reasoning)
+           VALUES ($1, CURRENT_DATE, $2, 'provisional', $3)
+           ON CONFLICT (stock_code, score_date) DO NOTHING`,
+          [stockCode, 55, `HOT_SECTOR:${sectorName} 자동편입 잠정스코어`],
+        );
+      } catch {
+        // provisional score 주입 실패해도 편입 자체는 성공
+      }
+    }
+
+    return added;
   } catch (err) {
     logger.error(`워치리스트 추가 실패 (${stockCode}): ${err}`, { component: COMPONENT });
     return false;

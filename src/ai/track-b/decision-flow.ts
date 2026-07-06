@@ -222,7 +222,9 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
   // 기존엔 "핫 업종" 발굴(hot-sector-watchlist.ts)만 있고, 매수 시점에 업종 역풍을 걸러내는
   // 게이트가 없었음 — 업종 지수가 뚜렷하게 하락 중인 신규 매수만 차단 (기존 보유 물타기는 제외,
   // 리스크관리는 별도 하드룰이 처리).
-  const SECTOR_HEADWIND_THRESHOLD = -1.0; // 업종 지수 등락률 -1.0% 이하 → 역풍
+  // v23: -1.0→-3.0 완화 (정상 조정 구간에서 개별 급등주 매수 허용)
+  // -1.0%는 일상적인 업종 변동 범위 — 과도한 차단으로 수익 기회 상실
+  const SECTOR_HEADWIND_THRESHOLD = -3.0; // 업종 지수 등락률 -3.0% 이하 → 역풍
   try {
     const { getCachedSectorChangeMap } = await import('../../automation/hot-sector-watchlist.js');
     const sectorChangeMap = await getCachedSectorChangeMap();
