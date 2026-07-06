@@ -21,8 +21,10 @@ manualTriggersRoutes.post('/run-track-b', async (c) => {
 
 manualTriggersRoutes.post('/run-overseas', async (c) => {
   const { runOverseasJob } = await import('../../../scheduler/overseas-job.js');
-  runOverseasJob().catch((e) => logger.error(`해외주식 수동 실행 실패: ${e}`, { component: 'SETTINGS' }));
-  return c.json({ ok: true, message: '해외주식 수동 실행 시작' });
+  const { runWithMode } = await import('../../../config/context.js');
+  // v26: runWithMode 래핑 필수 — 기존: 컨텍스트 없이 호출 → env 의존 (크로스오염 위험)
+  runWithMode(false, () => runOverseasJob({ isPaper: false })).catch((e) => logger.error(`해외주식 수동 실행 실패: ${e}`, { component: 'SETTINGS' }));
+  return c.json({ ok: true, message: '해외주식 수동 실행 시작 (Live)' });
 });
 
 // Paper 해외 전용 수동 실행 — 리필 + 뉴스 프리페치 + Paper 매매

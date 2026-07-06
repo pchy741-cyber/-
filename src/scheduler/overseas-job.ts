@@ -1645,25 +1645,27 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
       if (killSwitchBuyBlockFresh) {
         logger.warn(`🛑 Kill Switch 활성 — 해외 매수 ${buyTargets.length}건 건너뜀`, { component: 'OVERSEAS' });
       }
-      // 승률가드: Live 신규매수만 차단 (기존 포지션 매도/청산은 위에서 이미 처리되어 영향 없음)
-      // CEO 지적(2026-07-02): 이전엔 overseasJobDual()에서 승률<60% 시 live 전체를 스킵해서
-      // 손절/트레일링 등 방어 로직까지 통째로 멈추는 버그가 있었음 — 여기서 매수만 막도록 수정.
+      // 승률가드: Live 신규매수 점진적 제한 (기존 포지션 매도/청산은 위에서 이미 처리되어 영향 없음)
+      // v26: 60% 미만 완전차단 → 점진적 슬롯 제한 (과잉차단 방지)
+      // 35% 미만만 완전차단, 35~60%는 슬롯 비율로 제한
       let winRateBuyBlock = false;
+      let winRateSlotRatio = 1.0;
       if (!isPaper()) {
-        const { isOsWinRateBelowThreshold } = await import('../risk/win-rate-guard.js');
+        const { isOsWinRateBelowThreshold, getOsWinRateSlotRatio } = await import('../risk/win-rate-guard.js');
         winRateBuyBlock = await isOsWinRateBelowThreshold(0.60);
+        winRateSlotRatio = await getOsWinRateSlotRatio();
         if (winRateBuyBlock) {
-          logger.warn(`⛔ 승률가드: 해외 Live 신규매수 ${buyTargets.length}건 차단 (기존 포지션 관리는 정상 진행)`, {
+          logger.warn(`⛔ 승률가드: 해외 Live 신규매수 ${buyTargets.length}건 완전 차단 (승률<35%)`, {
             component: 'OVERSEAS',
           });
         }
       }
-      const slotsAvailable =
-        killSwitchBuyBlockFresh || defenseBlockBuys || eodBlockBuys || winRateBuyBlock
+      const rawSlots = killSwitchBuyBlockFresh || defenseBlockBuys || eodBlockBuys || winRateBuyBlock
           ? 0
           : MAX_POSITIONS - currentHoldingCount;
+      const slotsAvailable = Math.max(0, Math.floor(rawSlots * winRateSlotRatio));
       logger.info(
-        `🔧 매수 루프: slots=${slotsAvailable} (max=${MAX_POSITIONS} held=${currentHoldingCount} kill=${killSwitchBuyBlockFresh} defense=${defenseBlockBuys}) cash=$${cash.toFixed(0)} targets=${buyTargets.length}`,
+        `🔧 매수 루프: slots=${slotsAvailable} (max=${MAX_POSITIONS} held=${currentHoldingCount} kill=${killSwitchBuyBlockFresh} defense=${defenseBlockBuys} eod=${eodBlockBuys} winRate=${winRateSlotRatio.toFixed(2)}) cash=$${cash.toFixed(0)} targets=${buyTargets.length}`,
         { component: 'OVERSEAS' },
       );
       // Trade Tuner 오버라이드 1회 로드 (매도측 sell-logic.ts:113과 동일 패턴)

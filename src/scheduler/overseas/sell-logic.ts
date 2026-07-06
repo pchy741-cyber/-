@@ -549,7 +549,8 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
       // v15 Self-Learning Turbo: tuner가 학습한 최적 Stage 1 트리거 적용
       const tunerStage1 = tunerOverrides[`partial_tp_stage1_${sector}`] ?? tunerOverrides.partial_tp_stage1_pct;
       if (tunerStage1 != null && tpStages.length > 0 && tpStages[0].stage === 1) {
-        tpStages[0].triggerPct = tunerStage1;
+        // v26: Stage1 최소 하한 1.5% — Tuner가 0.8%처럼 너무 낮게 학습하면 수수료(0.7%) 후 실질 손실
+        tpStages[0].triggerPct = Math.max(1.5, tunerStage1);
       }
       // v23-QA: isPaper 명시 전달 (기존 누락 → paper/live 부분익절 단계 교차오염)
       const currentStage = await getPartialTpStageNum(code, paperMode);

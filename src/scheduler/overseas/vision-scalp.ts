@@ -12,6 +12,8 @@ import { logger } from '../../utils/logger.js';
 import { cleanupPositionState, getCash, updateTradeState } from './state.js';
 
 const DAILY_SCALP_CAP = 3; // 하루 최대 3회 청산 (수수료 드래그 억제)
+const _errorCooldown = new Map<string, number>(); // code → 에러 발생 timestamp (1h 재시도 차단)
+const ERROR_COOLDOWN_MS = 60 * 60_000; // 1시간
 
 export async function monitorVisionScalp(isPaper: boolean): Promise<void> {
   try {
@@ -75,6 +77,17 @@ export async function monitorVisionScalp(isPaper: boolean): Promise<void> {
 
         if (hitTP || hitSL) {
           const label = hitTP ? 'TP' : 'SL';
+
+          // v26: 에러 쿨다운 — KIS 주문 실패 시 1시간 재시도 차단 (무한 반복 방지)
+          const cooldownKey = `${isPaper ? 'P' : 'L'}:${code}`;
+          const lastError = _errorCooldown.get(cooldownKey);
+          if (lastError && Date.now() - lastError < ERROR_COOLDOWN_MS) {
+            logger.debug(`[VisionScalp] ${code} 에러 쿨다운 중 (${Math.round((ERROR_COOLDOWN_MS - (Date.now() - lastError)) / 60_000)}분 남음) — 스킵`, {
+              component: 'OVERSEAS',
+            });
+            continue;
+          }
+
           logger.info(`[VisionScalp] ${label} 청산 ${code} @ $${cur} (PnL: ${pnlPct.toFixed(2)}%)`, {
             component: 'OVERSEAS',
           });
@@ -93,17 +106,20 @@ export async function monitorVisionScalp(isPaper: boolean): Promise<void> {
               });
               if (result.success) {
                 orderNo = result.orderNo ?? orderNo;
-                kisStatus = 'PENDING'; // 체결 확인 전까지 PENDING — syncPendingOverseasOrders가 확정
+                kisStatus = 'PENDING';
+                _errorCooldown.delete(cooldownKey); // 성공 시 쿨다운 해제
               } else {
-                logger.error(`[VisionScalp] LIVE ${label} 매도 실패: ${code} — ${result.message}`, {
+                logger.error(`[VisionScalp] LIVE ${label} 매도 실패: ${code} (exch=${exch} qty=${qty}) — ${result.message}`, {
                   component: 'OVERSEAS',
                 });
+                _errorCooldown.set(cooldownKey, Date.now());
                 continue;
               }
             } catch (orderErr: any) {
-              logger.error(`[VisionScalp] LIVE ${label} 주문 예외: ${code} — ${orderErr.message}`, {
+              logger.error(`[VisionScalp] LIVE ${label} 주문 예외: ${code} (exch=${exch} qty=${qty}) — ${orderErr.message}`, {
                 component: 'OVERSEAS',
               });
+              _errorCooldown.set(cooldownKey, Date.now());
               continue;
             }
           }

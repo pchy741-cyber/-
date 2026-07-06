@@ -13,7 +13,7 @@ const HIGH_CORR_GROUPS: { group: string; codes: string[]; maxHold: number }[] = 
   { group: 'EV', codes: ['TSLA'], maxHold: 1 },
   { group: 'CLOUD', codes: ['CRM', 'NOW', 'SNOW', 'ORCL', 'AMZN'], maxHold: 2 },
   { group: 'INFRA', codes: ['ANET', 'VRT', 'ETN', 'PWR'], maxHold: 2 }, // AI 인프라 그룹 추가
-  { group: 'TW_SEMI', codes: ['TSM', 'UMC'], maxHold: 1 }, // 대만 반도체 ADR
+  { group: 'TW_SEMI', codes: ['TSM', 'UMC'], maxHold: 2 }, // 대만 반도체 ADR (1→2: TSM+UMC 동시보유 허용)
   { group: 'JP_ADR', codes: ['TM', 'SONY', 'MUFG'], maxHold: 2 }, // 일본 ADR (TSE코드→NYSE ADR)
   { group: 'HEALTH', codes: ['LLY', 'UNH', 'ABBV'], maxHold: 2 },
 ];

@@ -6,7 +6,7 @@
 import { getPool } from '../db/client.js';
 import { logger } from '../utils/logger.js';
 
-const MIN_SAMPLE = 5;        // 최소 샘플 미달 시 체크 스킵 (통과)
+const MIN_SAMPLE = 8;        // 최소 샘플 미달 시 체크 스킵 (통과) — 5→8: 소표본 과잉차단 방지
 const CACHE_TTL_MS = 30 * 60 * 1000; // 30분 캐시
 
 interface WinRateSnapshot {
@@ -98,10 +98,17 @@ export async function isOsWinRateBelowThreshold(threshold = 0.60): Promise<boole
       logger.debug(`해외 승률 체크 스킵 — 샘플 ${total}건 (최소 ${MIN_SAMPLE}건 미달)`, { component: 'WIN_RATE_GUARD' });
       return false;
     }
-    const blocked = winRate < threshold;
+    // v26: 완전차단 → 35% 미만만 차단 (기존 60% → 과잉차단으로 며칠 매수 0건)
+    // 35~60% 구간은 overseas-job.ts에서 슬롯 제한으로 처리
+    const blocked = winRate < 0.35;
     if (blocked) {
       logger.warn(
-        `⛔ 해외 승률 ${(winRate * 100).toFixed(1)}% < ${(threshold * 100).toFixed(0)}% (14일 ${total}건) → live 차단`,
+        `⛔ 해외 승률 ${(winRate * 100).toFixed(1)}% < 35% (14일 ${total}건) → live 완전 차단`,
+        { component: 'WIN_RATE_GUARD' },
+      );
+    } else if (winRate < threshold) {
+      logger.info(
+        `⚠️ 해외 승률 ${(winRate * 100).toFixed(1)}% < ${(threshold * 100).toFixed(0)}% (14일 ${total}건) → 슬롯 제한 (차단 아님)`,
         { component: 'WIN_RATE_GUARD' },
       );
     }
@@ -109,5 +116,25 @@ export async function isOsWinRateBelowThreshold(threshold = 0.60): Promise<boole
   } catch (e) {
     logger.warn(`해외 승률 조회 실패 → 차단 스킵: ${e}`, { component: 'WIN_RATE_GUARD' });
     return false;
+  }
+}
+
+/** 해외 승률 기반 슬롯 제한 비율 (0.0~1.0). 1.0 = 전부 허용 */
+export async function getOsWinRateSlotRatio(): Promise<number> {
+  try {
+    const now = Date.now();
+    if (!_cache.os || _cache.os.expiresAt < now) {
+      const data = await fetchOsWinRate();
+      _cache.os = { ...data, expiresAt: now + CACHE_TTL_MS };
+    }
+    const { winRate, total } = _cache.os;
+    if (total < MIN_SAMPLE) return 1.0;
+    if (winRate >= 0.60) return 1.0;        // 60%+ → 제한 없음
+    if (winRate >= 0.50) return 0.75;       // 50-60% → 75% 슬롯
+    if (winRate >= 0.40) return 0.50;       // 40-50% → 50% 슬롯
+    if (winRate >= 0.35) return 0.25;       // 35-40% → 25% 슬롯
+    return 0;                               // <35% → 완전 차단
+  } catch {
+    return 1.0;
   }
 }
