@@ -1540,6 +1540,8 @@ export class TradeExecutor {
     const kH = kstNow.getUTCHours(),
       kM = kstNow.getUTCMinutes();
     const isAfterHours = (kH === 15 && kM >= 40) || (kH === 16 && kM === 0);
+    // v27: 장전 동시호가 (08:00~09:00 KST) — 시장가 주문 불가, 지정가 전환 필수
+    const isPreMarket = kH === 8 || (kH === 7 && kM >= 30);
     // 시간외 주문은 반드시 가격 필요 (ORD_DVSN='06'에 price=0 → KIS 거부)
     let effectivePrice = params.price;
     if (isAfterHours && !effectivePrice) {
@@ -1550,6 +1552,17 @@ export class TradeExecutor {
         logger.warn(`⛔ 시간외 주문 가격 조회 실패 → 주문 스킵: ${params.stockCode}`, { component: 'EXECUTOR' });
         return { success: false, orderNo: '', message: '시간외 주문 가격 없음' };
       }
+    }
+    // v27: 장전 시장가→지정가 전환 (08:00~09:00 KST 시장가 접수 불가)
+    if (isPreMarket && !effectivePrice) {
+      effectivePrice = await getCurrentPrice(params.stockCode)
+        .then((p) => p.currentPrice)
+        .catch(() => 0);
+      if (!effectivePrice) {
+        logger.warn(`⛔ 장전 주문 가격 조회 실패 → 주문 스킵: ${params.stockCode}`, { component: 'EXECUTOR' });
+        return { success: false, orderNo: '', message: '장전 주문 가격 없음' };
+      }
+      logger.info(`📋 장전 시장가→지정가 전환: ${params.stockCode} @${effectivePrice.toLocaleString()} (동시호가)`, { component: 'EXECUTOR' });
     }
     const orderType = isAfterHours ? OrderType.AFTER_HOURS : effectivePrice ? OrderType.LIMIT : OrderType.MARKET;
 

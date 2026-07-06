@@ -19,7 +19,7 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { VertexAI } from '@google-cloud/vertexai';
 import { logger } from './logger.js';
-import { logTokenUsage, calcGeminiVertexCost, calcGeminiStudioCost } from './ai-token-logger.js';
+import { logTokenUsage, calcGeminiVertexCost, calcGeminiStudioCost, calcGroqCost } from './ai-token-logger.js';
 
 // ── 모델 설정 ──
 const STUDIO_MODEL = 'gemini-2.5-flash-lite';    // AI Studio 유료 — Gemini 최저가 ($0.10/$0.40 per 1M)
@@ -314,7 +314,9 @@ export async function callVertexGemini(
       logTokenUsage({ provider: 'gemini', model: VERTEX_MODEL, inputTokens, outputTokens, costUsd, label });
       return text;
     } catch (vErr) {
-      throw new Error(`Studio RPD 초과 + Vertex 폴백 실패 — ${label}`);
+      // v27: Gemini 전면 장애 → Groq/NVIDIA 3차 폴백
+      logger.warn(`⚠️ Studio RPD 초과 + Vertex 실패 [${label}] → Groq/NVIDIA 3차 폴백`, { component: 'AI_COST' });
+      return callLlmEmergencyFallback(systemPrompt, userMessage, opts, label, startMs);
     }
   }
 
@@ -375,10 +377,87 @@ export async function callVertexGemini(
         logTokenUsage({ provider: 'gemini', model: VERTEX_MODEL, inputTokens, outputTokens, costUsd, label });
         return text;
       } catch (vErr) {
-        throw new Error(`Studio 429 + Vertex 폴백 실패 — ${label}`);
+        // v27: Gemini 전면 장애 → Groq/NVIDIA 3차 폴백 (무료 쿼터 소진 시 거래 중단 방지)
+        logger.warn(`⚠️ Studio 429 + Vertex 실패 [${label}] → Groq/NVIDIA 3차 폴백`, { component: 'AI_COST' });
+        return callLlmEmergencyFallback(systemPrompt, userMessage, opts, label, startMs);
       }
     }
     logger.warn(`⚠️ Studio 오류 [${label}]: ${msg}`, { component: 'AI_COST' });
     throw err;
   }
+}
+
+/**
+ * v27: Gemini 전면 장애 비상 폴백 — Groq → NVIDIA NIM
+ * Studio 429 + Vertex 실패 시 최후 수단 (거래 중단 방지)
+ * 토큰 최적화: systemPrompt 2000자 + userMessage 4000자 제한
+ */
+async function callLlmEmergencyFallback(
+  systemPrompt: string,
+  userMessage: string,
+  opts: GeminiCallOptions,
+  label: string,
+  startMs: number,
+): Promise<string> {
+  // 토큰 최적화 — 프롬프트 압축 (비상 폴백은 입력 최소화)
+  const sysCompact = systemPrompt.length > 2000 ? systemPrompt.slice(0, 2000) + '\n…(truncated)' : systemPrompt;
+  const userCompact = userMessage.length > 4000 ? userMessage.slice(0, 4000) + '\n…(truncated)' : userMessage;
+  const maxTokens = Math.min(opts.maxOutputTokens ?? 4096, 4096);
+
+  // 1차: Groq (llama-3.3-70b)
+  const groqKey = process.env.GROQ_API_KEY;
+  if (groqKey) {
+    try {
+      const { default: OpenAI } = await import('openai');
+      const groq = new OpenAI({ apiKey: groqKey, baseURL: 'https://api.groq.com/openai/v1' });
+      const resp = await groq.chat.completions.create({
+        model: 'llama-3.3-70b-versatile',
+        messages: [
+          { role: 'system', content: sysCompact },
+          { role: 'user', content: userCompact },
+        ],
+        temperature: opts.temperature ?? 0.2,
+        max_tokens: maxTokens,
+      });
+      const text = resp.choices[0]?.message?.content ?? '';
+      const inTok = resp.usage?.prompt_tokens ?? 0;
+      const outTok = resp.usage?.completion_tokens ?? 0;
+      const costUsd = calcGroqCost(inTok, outTok);
+      const durationMs = Date.now() - startMs;
+      logTokenUsage({ provider: 'groq', model: 'llama-3.3-70b', inputTokens: inTok, outputTokens: outTok, costUsd, label: `${label}(비상폴백)` });
+      logger.info(`🆘 Groq 비상폴백 [${label}]: ${inTok}+${outTok}tok ${durationMs}ms $${costUsd.toFixed(5)}`, { component: 'AI_COST' });
+      return text;
+    } catch (groqErr) {
+      logger.warn(`⚠️ Groq 비상폴백 실패 [${label}]: ${groqErr instanceof Error ? groqErr.message : groqErr}`, { component: 'AI_COST' });
+    }
+  }
+
+  // 2차: NVIDIA NIM (무료)
+  const nvidiaKey = process.env.NVIDIA_API_KEY;
+  if (nvidiaKey) {
+    try {
+      const { default: OpenAI } = await import('openai');
+      const nvidia = new OpenAI({ apiKey: nvidiaKey, baseURL: 'https://integrate.api.nvidia.com/v1' });
+      const resp = await nvidia.chat.completions.create({
+        model: 'meta/llama-3.3-70b-instruct',
+        messages: [
+          { role: 'system', content: sysCompact },
+          { role: 'user', content: userCompact },
+        ],
+        temperature: opts.temperature ?? 0.2,
+        max_tokens: maxTokens,
+      });
+      const text = resp.choices[0]?.message?.content ?? '';
+      const inTok = resp.usage?.prompt_tokens ?? 0;
+      const outTok = resp.usage?.completion_tokens ?? 0;
+      const durationMs = Date.now() - startMs;
+      logTokenUsage({ provider: 'nvidia', model: 'llama-3.3-70b', inputTokens: inTok, outputTokens: outTok, costUsd: 0, label: `${label}(비상폴백)` });
+      logger.info(`🆘 NVIDIA 비상폴백 [${label}]: ${inTok}+${outTok}tok ${durationMs}ms (무료)`, { component: 'AI_COST' });
+      return text;
+    } catch (nvErr) {
+      logger.warn(`⚠️ NVIDIA 비상폴백 실패 [${label}]: ${nvErr instanceof Error ? nvErr.message : nvErr}`, { component: 'AI_COST' });
+    }
+  }
+
+  throw new Error(`Gemini + Groq + NVIDIA 전체 장애 — ${label}`);
 }
