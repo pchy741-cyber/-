@@ -128,7 +128,7 @@ export async function computeStrategyHealth(
        FROM score_accuracy sa
        WHERE sa.is_paper = $1
          AND sa.recorded_at >= NOW() - ($2 || ' days')::INTERVAL
-         AND COALESCE(sa.trading_profile, 'LIVE') != 'EXPLORE'
+         AND ($1 = true OR COALESCE(sa.trading_profile, 'LIVE') != 'EXPLORE')
          ${marketCond}
        ORDER BY sa.recorded_at ASC`,
       [isPaper, days],

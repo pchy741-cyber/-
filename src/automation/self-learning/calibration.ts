@@ -58,7 +58,7 @@ export async function analyzeBuyThreshold(): Promise<LearnedInsight[]> {
         WHERE recorded_at BETWEEN NOW() - INTERVAL '90 days' AND NOW() - INTERVAL '${holdoutDays} days'
           AND entry_score IS NOT NULL
           AND is_paper = $1
-          AND COALESCE(trading_profile, 'LIVE') != 'EXPLORE'
+          AND ($1 = true OR COALESCE(trading_profile, 'LIVE') != 'EXPLORE')
         ORDER BY entry_score`,
       [isPaper],
     );
@@ -253,7 +253,7 @@ export async function calibrateScoreTierParams(market: 'KR' | 'US' = 'KR'): Prom
        WHERE recorded_at BETWEEN NOW() - INTERVAL '120 days' AND NOW() - INTERVAL '${holdoutDays} days'
          AND entry_score IS NOT NULL
          AND is_paper = $1
-         AND COALESCE(trading_profile, 'LIVE') != 'EXPLORE'
+         AND ($1 = true OR COALESCE(trading_profile, 'LIVE') != 'EXPLORE')
          ${marketFilter}
        ORDER BY recorded_at DESC`,
       [getCtxIsPaper()],

@@ -103,7 +103,7 @@ export async function calibrateBonusWeights(): Promise<void> {
        WHERE sa.recorded_at >= NOW() - INTERVAL '90 days'
          AND sa.is_paper = $1
          AND sa.entry_score IS NOT NULL
-         AND COALESCE(sa.trading_profile, 'LIVE') != 'EXPLORE'`,
+         AND ($1 = true OR COALESCE(sa.trading_profile, 'LIVE') != 'EXPLORE')`,
       [isPaper],
     );
 
