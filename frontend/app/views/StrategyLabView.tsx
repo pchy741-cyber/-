@@ -29,13 +29,14 @@ export default function StrategyLabView({ toast, viewMode, confirm }: Props) {
   const [simAmount, setSimAmount] = useState(1000);
   const [expandedCard, setExpandedCard] = useState<string | null>(null);
   const [tuning, setTuning] = useState<TuningStatus | null>(null);
+  const [market, setMarket] = useState<'ALL' | 'KR' | 'US'>('ALL');
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
       const [ov, ap, ins, tun] = await Promise.all([
-        api('/strategy-lab/overview'),
+        api(`/strategy-lab/overview?market=${market}`),
         api('/strategy-lab/approvals'),
         api('/strategy-lab/insights'),
         api('/strategy-lab/tuning-status').catch(() => null),
@@ -51,7 +52,7 @@ export default function StrategyLabView({ toast, viewMode, confirm }: Props) {
       toast(msg, 'err');
     }
     setLoading(false);
-  }, [toast]);
+  }, [toast, market]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -249,6 +250,20 @@ export default function StrategyLabView({ toast, viewMode, confirm }: Props) {
           </div>
         </div>
       )}
+
+      {/* ─── Market Tabs ─── */}
+      <div className="flex gap-1.5">
+        {([['ALL', '전체'], ['KR', '국내'], ['US', '해외']] as const).map(([k, label]) => (
+          <button key={k} onClick={() => setMarket(k)}
+            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+              market === k
+                ? 'bg-cyan-500/15 text-cyan-300 ring-1 ring-cyan-500/25'
+                : 'text-slate-500 hover:text-slate-300 hover:bg-white/[0.03]'
+            }`}>
+            {label}
+          </button>
+        ))}
+      </div>
 
       {/* ─── Strategy Cards ─── */}
       <div>

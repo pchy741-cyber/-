@@ -48,6 +48,7 @@ const TransactionChainSchema = z.object({
     'BOTTOM_FISHING',
     'EOD_BETTING',
     'BREAKOUT',
+    'PARKING',
   ]),
   avg_buy_price: z.number().nullable(),
   total_quantity: z.number(),
@@ -124,7 +125,7 @@ export type PortfolioSnapshot = z.infer<typeof PortfolioSnapshotSchema>;
 // ── CEO 전략 설정 ──
 const StrategyConfigSchema = z.object({
   id: z.string().uuid(),
-  mode: z.enum(['SWING', 'DEFENSE', 'SCALPING', 'DIVIDEND', 'SNIPER', 'BOTTOM_FISHING', 'EOD_BETTING', 'BREAKOUT']),
+  mode: z.enum(['SWING', 'DEFENSE', 'SCALPING', 'DIVIDEND', 'SNIPER', 'BOTTOM_FISHING', 'EOD_BETTING', 'BREAKOUT', 'PARKING']),
   is_active: z.boolean(),
   // DDL 037: NOT NULL DEFAULT false — paper/live 구분 필터 핵심 컬럼
   is_paper: z.boolean().default(false),

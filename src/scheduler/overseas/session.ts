@@ -228,6 +228,69 @@ export function getMinutesToUSClose(): number {
   return Math.max(0, usClose - mins);
 }
 
+/** US 세션 마감 시 분위기 저장 — KR 장세 판정에 전달 */
+export async function saveUSCloseInfluence(params: {
+  vixRegime: string;
+  sessionPnlPct: number;
+  topMovers: { code: string; pct: number }[];
+  marketBrief: string;
+}): Promise<void> {
+  try {
+    const summary = {
+      savedAt: new Date().toISOString(),
+      sessionDate: getUSSessionId(),
+      vixRegime: params.vixRegime,
+      sessionPnlPct: params.sessionPnlPct,
+      topMovers: params.topMovers.slice(0, 5),
+      marketBrief: params.marketBrief,
+    };
+    await getPool().query(
+      `INSERT INTO overseas_state (key, value) VALUES ('us_close_influence', $1)
+       ON CONFLICT (key) DO UPDATE SET value = $1`,
+      [JSON.stringify(summary)],
+    );
+    logger.info(`🌍 US→KR 판정전달 저장: ${params.vixRegime} PnL=${params.sessionPnlPct > 0 ? '+' : ''}${params.sessionPnlPct.toFixed(1)}%`, { component: 'OVERSEAS' });
+  } catch (e) {
+    logger.warn(`US→KR 판정전달 저장 실패: ${e}`, { component: 'OVERSEAS' });
+  }
+}
+
+/** US 세션 마감 분위기 읽기 — KR 장세 판정용 */
+export async function getUSCloseInfluence(): Promise<{
+  score: number;
+  regime: string;
+  brief: string;
+  age: number; // hours since saved
+} | null> {
+  try {
+    const { rows } = await getPool().query(
+      `SELECT value FROM overseas_state WHERE key = 'us_close_influence'`,
+    );
+    if (rows.length === 0) return null;
+    const data = JSON.parse(rows[0].value);
+    const ageMs = Date.now() - new Date(data.savedAt).getTime();
+    const ageHours = ageMs / (60 * 60_000);
+    // 12시간 이상 오래된 데이터는 무시
+    if (ageHours > 12) return null;
+
+    // VIX 레짐 + 세션 PnL로 점수 산출 (양수=강세, 음수=약세)
+    let score = 0;
+    const pnl = data.sessionPnlPct ?? 0;
+    if (data.vixRegime === 'CRISIS') score -= 3;
+    else if (data.vixRegime === 'STRESS') score -= 1;
+    else if (data.vixRegime === 'CALM') score += 1;
+
+    if (pnl >= 2) score += 2;
+    else if (pnl >= 0.5) score += 1;
+    else if (pnl <= -2) score -= 2;
+    else if (pnl <= -0.5) score -= 1;
+
+    return { score, regime: data.vixRegime, brief: data.marketBrief ?? '', age: Math.round(ageHours * 10) / 10 };
+  } catch {
+    return null;
+  }
+}
+
 /** KST 날짜 문자열 반환 */
 export function getKSTDateString(): string {
   const now = new Date();

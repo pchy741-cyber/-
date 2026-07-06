@@ -256,6 +256,91 @@ function computePerformance(mode: string, rows: ClosedChainRow[]): StrategyPerfo
 }
 
 /**
+ * 해외(US) 전략별 성과 — score_accuracy 기반 (overseas는 transaction_chains 미사용)
+ */
+export async function getOverseasStrategyPerformances(
+  days: number = 30,
+  isPaper: boolean = true,
+): Promise<StrategyPerformance[]> {
+  const { rows } = await getPool().query<{
+    stock_code: string;
+    strategy_mode: string;
+    realized_pnl_pct: string;
+    outcome: string;
+    holding_days: string | null;
+    recorded_at: string;
+  }>(
+    `SELECT stock_code, COALESCE(strategy_mode, 'SWING') AS strategy_mode,
+            realized_pnl_pct, outcome, holding_days, recorded_at
+     FROM score_accuracy
+     WHERE market = 'US'
+       AND is_paper = $1
+       AND recorded_at >= NOW() - ($2 * INTERVAL '1 day')
+       AND ($1 = true OR COALESCE(trading_profile, 'LIVE') != 'EXPLORE')
+     ORDER BY strategy_mode, recorded_at DESC`,
+    [isPaper, days],
+  );
+
+  const groups = new Map<string, typeof rows>();
+  for (const row of rows) {
+    const mode = row.strategy_mode;
+    if (!groups.has(mode)) groups.set(mode, []);
+    groups.get(mode)!.push(row);
+  }
+
+  const results: StrategyPerformance[] = [];
+  const FEE_US = 0.70; // US round-trip fee %
+  for (const [mode, modeRows] of groups) {
+    let wins = 0, losses = 0, breakEven = 0, netWins = 0;
+    let totalWinPct = 0, totalLossPct = 0, totalHoldDays = 0;
+    let best: { stockCode: string; pnlPct: number } | null = null;
+    let worst: { stockCode: string; pnlPct: number } | null = null;
+    const pnlSeq: number[] = [];
+
+    for (const r of modeRows) {
+      const pnl = Number(r.realized_pnl_pct) || 0;
+      const netPnl = pnl - FEE_US;
+      pnlSeq.push(pnl);
+      if (r.outcome === 'WIN') { wins++; totalWinPct += pnl; }
+      else if (r.outcome === 'LOSS') { losses++; totalLossPct += Math.abs(pnl); }
+      else breakEven++;
+      if (netPnl > 0) netWins++;
+      if (!best || pnl > best.pnlPct) best = { stockCode: r.stock_code, pnlPct: pnl };
+      if (!worst || pnl < worst.pnlPct) worst = { stockCode: r.stock_code, pnlPct: pnl };
+      totalHoldDays += Number(r.holding_days) || 0;
+    }
+
+    const total = wins + losses + breakEven;
+    const grossWinRate = total > 0 ? wins / total : 0;
+    const netWinRate = total > 0 ? netWins / total : 0;
+    const grossProfit = pnlSeq.filter(p => p > 0).reduce((s, p) => s + p, 0);
+    const grossLoss = Math.abs(pnlSeq.filter(p => p < 0).reduce((s, p) => s + p, 0));
+    const rawPF = grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? 999 : 0;
+    let maxDD = 0, curDD = 0;
+    for (const p of pnlSeq) { if (p < 0) { curDD += p; maxDD = Math.min(maxDD, curDD); } else curDD = 0; }
+
+    results.push({
+      mode,
+      totalTrades: total,
+      wins, losses, breakEven,
+      winRate: netWinRate, grossWinRate, netWinRate,
+      avgWinPct: wins > 0 ? totalWinPct / wins : 0,
+      avgLossPct: losses > 0 ? totalLossPct / losses : 0,
+      totalPnlKrw: 0, // US는 KRW 집계 불가 — % 기반
+      totalPnlPct: total > 0 ? Math.round(pnlSeq.reduce((s, p) => s + p, 0) / total * 100) / 100 : 0,
+      maxDrawdownPct: Math.round(maxDD * 100) / 100,
+      profitFactor: Math.round(Math.min(rawPF, 999) * 100) / 100,
+      avgHoldingDays: total > 0 ? Math.round(totalHoldDays / total * 10) / 10 : 0,
+      bestTrade: best, worstTrade: worst,
+      lastUpdated: new Date().toISOString(),
+    });
+  }
+
+  results.sort((a, b) => b.winRate - a.winRate);
+  return results;
+}
+
+/**
  * 전체 전략 성과 요약 로그
  */
 export async function logStrategyPerformanceSummary(days: number = 30, isPaper: boolean = true): Promise<void> {

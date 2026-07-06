@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { cacheGet, cacheSet } from '../../cache/memory.js';
 import { getPool } from '../../db/client.js';
-import { getAllStrategyPerformances } from '../../risk/strategy-performance.js';
+import { getAllStrategyPerformances, getOverseasStrategyPerformances } from '../../risk/strategy-performance.js';
 import { logger } from '../../utils/logger.js';
 
 export const strategyLabRoutes = new Hono();
@@ -9,13 +9,18 @@ export const strategyLabRoutes = new Hono();
 // ── GET /strategy-lab/overview ─────────────────────────────────
 strategyLabRoutes.get('/strategy-lab/overview', async (c) => {
   try {
-    // 5분 캐시 — 전략 성과 집계는 무거운 쿼리, 실시간 불필요
-    const cached = cacheGet<{ strategies: unknown[] }>('api:strategy-lab:overview');
+    const market = (c.req.query('market') ?? 'ALL').toUpperCase() as 'KR' | 'US' | 'ALL';
+    // 1분 캐시, market별 분리
+    const cacheKey = `api:strategy-lab:overview:${market}`;
+    const cached = cacheGet<{ strategies: unknown[]; market: string }>(cacheKey);
     if (cached) return c.json(cached);
 
-    const [paperPerfs, livePerfs, graduations] = await Promise.all([
-      getAllStrategyPerformances(30, true),
-      getAllStrategyPerformances(30, false),
+    // KR: transaction_chains 기반, US: score_accuracy 기반
+    const [paperKR, liveKR, paperUS, liveUS, graduations] = await Promise.all([
+      market !== 'US' ? getAllStrategyPerformances(30, true) : Promise.resolve([]),
+      market !== 'US' ? getAllStrategyPerformances(30, false) : Promise.resolve([]),
+      market !== 'KR' ? getOverseasStrategyPerformances(30, true) : Promise.resolve([]),
+      market !== 'KR' ? getOverseasStrategyPerformances(30, false) : Promise.resolve([]),
       getPool()
         .query(`
         SELECT * FROM strategy_graduations
@@ -25,8 +30,11 @@ strategyLabRoutes.get('/strategy-lab/overview', async (c) => {
         .catch(() => ({ rows: [] })),
     ]);
 
+    // market별 데이터 합산
+    const paperPerfs = [...paperKR, ...paperUS];
+    const livePerfs = [...liveKR, ...liveUS];
+
     // DIVIDEND: 전략랩 대상 아님 (매수 차단 모드)
-    // SCALPING/EOD_BETTING: Paper 모드에서 데이터 수집 중이므로 제외하지 않음
     const EXCLUDED_MODES = new Set(['DIVIDEND']);
     const modes = new Set(
       [...paperPerfs.map((p) => p.mode), ...livePerfs.map((p) => p.mode)]
@@ -39,8 +47,8 @@ strategyLabRoutes.get('/strategy-lab/overview', async (c) => {
       graduation: graduations.rows.find((g: any) => g.strategy_mode === mode) ?? null,
     }));
 
-    const result = { strategies };
-    cacheSet('api:strategy-lab:overview', result, 300); // 5분 TTL
+    const result = { strategies, market };
+    cacheSet(cacheKey, result, 60); // 1분 TTL (기존 5분 → 성능 개선)
     return c.json(result);
   } catch (e: any) {
     logger.error(`Strategy Lab 조회 실패: ${e}`, { component: 'STRATEGY_LAB' });

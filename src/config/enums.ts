@@ -47,6 +47,7 @@ export const StrategyMode = {
   BOTTOM_FISHING: 'BOTTOM_FISHING',
   EOD_BETTING: 'EOD_BETTING',
   BREAKOUT: 'BREAKOUT',
+  PARKING: 'PARKING',
 } as const;
 export type StrategyMode = (typeof StrategyMode)[keyof typeof StrategyMode];
 

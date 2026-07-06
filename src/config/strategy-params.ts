@@ -102,6 +102,17 @@ export const STRATEGY_PARAMS = {
     stopLossPct: -3.5,
     maxHoldingDays: 10,
   },
+
+  PARKING: {
+    buyThreshold: 95,
+    splitCount: 1,
+    averageDownPct: 0,
+    maxAveragingCount: 0,
+    takeProfitPct: 3.0,
+    takeProfitRatio: 1.0,
+    stopLossPct: -2.0,
+    maxHoldingDays: 1,
+  },
 } as const;
 
 // ── 점수 기반 동적 익절/손절 파라미터 ──

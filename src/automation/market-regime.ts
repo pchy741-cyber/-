@@ -155,14 +155,15 @@ async function fetchKospi200Change(): Promise<number> {
 export async function detectMarketRegime(): Promise<MarketRegime> {
   const reasons: string[] = [];
 
-  // 병렬 데이터 수집 (FRED 매크로 + 뉴스 충격 — Gemini 미관여, 독립 신호)
-  const [macro, kospiHistory, foreignNet, kospi200Change, fredAdj, newsShockAdj] = await Promise.all([
+  // 병렬 데이터 수집 (FRED 매크로 + 뉴스 충격 + US 세션 마감 판정 — Gemini 미관여, 독립 신호)
+  const [macro, kospiHistory, foreignNet, kospi200Change, fredAdj, newsShockAdj, usCloseAdj] = await Promise.all([
     getMacroSnapshot().catch(() => null),
     fetchKospiHistory(),
     fetchMarketForeignNet(),
     fetchKospi200Change(),
     import('../market/fred-macro.js').then((m) => m.getFredMacroAdjustment()).catch(() => ({ score: 0, reasons: [] })),
     assessNewsShockForRegime().catch(() => ({ score: 0, reasons: [] as string[] })),
+    import('../scheduler/overseas/session.js').then((m) => m.getUSCloseInfluence()).catch(() => null),
   ]);
 
   const kospiChange = macro?.kospiChange ?? 0;
@@ -263,6 +264,12 @@ export async function detectMarketRegime(): Promise<MarketRegime> {
     for (const r of newsShockAdj.reasons) {
       addFactor(`news_${r.slice(0, 10)}`, r, newsShockAdj.score, newsShockAdj.score);
     }
+  }
+
+  // ⑨ US 세션 마감 분위기 → KR 장세 전달 (미국=구매자, 한국=공급자 연동)
+  if (usCloseAdj && usCloseAdj.score !== 0) {
+    const dir = usCloseAdj.score > 0 ? '강세' : '약세';
+    addFactor('us_close', `US마감 ${dir} (${usCloseAdj.regime}, ${usCloseAdj.age.toFixed(0)}h전)`, usCloseAdj.score, usCloseAdj.score);
   }
 
   // ── 체제 판단 ──

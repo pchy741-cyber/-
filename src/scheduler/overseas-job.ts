@@ -1619,7 +1619,7 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
       // ── 종가베팅 (조건부): 극단 약세장만 마감 30분 전 제한, 나머지는 스윙 ──
       // v15: 기존 breadth<35% OR VIX STRESS면 차단 → 거의 매일 차단되어 매수 0건
       // 변경: CRISIS + 방어 동시 발동 시만 종가베팅 모드 (= 극단 상황만 제한)
-      const { isUSMarketLastNMinutes, getMinutesToUSClose } = await import('./overseas/session.js');
+      const { isUSMarketLastNMinutes, getMinutesToUSClose, saveUSCloseInfluence } = await import('./overseas/session.js');
       const isEodWindow = isUSMarketLastNMinutes(30);
       const isBadMarket =
         (freshBreadth < 0.25 && vixRegime.regime === 'CRISIS') || // 극단 약세: breadth 25% 미만 + VIX CRISIS
@@ -1989,6 +1989,26 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
 
     // ── Memory Agent: 거래 패턴 자동 추출 (세션당 1회) ──
     extractTradingPatterns().catch(() => {});
+
+    // ── US→KR 판정전달: 마감 30분 전 Live 세션에서 분위기 저장 ──
+    const { isUSMarketLastNMinutes: isEOD, saveUSCloseInfluence } = await import('./overseas/session.js');
+    if (!isPaper() && isEOD(30)) {
+      const sessionStartVal = s.sessionStartPortfolioValue.get('live') ?? portfolioValue;
+      const sessionPnlPct = sessionStartVal > 0 ? ((portfolioValue - sessionStartVal) / sessionStartVal) * 100 : 0;
+      const movers = [...finalHoldings.entries()]
+        .map(([code, h]) => {
+          const t = techByCode.get(code);
+          const pct = t && h.avgPrice > 0 ? ((t.price.currentPrice - h.avgPrice) / h.avgPrice) * 100 : 0;
+          return { code, pct };
+        })
+        .sort((a, b) => Math.abs(b.pct) - Math.abs(a.pct));
+      saveUSCloseInfluence({
+        vixRegime: vixRegime.regime,
+        sessionPnlPct,
+        topMovers: movers,
+        marketBrief: `VIX:${vixRegime.regime} 보유${finalHoldings.size}종목 PnL${sessionPnlPct > 0 ? '+' : ''}${sessionPnlPct.toFixed(1)}%`,
+      }).catch(() => {});
+    }
 
     // ── 매도 후 빠른 재투자: 현금 해방 시 30초 후 재스캔 ──
     // v10.8: shutdown 체크 + 재귀 방지 (rescan에서 또 매도→또 rescan 무한루프 차단)
