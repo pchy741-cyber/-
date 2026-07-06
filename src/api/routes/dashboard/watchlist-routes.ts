@@ -14,6 +14,7 @@ import {
   getChangeRankingStocks,
   getCurrentPrice,
   getVolumeRankingStocks,
+  isExtendedPreMarket,
   isMarketOpen,
 } from '../../../kis/market.js';
 import { logger } from '../../../utils/logger.js';
@@ -415,7 +416,7 @@ watchlistRoutes.get('/watchlist/sold-tracking', async (c) => {
       }
     }
     const uncachedCodes = codes.filter((c) => !priceMap.has(c));
-    if (uncachedCodes.length > 0 && isMarketOpen()) {
+    if (uncachedCodes.length > 0 && (isMarketOpen() || isExtendedPreMarket())) {
       const livePrices = await getBatchPrices(uncachedCodes).catch(() => new Map());
       for (const [code, p] of livePrices) {
         if (p.currentPrice > 0) {

@@ -40,6 +40,7 @@ import { adjustToTickSize, roundKrw } from '../utils/money.js';
 import { getKSTNow } from '../utils/time.js';
 import { registerBuyIntent, releaseBuyIntent } from './buy-intent.js';
 import { chainManager } from './chain.js';
+import { registerPendingOrder } from './pending-order-manager.js';
 import { cancelWatchdogTpOrder, startWatchdog } from './post-fill-watchdog.js';
 
 /**
@@ -1125,7 +1126,7 @@ export class TradeExecutor {
     if (result.success) {
       const now = await getCurrentPrice(stockCode).catch(() => null);
       const fallbackPrice = now?.currentPrice ?? (Number(chain.avg_buy_price) || 0);
-      const fill = await this.confirmFill(result.orderNo, stockCode, safeQty, fallbackPrice);
+      const fill = await this.confirmFill(result.orderNo, stockCode, safeQty, fallbackPrice, 'SELL');
       if (!fill) {
         logger.error(`체결 미확인 → 부분익절 체인 업데이트 보류: ${stockCode}`, { component: 'EXECUTOR' });
         return;
@@ -1415,7 +1416,7 @@ export class TradeExecutor {
     {
       const now = await getCurrentPrice(stockCode).catch(() => null);
       const fallbackPrice = now?.currentPrice ?? (Number(chain.avg_buy_price) || 0);
-      const fill = await this.confirmFill(result.orderNo, stockCode, chain.total_quantity, fallbackPrice);
+      const fill = await this.confirmFill(result.orderNo, stockCode, chain.total_quantity, fallbackPrice, 'SELL');
       if (!fill) {
         // v10.9.4: confirmFill 타임아웃도 closeFailCount 증가 (기존: 미증가 → 5회 안전장치 무력화)
         this._closeFailCount.set(failKey, failCount + 1);
@@ -1461,7 +1462,7 @@ export class TradeExecutor {
               isPaper: isPaperSnapshot,
             });
             if (retryResult.success) {
-              const retryFill = await this.confirmFill(retryResult.orderNo, stockCode, remainQty, fill.filledPrice);
+              const retryFill = await this.confirmFill(retryResult.orderNo, stockCode, remainQty, fill.filledPrice, 'SELL');
               if (retryFill && retryFill.filledQty > 0) {
                 const updatedChain = await chainManager.findOpenChain(stockCode, isPaperSnapshot);
                 if (updatedChain) {
@@ -1662,6 +1663,7 @@ export class TradeExecutor {
     stockCode: string,
     expectedQty: number,
     fallbackPrice: number,
+    side: 'BUY' | 'SELL' = 'BUY',
   ): Promise<{ filledQty: number; filledPrice: number } | null> {
     if (getCtxIsPaper()) {
       return { filledQty: expectedQty, filledPrice: roundKrw(fallbackPrice) };
@@ -1727,7 +1729,29 @@ export class TradeExecutor {
       component: 'EXECUTOR',
     });
 
-    // 미체결 지정가 주문 자동 취소 (이미 체결된 시장가면 취소 실패 → 무시)
+    // v20.1: 매수 미체결 → pending-order-manager에 등록 (재배치/체결 관리)
+    if (side === 'BUY') {
+      try {
+        const strategy = await getActiveStrategy();
+        await registerPendingOrder({
+          orderNo,
+          stockCode,
+          quantity: expectedQty,
+          limitPrice: fallbackPrice,
+          supportReasoning: '지정가 미체결 → 예약매수 전환',
+          mode: (strategy?.mode ?? 'SWING') as StrategyMode,
+          isPaper: getCtxIsPaper(),
+        });
+        logger.info(`📋 미체결 매수 → 예약주문 등록: ${stockCode} ${expectedQty}주 @${fallbackPrice.toLocaleString()}`, {
+          component: 'EXECUTOR',
+        });
+        return null; // pending-order-manager가 이후 관리
+      } catch (e) {
+        logger.warn(`예약주문 등록 실패 → 기존 취소 로직 진행: ${e}`, { component: 'EXECUTOR' });
+      }
+    }
+
+    // 미체결 지정가 주문 자동 취소 (매도 또는 예약등록 실패 시)
     try {
       await cancelOrder({ orderNo, stockCode, quantity: expectedQty });
       // 🔒 DB 주문 상태도 CANCELLED로 업데이트 — PENDING 잔류 방지 (중복매수 위험 차단)

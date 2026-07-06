@@ -91,7 +91,7 @@ export async function runQAWatchdog(): Promise<void> {
   const issues: QAIssue[] = [];
 
   try {
-    // 병렬 전수조사 (v17: 대형손실 감지 추가)
+    // 병렬 전수조사 (v20.1: 해외 체크 3종 추가)
     const results = await Promise.allSettled([
       checkBalanceIntegrity(issues),
       checkCrossContamination(issues),
@@ -102,12 +102,15 @@ export async function runQAWatchdog(): Promise<void> {
       checkProfitability(issues),
       checkTradeLatency(issues),
       checkLargeLoss(issues),
+      checkOverseasHoldings(issues),
+      checkOverseasCrossContamination(issues),
+      checkOverseasProfitability(issues),
     ]);
 
     // 실패한 검사 자체도 이슈로 기록
     results.forEach((r, i) => {
       if (r.status === 'rejected') {
-        const names = ['잔고정합', '크로스오염', '매매로직', 'AI비용', '시스템헬스', '주문체인', '수익성', '매매딜레이', '대형손실'];
+        const names = ['잔고정합', '크로스오염', '매매로직', 'AI비용', '시스템헬스', '주문체인', '수익성', '매매딜레이', '대형손실', '해외포지션', '해외오염', '해외수익성'];
         issues.push({
           severity: 'WARNING',
           category: '시스템',
@@ -840,4 +843,167 @@ function buildQAHtml(issues: QAIssue[], elapsed: string): string {
         </p>
       </div>
     </body></html>`;
+}
+
+// ═══════════════════════════════════════════
+//  v20.1: 해외 전용 체크 (기존 국내 체크 해외 미커버 해소)
+// ═══════════════════════════════════════════
+
+/** 해외 포지션 정합성: overseas_holdings 수량/가격 + 가격 최신성 */
+async function checkOverseasHoldings(issues: QAIssue[]): Promise<void> {
+  const pool = getPool();
+
+  for (const isPaper of [true, false]) {
+    const mode = isPaper ? 'PAPER' : 'LIVE';
+
+    // 1) 수량 > 0인데 avg_price = 0 (비정상)
+    const { rows: zeroPriceRows } = await pool.query(
+      `SELECT stock_code, exchange FROM overseas_holdings
+       WHERE is_paper = $1 AND quantity > 0 AND (avg_price IS NULL OR avg_price <= 0)`,
+      [isPaper],
+    );
+    for (const r of zeroPriceRows) {
+      issues.push({
+        severity: 'CRITICAL',
+        category: '정합성',
+        title: `[해외-${mode}] 평단가 0: ${r.stock_code} (${r.exchange})`,
+        detail: `보유 중인데 avg_price가 0 — 매수 기록 누락 의심`,
+      });
+    }
+
+    // 2) 수량 음수 (절대 불가)
+    const { rows: negQtyRows } = await pool.query(
+      `SELECT stock_code, quantity FROM overseas_holdings WHERE is_paper = $1 AND quantity < 0`,
+      [isPaper],
+    );
+    for (const r of negQtyRows) {
+      issues.push({
+        severity: 'CRITICAL',
+        category: '정합성',
+        title: `[해외-${mode}] 음수 수량: ${r.stock_code} (${r.quantity}주)`,
+        detail: `overseas_holdings 수량이 음수 — 매도 과다 처리 의심`,
+      });
+    }
+
+    // 3) 가격 최신성: US장 중(KST 22:30~07:00)인데 last_price_at이 8시간 이상 오래됨
+    const { rows: staleRows } = await pool.query(
+      `SELECT stock_code, last_price_at FROM overseas_holdings
+       WHERE is_paper = $1 AND quantity > 0
+         AND last_price_at < NOW() - INTERVAL '8 hours'`,
+      [isPaper],
+    );
+    if (staleRows.length >= 2) {
+      issues.push({
+        severity: 'WARNING',
+        category: '정합성',
+        title: `[해외-${mode}] 시세 오래됨: ${staleRows.length}종목`,
+        detail: staleRows.map((r) => `${r.stock_code}: ${String(r.last_price_at).slice(0, 16)}`).join(', '),
+      });
+    }
+  }
+}
+
+/** 해외 교차 오염: paper/live 동시 매매, is_paper 불일치 */
+async function checkOverseasCrossContamination(issues: QAIssue[]): Promise<void> {
+  const pool = getPool();
+
+  // 1) 같은 종목을 paper+live 동시 체결 (1시간 내)
+  const { rows: dualRows } = await pool.query(`
+    SELECT stock_code
+    FROM orders
+    WHERE trigger_source = 'OVERSEAS' AND status = 'FILLED'
+      AND created_at >= NOW() - INTERVAL '1 hour'
+    GROUP BY stock_code
+    HAVING COUNT(DISTINCT is_paper) > 1
+  `);
+  for (const r of dualRows) {
+    issues.push({
+      severity: 'CRITICAL',
+      category: '크로스오염',
+      title: `[해외] Paper+Live 동시: ${r.stock_code}`,
+      detail: `1시간 내 동일 종목 Paper/Live 양쪽 체결 — 모드 분리 점검`,
+    });
+  }
+
+  // 2) overseas_holdings의 is_paper와 orders trading_mode 불일치
+  const { rows: mismatchRows } = await pool.query(`
+    SELECT DISTINCT oh.stock_code, oh.is_paper AS holding_paper, o.trading_mode
+    FROM overseas_holdings oh
+    JOIN orders o ON o.stock_code = oh.stock_code AND o.trigger_source = 'OVERSEAS' AND o.status = 'FILLED'
+    WHERE oh.quantity > 0
+      AND o.created_at >= NOW() - INTERVAL '24 hours'
+      AND ((oh.is_paper = true AND o.trading_mode = 'live')
+        OR (oh.is_paper = false AND o.trading_mode NOT IN ('live')))
+    LIMIT 5
+  `);
+  for (const r of mismatchRows) {
+    issues.push({
+      severity: 'CRITICAL',
+      category: '크로스오염',
+      title: `[해외] 모드 불일치: ${r.stock_code} (보유=${r.holding_paper ? 'PAPER' : 'LIVE'}, 주문=${r.trading_mode})`,
+      detail: `overseas_holdings.is_paper와 orders.trading_mode 교차`,
+    });
+  }
+}
+
+/** 해외 수익성: 7일 실현손익 + 승률 */
+async function checkOverseasProfitability(issues: QAIssue[]): Promise<void> {
+  const pool = getPool();
+
+  for (const isPaper of [true, false]) {
+    const mode = isPaper ? 'PAPER' : 'LIVE';
+    const modeVal = isPaper ? 'paper' : 'live';
+
+    // 최근 7일 해외 SELL 주문 (체결가 - 평단가 → 손익)
+    const { rows } = await pool.query(`
+      SELECT stock_code, filled_price, avg_buy_price,
+             (filled_price - avg_buy_price) / NULLIF(avg_buy_price, 0) * 100 AS pnl_pct
+      FROM orders
+      WHERE trigger_source = 'OVERSEAS' AND side = 'SELL' AND status = 'FILLED'
+        AND (trading_mode = $1 OR ($1 = 'paper' AND trading_mode = 'p_arch'))
+        AND avg_buy_price > 0 AND filled_price > 0
+        AND created_at >= NOW() - INTERVAL '7 days'
+      ORDER BY created_at DESC
+    `, [modeVal]);
+
+    if (rows.length < 3) continue; // 표본 부족 스킵
+
+    const wins = rows.filter((r) => Number(r.pnl_pct) > 0);
+    const losses = rows.filter((r) => Number(r.pnl_pct) <= 0);
+    const winRate = wins.length / rows.length;
+    const totalWinPct = wins.reduce((s, r) => s + Number(r.pnl_pct), 0);
+    const totalLossPct = losses.reduce((s, r) => s + Math.abs(Number(r.pnl_pct)), 0);
+    const pf = totalLossPct > 0 ? totalWinPct / totalLossPct : totalWinPct > 0 ? 99 : 0;
+
+    if (winRate < 0.25 && pf < 1.0) {
+      issues.push({
+        severity: 'CRITICAL',
+        category: '매매로직',
+        title: `[해외-${mode}] 7일 승률 ${(winRate * 100).toFixed(0)}% (PF ${pf.toFixed(2)}, ${rows.length}건)`,
+        detail: `승률+PF 모두 저조 — 해외 전략 재검토 필요`,
+      });
+    } else if (winRate < 0.40 && pf < 1.0) {
+      issues.push({
+        severity: 'WARNING',
+        category: '매매로직',
+        title: `[해외-${mode}] 7일 승률 ${(winRate * 100).toFixed(0)}% (PF ${pf.toFixed(2)}, ${rows.length}건)`,
+        detail: `해외 수익성 주의`,
+      });
+    }
+
+    // 연패 체크 (5연패 이상)
+    let maxStreak = 0, streak = 0;
+    for (const r of rows) {
+      if (Number(r.pnl_pct) <= 0) { streak++; maxStreak = Math.max(maxStreak, streak); }
+      else streak = 0;
+    }
+    if (maxStreak >= 5) {
+      issues.push({
+        severity: 'WARNING',
+        category: '매매로직',
+        title: `[해외-${mode}] ${maxStreak}연패 감지`,
+        detail: `최근 7일 해외 매매 ${maxStreak}연속 손실`,
+      });
+    }
+  }
 }

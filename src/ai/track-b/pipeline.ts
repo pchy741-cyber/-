@@ -37,6 +37,7 @@ import {
   getDailyChart,
   getKSTNow,
   getOrderbook,
+  isExtendedPreMarket,
   isMarketOpen,
 } from '../../kis/market.js';
 import { getBatchStockSignals } from '../../kis/market-signals.js';
@@ -108,7 +109,7 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     await reconcilePendingOrders().catch(() => {});
 
     // ── 1. 장 열림 확인 ──────────────────────────────────────────────
-    if (!isMarketOpen()) {
+    if (!isMarketOpen() && !isExtendedPreMarket()) {
       logger.info('장이 닫혀있어 Track B 스킵', { component: 'TRACK_B' });
       return [];
     }

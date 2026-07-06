@@ -304,6 +304,18 @@ export function isMarketOpen(): boolean {
   return open;
 }
 
+/** v20.1: 장전 확장 시간 (08:00~09:00) — 펌핑매매/장전분석 활성화 */
+export function isExtendedPreMarket(): boolean {
+  const kst = getKSTNow();
+  const day = kst.getUTCDay();
+  if (day === 0 || day === 6) return false;
+  if (!isTradingDay(kst)) return false;
+  const h = kst.getUTCHours();
+  const m = kst.getUTCMinutes();
+  const t = h * 100 + m;
+  return t >= 800 && t < 900; // 08:00~08:59 KST
+}
+
 // ── 복수 종목 현재가 일괄 조회 ──
 // kisRateLimiter가 각 kisRequest 내부에서 12/sec 큐 관리 → 병렬 발사해도 안전
 export async function getBatchPrices(stockCodes: string[]): Promise<Map<string, CurrentPrice>> {

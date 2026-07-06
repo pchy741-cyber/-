@@ -11,7 +11,7 @@ import { runWithMode } from '../../../config/context.js';
 import { baseIsPaper } from '../../../config/index.js';
 import { getActiveStrategy, getActiveWatchlist, getOpenChains, isMemoryMode, safeQuery } from '../../../db/client.js';
 import { getAccountBalance } from '../../../kis/account.js';
-import { getBatchPrices, isMarketOpen } from '../../../kis/market.js';
+import { getBatchPrices, isExtendedPreMarket, isMarketOpen } from '../../../kis/market.js';
 import { getOverseasPrice } from '../../../kis/overseas.js';
 import { getPaperBalance } from '../../../risk/engine.js';
 import { getKillSwitchStatusAll } from '../../../risk/kill-switch.js';
@@ -151,7 +151,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
   const chainNameMap = new Map(chains.map((ch: any) => [ch.stock_code, ch.stock_name ?? '']));
 
   // 장중: score 코드 중 캐시(인메모리 30s) 없는 것만 추가 조회
-  const scoreCodesNeedingPrice = isMarketOpen()
+  const scoreCodesNeedingPrice = (isMarketOpen() || isExtendedPreMarket())
     ? scoreCodes.filter((c) => !priceMap.has(c) && !(getCachedPriceMemory(c) ?? 0))
     : [];
 

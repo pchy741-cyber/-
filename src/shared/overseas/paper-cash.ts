@@ -16,21 +16,12 @@ const FX_RATE_MAX = 2500;
 
 let _lastPaperCash: number | null = null;
 
-/** 배분 설정 기반 동적 Paper 시드 (KRW) — us_pct 반영 */
+/**
+ * Paper 해외 시드 (KRW) — 고정값 반환
+ * v21: us_pct 기반 동적 계산 제거 — 국내(60M)+해외(30M) 별도 풀 원칙
+ * (이전: (60M+30M)×us_pct=63M → 국내 60M과 이중계상, 분모 불일치 49% 유발)
+ */
 export async function getEffectivePaperSeedKrw(): Promise<number> {
-  try {
-    const { rows } = await getPool().query(
-      'SELECT us_pct FROM portfolio_allocation_config WHERE is_paper = true ORDER BY id DESC LIMIT 1',
-    );
-    if (rows[0]?.us_pct != null) {
-      const usPct = Number(rows[0].us_pct) / 100;
-      if (usPct > 0 && usPct <= 1) {
-        const { PAPER_INITIAL_CAPITAL } = await import('../../risk/paper-balance.js');
-        const totalPaperKrw = PAPER_INITIAL_CAPITAL + PAPER_OVERSEAS_SEED_KRW;
-        return Math.round(totalPaperKrw * usPct);
-      }
-    }
-  } catch { /* DB 미설정 시 기본값 사용 */ }
   return PAPER_OVERSEAS_SEED_KRW;
 }
 

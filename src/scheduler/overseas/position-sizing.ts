@@ -62,11 +62,11 @@ export function calcSizingMultiplier(params: {
   const scoreFactor = Math.min(1, Math.max(0, (score + 30) / 110));
   const combined = confFactor * 0.5 + scoreFactor * 0.5;
   const wrMult = 1.0 + winRateBonus;
-  // 배율 스택 캡: evMult × wrMult 합산이 1.5x 초과 방지 (과집중 사고 방지)
-  const combinedBoostMult = Math.min(evMult * wrMult, 1.5);
+  // v20.1: 배율 스택 캡 강화 — evMult × wrMult 1.3x 캡 (기존 1.5x → 수익 보호)
+  const combinedBoostMult = Math.min(evMult * wrMult, 1.3);
   const rawMult = Math.round((0.6 + combined * 1.4) * combinedBoostMult * vixSizingMult * cooldownPenalty * 100) / 100;
-  // 상한 캡 2.0x 유지 (해외는 안정적)
-  const cappedMult = Math.min(2.0, rawMult);
+  // v20.1: 최종 캡 1.8x (기존 2.0x → 연승 과집중 방지)
+  const cappedMult = Math.min(1.8, rawMult);
   // v14: Paper/Live 통합 0.5x floor
   return Math.max(cappedMult, 0.5);
 }
@@ -130,10 +130,14 @@ export function calcPositionSize(params: SizingParams): SizingResult {
               ? 1.1
               : 1.0;
 
+  // v20.1: 외부 배율 스택 중간 캡 — 곱셈 폭주 방지 (연승→과집중→파산 루프 차단)
+  const externalBoostRaw = evMultiplier * (sessionSizingMult ?? 1.0) * regimeMult * saberMult * volInverseMult;
+  const externalBoost = Math.min(externalBoostRaw, 1.5); // 중간 레이어 1.5x 캡
+
   const sizingMult = calcSizingMultiplier({
     confidence: effectiveConf,
     score: target.score,
-    evMult: evMultiplier * (sessionSizingMult ?? 1.0) * regimeMult * saberMult * volInverseMult,
+    evMult: externalBoost,
     vixSizingMult: vixRegime.sizingMult,
     cooldownPenalty: gradualCooldown.sizingPenalty,
     isPaper,

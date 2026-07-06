@@ -57,6 +57,9 @@ const _pendingOrders = new Map<string, PendingOrder>();
  * 미체결 지정가 매수 등록
  * executor.ts의 confirmFill 타임아웃 후 호출
  */
+// v20.1: KIS 브로커 동시 미체결 주문 최대 2건 제한
+const MAX_PENDING_ORDERS = 2;
+
 export async function registerPendingOrder(params: {
   orderNo: string;
   stockCode: string;
@@ -69,6 +72,22 @@ export async function registerPendingOrder(params: {
   tpSlHints?: Record<string, number>;
   maxAveragingCount?: number;
 }): Promise<void> {
+  // v20.1: KIS 2건 제한 — 초과 시 가장 오래된 주문 취소 후 등록
+  if (_pendingOrders.size >= MAX_PENDING_ORDERS) {
+    const oldest = [..._pendingOrders.entries()].sort((a, b) => a[1].createdAt - b[1].createdAt)[0];
+    if (oldest) {
+      logger.warn(`📋 예약주문 ${MAX_PENDING_ORDERS}건 초과 → 최고령 취소: ${oldest[1].stockCode} ${oldest[0]}`, {
+        component: 'PENDING_MGR',
+      });
+      try {
+        await cancelOrder({ orderNo: oldest[0], stockCode: oldest[1].stockCode, quantity: oldest[1].quantity });
+        await updateOrderByKisOrderNo(oldest[0], { status: 'CANCELLED' });
+      } catch { /* 이미 체결/취소됐을 수 있음 */ }
+      _pendingOrders.delete(oldest[0]);
+      await removeState(oldest[0]);
+    }
+  }
+
   const pending: PendingOrder = {
     ...params,
     createdAt: Date.now(),

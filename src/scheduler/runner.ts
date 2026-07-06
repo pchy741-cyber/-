@@ -668,10 +668,10 @@ export function startScheduler(): void {
   );
 
   // Track B — 장중 3분 간격 (핵심: Claude 매매 판단)
-  // v9: 마의시간대(10:20~13:00) 스킵 제거 — 랠리일 점심 시간대 기회 놓침 방지
+  // v20.1: 08시부터 실행 (장전 펌핑매매 + 시간외 포함)
   // pipeline 내부 시간 블록(lunch ban 등)이 이미 비랠리일 매수를 차단
   cron.schedule(
-    `*/${SCHEDULE.TRACK_B_INTERVAL_MINUTES} 9-15 * * 1-5`,
+    `*/${SCHEDULE.TRACK_B_INTERVAL_MINUTES} 8-15 * * 1-5`,
     () => {
       runTrackBSafe();
     },

@@ -118,6 +118,7 @@ import {
   getCash,
   getCashKrw,
   getHoldings,
+  getEffectivePaperSeedKrw,
   getPaperSeedKrw,
   updateTradeState,
 } from './overseas/state.js';
@@ -277,10 +278,9 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
     let totalAccountKrw = 0; // v16.2.3: 스코프 호이스트 — portfolioValue 총자산 기준 계산에 필요
     if (cycleFxRate > 0) {
       try {
-        // 1) 전체 계좌 가치: Paper는 국내+해외 시드 합산, Live는 KIS 잔고
+        // 1) 계좌 가치: Paper는 해외 시드만 (국내는 별도 풀), Live는 KIS 잔고
         if (isPaper()) {
-          const { PAPER_INITIAL_CAPITAL } = await import('../risk/paper-balance.js');
-          totalAccountKrw = PAPER_INITIAL_CAPITAL + getPaperSeedKrw();
+          totalAccountKrw = await getEffectivePaperSeedKrw(); // v21: computePaperCash와 동일 시드 참조 (이전: getPaperSeedKrw 30M vs effective 63M 불일치)
         } else {
           const { rows: totalRows } = await getPool().query(
             `SELECT value FROM overseas_state WHERE key = 'total_account_krw'`,
@@ -317,9 +317,11 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
           // 4) 사이징용 배분비율: 사용자 목표와 시간대별 중 큰 값
           //    → 사용자가 70%로 설정해도 US장(80%) 시간에는 80% 기준 사이징
           //    → KR장(35%)이라도 사용자 70%면 70% 기준 사이징 (소액 매수 방지)
-          sizingAllocPct = userTargetPct != null
-            ? Math.max(userTargetPct, timeBasedPct)
-            : timeBasedPct;
+          sizingAllocPct = isPaper()
+            ? 1.0 // Paper: totalAccountKrw가 이미 해외 시드만이므로 100%
+            : userTargetPct != null
+              ? Math.max(userTargetPct, timeBasedPct)
+              : timeBasedPct;
 
           // 5) 현금캡용 배분비율
           //    KR장 중: 국내에서 원화 전액 사용하므로 해외 캡은 시간대별(35%)만 적용

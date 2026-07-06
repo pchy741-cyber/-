@@ -6,7 +6,7 @@ import { BEAR_ADAPTIVE, getDynamicDomesticTpSl } from '../../config/constants.js
 import { getCtxIsPaper } from '../../config/context.js';
 import { getPool } from '../../db/client.js';
 import type { TradeDecision } from '../../db/models.js';
-import { getMinuteChart, isMarketOpen } from '../../kis/market.js';
+import { getMinuteChart, isExtendedPreMarket, isMarketOpen } from '../../kis/market.js';
 import { getLossStreakMultiplier } from '../../risk/loss-streak.js';
 import { logger } from '../../utils/logger.js';
 import { getVisionChartConfirmation } from '../vision/chart-confirmation.js';
@@ -295,7 +295,7 @@ export async function executeBuyDecisions(
   const intraday60mData = new Map<string, { trend: string; rsi: number }>(); // 60m 상세 데이터
   // Innovation #4: VWAP 값 저장 (Pullback Entry용)
   const intradayVwapValue = new Map<string, number>(); // 종목별 분봉 VWAP 값
-  if (isMarketOpen() && candidates.length > 0) {
+  if ((isMarketOpen() || isExtendedPreMarket()) && candidates.length > 0) {
     const topN = candidates.slice(0, 15); // 장중 MTF 게이트 상위 15개 후보에 적용
     await Promise.allSettled(
       topN.map(async (cand) => {

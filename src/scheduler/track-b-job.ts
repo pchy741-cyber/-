@@ -6,7 +6,7 @@ import { isRiskOffToday } from '../automation/market-routing.js';
 import type { StrategyMode } from '../config/constants.js';
 import { getCtxIsPaper, runWithMode } from '../config/context.js';
 import { getActiveStrategy, getPool } from '../db/client.js';
-import { isMarketOpen } from '../kis/market.js';
+import { isExtendedPreMarket, isMarketOpen } from '../kis/market.js';
 import { sendByPaperFlag } from '../notifications/mode-message.js';
 import { isKillSwitchActive, reportError, reportSuccess } from '../risk/kill-switch.js';
 import { tradeExecutor } from '../trading/executor.js';
@@ -60,8 +60,8 @@ export async function runTrackBJob(): Promise<void> {
     }
   } catch { /* 모듈 로딩 실패 시 기본 ON */ }
 
-  // 장 열림 확인
-  if (!isMarketOpen()) {
+  // v20.1: 장 열림 확인 — 08:00~15:30 확장 (장전 펌핑 매매 + 시간외 종가)
+  if (!isMarketOpen() && !isExtendedPreMarket()) {
     logger.debug('📉 장 닫힘 — Track B 스킵', { component: 'SCHEDULER' });
     return;
   }

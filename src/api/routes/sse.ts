@@ -13,6 +13,7 @@ import { getLoopStatus } from '../../scheduler/loop-mode.js';
 import { getOpenMarketRegions } from '../../shared/overseas/market-time.js';
 import { KR_FEE, FALLBACK_FX_RATE, OVERSEAS_FEE_PCT } from '../../config/constants.js';
 import { logger } from '../../utils/logger.js';
+import { getKSTNow } from '../../utils/time.js';
 import { PAPER_INITIAL_CAPITAL } from '../../risk/paper-balance.js';
 import { resolveRequestMode } from '../guards/live-pin.js';
 import { calcTotalAssets } from './dashboard/calc.js';
@@ -40,8 +41,17 @@ const PRICE_REFRESH_MS = 10_000;
 let _sseConnectionCount = 0;
 const MAX_SSE_CONNECTIONS = 10;
 
+/** v20.1: 확장 시세 갱신 시간 (08:00~16:00) — 장전 펌핑 + 장후 동시호가 반영 */
+function isExtendedMarketTime(): boolean {
+  const kst = getKSTNow();
+  const h = kst.getUTCHours();
+  const m = kst.getUTCMinutes();
+  const t = h * 100 + m;
+  return t >= 800 && t <= 1600; // 08:00~16:00 KST
+}
+
 async function refreshHeldPrices(chains: Array<{ stock_code: string }>, isPaper: boolean): Promise<void> {
-  if (!isMarketOpen()) return;
+  if (!isExtendedMarketTime() && !isMarketOpen()) return;
   const now = Date.now();
   const modeKey = isPaper ? 'paper' : 'live';
   if (now - (_lastPriceRefreshAt[modeKey] ?? 0) < PRICE_REFRESH_MS) return;
@@ -432,7 +442,7 @@ sseRoutes.get('/stream', (c) => {
 
     try {
       while (!stream.aborted) {
-        const anyMarketOpen = isMarketOpen() || getOpenMarketRegions().size > 0;
+        const anyMarketOpen = isMarketOpen() || isExtendedMarketTime() || getOpenMarketRegions().size > 0;
         const now = Date.now();
         const needMeta = now - lastMetaAt >= (anyMarketOpen ? META_INTERVAL : CLOSED_INTERVAL);
 

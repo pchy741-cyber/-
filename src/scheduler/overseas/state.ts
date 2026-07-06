@@ -15,4 +15,4 @@ export * from './state-refill.js';
 export * from './state-bucket.js';
 
 // ── paper-cash re-export (하위호환) ──
-export { computePaperCash, getPaperSeedKrw, PAPER_OVERSEAS_SEED_KRW } from '../../shared/overseas/paper-cash.js';
+export { computePaperCash, getEffectivePaperSeedKrw, getPaperSeedKrw, PAPER_OVERSEAS_SEED_KRW } from '../../shared/overseas/paper-cash.js';
