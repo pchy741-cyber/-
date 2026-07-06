@@ -174,13 +174,15 @@ export async function cancelAllPendingOverseasOrders(isPaper?: boolean): Promise
   try {
     const { rows } = await getPool().query(
       `
-      SELECT id, stock_code, quantity, kis_order_no, exchange
-      FROM orders
-      WHERE trigger_source = 'OVERSEAS'
-        AND trading_mode = $1
-        AND status = 'PENDING'
-        AND created_at >= NOW() - INTERVAL '24 hours'
-      ORDER BY created_at ASC
+      SELECT o.id, o.stock_code, o.quantity, o.kis_order_no,
+             COALESCE(h.exchange, 'NASD') AS exchange
+      FROM orders o
+      LEFT JOIN overseas_holdings h ON h.stock_code = o.stock_code AND h.is_paper = ($1 = 'paper')
+      WHERE o.trigger_source = 'OVERSEAS'
+        AND o.trading_mode = $1
+        AND o.status = 'PENDING'
+        AND o.created_at >= NOW() - INTERVAL '24 hours'
+      ORDER BY o.created_at ASC
     `,
       [mode],
     );

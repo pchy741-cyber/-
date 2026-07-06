@@ -10,10 +10,11 @@ export const OVERSEAS = {
 
 // ── 황금비율 자금배분 (해외) — 합산 100% ──
 // v22: CASH 3%→10% (기존 93% 합산 → 100% 정규화, 88% 투자캡과 정합)
+// v26: SWING 50%→70% (대부분 종목이 SWING 분류 → 50%에서 매수 차단 빈발)
 export const ALLOCATION_GOLDEN = {
-  SWING_PCT: 0.50,
-  CORE_PCT: 0.30,
-  TACTICAL_PCT: 0.10,
+  SWING_PCT: 0.70,
+  CORE_PCT: 0.15,
+  TACTICAL_PCT: 0.05,
   CASH_PCT: 0.10,
 } as const;
 
