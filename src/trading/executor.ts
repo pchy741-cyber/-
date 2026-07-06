@@ -33,6 +33,7 @@ import { riskEngine } from '../risk/engine.js';
 import { isKillSwitchActiveForMode, reportError, reportSuccess } from '../risk/kill-switch.js';
 import { paperTradeOrder } from '../risk/paper.js';
 import { type GateInput, runTradeGates } from '../risk/trade-gate.js';
+import { isTradingDay } from '../utils/holidays.js';
 import { acquireLock } from '../utils/lock.js';
 import { logger } from '../utils/logger.js';
 import { adjustToTickSize, roundKrw } from '../utils/money.js';
@@ -52,6 +53,10 @@ export class TradeExecutor {
   private _lastKeyCleanup = Date.now();
   // 🔒 청산 실패 카운터: 연속 실패 시 무한 루프 방지 (key: "mode-stockCode")
   private readonly _closeFailCount = new Map<string, number>();
+  // 🔒 청산 실패 백오프: 반복 실패 시 다음 재시도 가능 시각 (key: "mode-stockCode")
+  private readonly _closeFailBackoff = new Map<string, number>();
+  // 🔒 매수 거부 쿨다운: 현금 부족 등 거부 시 10분간 동일 종목 재시도 억제
+  private readonly _buyRejectCooldown = new Map<string, number>();
   // v9: 진행 중 매수 카운터 — 포지션 한도 경쟁조건 방지 (paper/live 분리)
   // 체크 시 DB 포지션 + 진행 중 매수 수를 합산하여 한도 검사
   private _pendingBuyCount = { paper: 0, live: 0 };
@@ -234,6 +239,13 @@ export class TradeExecutor {
 
     try {
       const modeTag = getCtxIsPaper() ? '🧪PAPER' : '💰LIVE';
+
+      // 🔒 LIVE 모드: 장 비영업일(주말/공휴일)이면 전체 주문 스킵
+      if (!getCtxIsPaper() && !isTradingDay()) {
+        logger.debug(`⏳ 장 비영업일 → 주문 스킵: ${action} ${stock_code}`, { component: 'EXECUTOR' });
+        return;
+      }
+
       logger.info(`▶ [${modeTag}] 실행: ${action} ${stock_code} x${quantity}`, { component: 'EXECUTOR' });
 
       // per-decision 모드 오버라이드 (BOTTOM_FISHING 등)
@@ -300,6 +312,14 @@ export class TradeExecutor {
     triggerSource?: string,
   ): Promise<void> {
     const isPaperSnapshot = getCtxIsPaper();
+
+    // 🔒 매수 거부 쿨다운: 현금 부족 등으로 거부된 종목 10분간 재시도 억제
+    const cooldownKey = `${isPaperSnapshot ? 'paper' : 'live'}-${stockCode}`;
+    const cooldownUntil = this._buyRejectCooldown.get(cooldownKey) ?? 0;
+    if (Date.now() < cooldownUntil) {
+      releaseBuyIntent(stockCode);
+      return; // 쿨다운 기간 — 조용히 스킵
+    }
 
     // 이미 열린 체인이 있으면 물타기로 전환
     // v16.2.3: 명시적 isPaper 전달 (컨텍스트 의존 제거 → Paper/Live 체인 혼선 방지)
@@ -449,6 +469,8 @@ export class TradeExecutor {
           releaseBuyIntent(stockCode);
           logger.warn(`❌ 매수 거부 [${stockCode}]: ${riskCheck.reason}`, { component: 'EXECUTOR' });
           this._logFire('WARN', 'EXECUTOR', `매수 거부: ${stockCode} - ${riskCheck.reason}`);
+          // 현금 부족/MDD 등 하드블록 → 10분 쿨다운 (동일 거부 로그 스팸 방지)
+          this._buyRejectCooldown.set(cooldownKey, Date.now() + 10 * 60_000);
           return;
         }
         // v16: 리스크 소프트 사이즈 조절 (하드블록 → 비중 축소)
@@ -995,6 +1017,9 @@ export class TradeExecutor {
 
     if (!riskCheck.approved) {
       logger.warn(`❌ 물타기 거부 [${stockCode}]: ${riskCheck.reason}`, { component: 'EXECUTOR' });
+      // 현금 부족 등 하드블록 → 10분 쿨다운
+      const avgDownCooldownKey = `${isPaperSnapshot ? 'paper' : 'live'}-${stockCode}`;
+      this._buyRejectCooldown.set(avgDownCooldownKey, Date.now() + 10 * 60_000);
       return;
     }
     // v16: 리스크 소프트 사이즈 조절
@@ -1160,11 +1185,23 @@ export class TradeExecutor {
     const chain = await chainManager.findOpenChain(stockCode, isPaperSnapshot);
     if (!chain || chain.total_quantity === 0) return;
 
+    // 🔒 장 비영업일(주말/공휴일)이면 청산 시도 자체를 스킵 — KIS 주문 불가
+    if (!isPaperSnapshot && !isTradingDay()) {
+      logger.debug(`⏳ 장 비영업일 → 청산 스킵: ${stockCode}`, { component: 'EXECUTOR' });
+      return;
+    }
+
+    // 🔒 백오프: 반복 실패 후 일정 시간 대기 (로그 스팸 방지)
+    const failKey = `${isPaperSnapshot ? 'paper' : 'live'}-${stockCode}`;
+    const backoffUntil = this._closeFailBackoff.get(failKey) ?? 0;
+    if (Date.now() < backoffUntil) {
+      return; // 백오프 기간 중 — 조용히 스킵
+    }
+
     // 워치독 TP 주문 취소 (다른 메커니즘의 매도와 충돌 방지)
     await cancelWatchdogTpOrder(stockCode).catch(() => {});
 
     // 🔒 연속 실패 시 무한 루프 방지
-    const failKey = `${isPaperSnapshot ? 'paper' : 'live'}-${stockCode}`;
     const failCount = this._closeFailCount.get(failKey) ?? 0;
     if (failCount >= 5) {
       // v10: 5회 이상 실패 → 체인 자동 강제 종료 (무한 루프 완전 차단)
@@ -1187,7 +1224,9 @@ export class TradeExecutor {
                 ).catch((e) => logger.warn(`반복실패 텔레그램 실패: ${e}`, { component: 'EXECUTOR' })),
               )
               .catch(() => {});
-            return; // 체인 유지 — 다음 사이클에 재시도, 절대 장부에서 지우지 않음
+            // 10분 백오프 — 반복 실패 로그 스팸 방지 (장 열리면 자연 해소)
+            this._closeFailBackoff.set(failKey, Date.now() + 10 * 60_000);
+            return; // 체인 유지 — 백오프 후 재시도, 절대 장부에서 지우지 않음
           }
         } catch (posCheckErr) {
           // KIS 조회 자체가 실패하면 실보유 여부를 알 수 없으므로 안전 우선 — 종료 보류
@@ -1195,6 +1234,7 @@ export class TradeExecutor {
             `🚨 ${stockCode} 청산 실패 + KIS 잔고 조회도 실패 → 안전을 위해 강제종료 보류: ${posCheckErr}`,
             { component: 'EXECUTOR' },
           );
+          this._closeFailBackoff.set(failKey, Date.now() + 10 * 60_000);
           return;
         }
       }
@@ -1608,11 +1648,13 @@ export class TradeExecutor {
     }
     if (before > 0)
       logger.info(`🧹 recentOrderKeys 정리: ${before}→${this._recentOrderKeys.size}건`, { component: 'EXECUTOR' });
-    // 청산실패 카운터 장 마감 정리 (다음 장에 이월 방지)
+    // 청산실패 카운터 + 백오프 장 마감 정리 (다음 장에 이월 방지)
     if (this._closeFailCount.size > 0) {
       logger.info(`🧹 closeFailCount 정리: ${this._closeFailCount.size}건`, { component: 'EXECUTOR' });
       this._closeFailCount.clear();
     }
+    this._closeFailBackoff.clear();
+    this._buyRejectCooldown.clear();
   }
 
   private async confirmFill(
