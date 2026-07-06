@@ -284,7 +284,10 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
     // v23-audit: 부분익절 후 잔여 물량 손익분기 보호 — floor를 수수료 이상으로 상향
     // Stage1 +2% 익절(20%) 후 잔여 80%가 floor -1.5%로 청산 → 수수료 0.7% 감안 시 순손실 경로
     const baseFloor = Math.min(-1.5, dynamicTrailDrop + vixRegime.trailTighten + profitTighten);
-    const effectiveTrailDropPct = partialTpDone >= 1 ? Math.max(baseFloor, -0.8) : baseFloor;
+    // v23-QA: -0.8% → -2.0% (기존 -0.8%는 정상 변동성에 즉시 트리거 → 위너 라이딩 불가)
+    // HIGH_BETA ATR 3%+ 고려 → 섹터별 차등: HIGH_BETA -3.0, 기타 -2.0
+    const postPartialFloor = isHighBeta ? -3.0 : isMediumBeta ? -2.5 : -2.0;
+    const effectiveTrailDropPct = partialTpDone >= 1 ? Math.max(baseFloor, postPartialFloor) : baseFloor;
     // v15: 모멘텀 가속 감지 → 트레일 넓히기 (위너 라이딩)
     const _momCtx: MomentumContext = { isMomentum: tech.isMomentum, rsi: tech.rsi, adx: tech.adx, vwapPosition: tech.vwapPosition };
     const _isAccel = isMomentumAccelerating(_momCtx);
@@ -538,7 +541,8 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
         isMomentum: tech.isMomentum,
         rsi: tech.rsi,
         adx: tech.adx,
-        volumeRatio: tech.price.volume > 0 ? undefined : undefined, // 평균거래량 없으면 undefined
+        // v23-QA: 평균거래량 비율 계산 (기존: 항상 undefined → 모멘텀 가속 volume 경로 데드코드)
+        volumeRatio: (tech.price as any).avgVolume > 0 ? tech.price.volume / (tech.price as any).avgVolume : undefined,
         vwapPosition: tech.vwapPosition,
       };
       const tpStages = getPartialTpStages(sector, holding.bucket, momentumCtx);
@@ -547,7 +551,8 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
       if (tunerStage1 != null && tpStages.length > 0 && tpStages[0].stage === 1) {
         tpStages[0].triggerPct = tunerStage1;
       }
-      const currentStage = await getPartialTpStageNum(code);
+      // v23-QA: isPaper 명시 전달 (기존 누락 → paper/live 부분익절 단계 교차오염)
+      const currentStage = await getPartialTpStageNum(code, paperMode);
       // 수수료 반영: 왕복 수수료(0.7%) 를 트리거에 가산하여 실질 수익 보장
       const roundTripFee = OVERSEAS_FEE_PCT * 2 * 100; // 0.7%
       const nextStage = tpStages.find((st) => st.stage > currentStage && pnlPct >= st.triggerPct + roundTripFee);

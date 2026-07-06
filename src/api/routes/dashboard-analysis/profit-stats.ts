@@ -4,7 +4,7 @@ import { getDinnerMoneyStats } from '../../../automation/profit-withdraw.js';
 import { KR_FEE, OVERSEAS_FEE_PCT } from '../../../config/constants.js';
 import { getPool } from '../../../db/client.js';
 import { resolveRequestMode } from '../../guards/live-pin.js';
-import { computeStrategyHealth } from '../../../risk/strategy-health.js';
+import { computeStrategyHealth, type MarketFilter } from '../../../risk/strategy-health.js';
 
 export const profitStatsRoutes = new Hono();
 
@@ -209,7 +209,9 @@ profitStatsRoutes.get('/strategy-health', async (c) => {
     const monthlyTarget = Number.isFinite(target) ? target : 5;
     const isPaper = resolveViewIsPaper(c);
 
-    const health = await computeStrategyHealth(isPaper, days, monthlyTarget);
+    const rawMarket = (c.req.query('market') ?? 'ALL').toUpperCase();
+    const market = rawMarket === 'KR' ? 'KR' : rawMarket === 'US' ? 'US' : 'ALL';
+    const health = await computeStrategyHealth(isPaper, days, monthlyTarget, market as MarketFilter);
     return c.json(health);
   } catch {
     return c.json({ error: 'Internal server error' }, 500);

@@ -94,7 +94,7 @@ export async function getGradualCooldown(isPaper?: boolean): Promise<GradualCool
       // 매도 waterfall은 정상 동작 유지 (sizingPenalty는 매수에만 적용)
       return {
         level: 3,
-        cooldownMs: Infinity, // 수동 재개만 허용 (자동 재개 금지)
+        cooldownMs: 24 * 60 * 60_000, // 24h — Infinity는 JSON직렬화 시 null 변환 위험
         sizingPenalty: 0,     // 0 = 신규매수 완전 차단
         message: `🛑 ${lossCount}건 손절 → 신규매수 완전 중단 (수동 /resume 필요)`,
       };

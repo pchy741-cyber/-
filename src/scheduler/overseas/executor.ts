@@ -322,9 +322,11 @@ export async function executeOverseasOrder(
               const filledQty = previousQty - currentQty;
               logger.warn(`⚠️ SELL 예외 발생했지만 잔고 감소 확인: ${code} ${previousQty}→${currentQty} (체결${filledQty}주) — 재시도 안함`, { component: 'OVERSEAS' });
               // PENDING으로 기록 → syncPendingOverseasOrders가 후속 정리
+              // v23-QA: Date.now() 1회 캡처 (기존: 2회 호출 → DB와 반환값 orderNo 불일치)
+              const errTs = Date.now();
               const errorOrderId = await insertOrder({
                 chain_id: null, stock_code: code, side, order_type: '01',
-                quantity: qty, price, kis_order_no: `ERR_RECOVERED_${Date.now()}`,
+                quantity: qty, price, kis_order_no: `ERR_RECOVERED_${errTs}`,
                 kis_status: 'UNCONFIRMED', filled_quantity: filledQty,
                 filled_price: price, status: 'PENDING',
                 trading_mode: 'live', trigger_source: 'OVERSEAS',
@@ -336,7 +338,7 @@ export async function executeOverseasOrder(
                 submitted: true, filledQty, filledPrice: price,
                 finalQty: currentQty,
                 finalAvgPrice: currentQty > 0 ? previousAvgPrice : 0,
-                orderNo: `ERR_RECOVERED_${Date.now()}`,
+                orderNo: `ERR_RECOVERED_${errTs}`,
               };
             }
             // 잔고 변동 없음 → 진짜 실패 → 재시도 OK
@@ -383,7 +385,11 @@ export async function deployIdleCash(params: {
   if (!isUSSession) return { actions: [], cashUsed: 0 };
 
   // 동적: 포트폴리오 규모 기반 집중전략 파라미터
-  const holdingValue = Array.from(holdings.values()).reduce((s, h) => s + h.qty * h.avgPrice, 0);
+  // v23-QA: avgPrice→currentPrice (평단가 ≠ 현재가치, 포트규모 과소/과대평가 방지)
+  const priceMap = new Map(techResults.map((t) => [t.code, t.price.currentPrice]));
+  const holdingValue = Array.from(holdings.entries()).reduce(
+    (s, [code, h]) => s + h.qty * (priceMap.get(code) ?? h.avgPrice), 0,
+  );
   const isPaperCtx = params.isPaper ?? getCtxIsPaper();
   const allocRisk = await getAllocRisk(isPaperCtx);
   const dynP = getOverseasDynamic(cash + holdingValue, isPaperCtx, allocRisk.positionCapPct / 100);

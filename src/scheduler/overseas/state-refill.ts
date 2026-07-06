@@ -60,31 +60,35 @@ export async function checkAndRefillOverseasPaper(force = false): Promise<boolea
     }
 
     const pool = getPool();
+    const client = await pool.connect();
+    try {
+    await client.query('BEGIN');
+
     // 세대 번호
-    const { rows: genRows } = await pool.query(
+    const { rows: genRows } = await client.query(
       `SELECT COALESCE(MAX(CAST(NULLIF(regexp_replace(value, '[^0-9]', '', 'g'), '') AS int)), 0) + 1 as next_gen
        FROM overseas_state WHERE key LIKE 'paper_us_gen_%'`,
     );
     const gen = genRows[0]?.next_gen ?? 1;
 
     // 기존 overseas paper 주문 아카이브 (varchar(10) 제한 → 'p_arch' 사용)
-    const { rowCount } = await pool.query(
+    const { rowCount } = await client.query(
       `UPDATE orders SET trading_mode = 'p_arch'
        WHERE trading_mode = 'paper' AND trigger_source = 'OVERSEAS' AND status = 'FILLED'`,
     );
 
     // overseas_holdings paper 삭제
-    await pool.query(`DELETE FROM overseas_holdings WHERE is_paper = true`);
+    await client.query(`DELETE FROM overseas_holdings WHERE is_paper = true`);
 
     // cash_paper 리셋 (환율 기준 USD)
-    await pool.query(
+    await client.query(
       `INSERT INTO overseas_state (key, value) VALUES ('cash_paper', $1)
        ON CONFLICT (key) DO UPDATE SET value = $1`,
       [seedUsd.toFixed(2)],
     );
 
     // 세대 기록
-    await pool.query(
+    await client.query(
       `INSERT INTO overseas_state (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2`,
       [
         `paper_us_gen_${gen}`,
@@ -99,11 +103,19 @@ export async function checkAndRefillOverseasPaper(force = false): Promise<boolea
       ],
     );
 
+    await client.query('COMMIT');
+
     logger.info(
       `🔄 [PAPER-REFILL] 통합증거금 리필 (세대 #${gen}): $${cash.toFixed(0)} → $${seedUsd.toFixed(0)} (₩${(seedKrw / 10000).toFixed(0)}만 / 환율 ${fxRate.toFixed(0)}) — ${rowCount}건 아카이브`,
       { component: 'OVERSEAS' },
     );
     return true;
+    } catch (txErr) {
+      await client.query('ROLLBACK');
+      throw txErr;
+    } finally {
+      client.release();
+    }
   } catch (e) {
     logger.warn(`해외 Paper 리필 체크 실패: ${e}`, { component: 'OVERSEAS' });
     return false;

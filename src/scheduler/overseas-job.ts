@@ -472,8 +472,9 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
         }
 
         // 최근 5일 저점 — 캐시 미사용 시 chart 데이터에서 직접 계산
+        // v23-QA: chart는 DESC(newest first) → slice(0,5)가 최근 5일 (기존 slice(-5)는 가장 오래된 5일)
         const prevLow5d = !cached && chart && chart.length >= 5
-          ? Math.min(...chart.slice(-5).map((c) => c.low))
+          ? Math.min(...chart.slice(0, 5).map((c) => c.low))
           : undefined;
 
         if (isNewSession) {
@@ -1124,10 +1125,8 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
     }
 
     // ── 4. 매도 판단 (→ overseas/sell-logic.ts) — 방어 모드 트레일 타이트닝 반영 ──
-    const effectiveVixRegime =
-      defenseSignal.trailTighten > 0
-        ? { ...vixRegime, trailTighten: vixRegime.trailTighten + defenseSignal.trailTighten }
-        : vixRegime;
+    // v23-QA: 항상 spread copy (기존: trailTighten=0이면 vixRegime 원본 참조 → mutation 오염)
+    const effectiveVixRegime = { ...vixRegime, trailTighten: vixRegime.trailTighten + defenseSignal.trailTighten };
     // 매크로 RISK_OFF Lv3 → 트레일 추가 타이트닝
     const macroTighten = macroEvents.some((e) => e.impact === 'RISK_OFF' && e.severity >= 3) ? 1.0 : 0;
     if (macroTighten > 0) effectiveVixRegime.trailTighten += macroTighten;

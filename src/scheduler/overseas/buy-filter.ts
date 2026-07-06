@@ -510,12 +510,16 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
             `  📉 불확실성 보정: ${t.code} conf ${((ai?.confidence ?? 0) * 100).toFixed(0)}% → ${(effectiveConf * 100).toFixed(0)}% (${uncPenalty.reasons.join(',')})`,
             { component: 'OVERSEAS' },
           );
-        // 세션전략 confidence 바닥값 적용 (Gemini 세션 리뷰가 정한 최소 임계)
-        const _confFloorAdj = sessionConfFloor > 0 ? Math.max(minConf, sessionConfFloor) : minConf;
-        const _confFloorMom =
+        // v23-QA: 세션전략 confidence 바닥값 → 실제 게이트로 활성화 (기존: 계산만 하고 미사용)
+        const confFloorAdj = sessionConfFloor > 0 ? Math.max(minConf, sessionConfFloor) : minConf;
+        const confFloorMom =
           sessionConfFloor > 0 ? Math.max(minConfMomentum, sessionConfFloor - 0.03) : minConfMomentum;
         // effectiveConf를 Map에 저장 → 랭킹에서 재사용
         effectiveConfMap.set(t.code, effectiveConf);
+        // v23-QA: 시장품질 기반 AI 확신도 게이트 활성화 — AI BUY 추천이어도 confFloor 미달 시 차단
+        // 기술적 진입(score/RSI 기반)은 이 게이트 미적용 (기술 지표가 자체 필터)
+        // BigMover/과매도/급락매수 경로도 미적용 (시장 상관없이 진입해야)
+        const _aiMinConf = t.isMomentum || t.isBigMover ? confFloorMom : confFloorAdj;
 
         // ════════════════════════════════════════════════════════
         // Gemini AI 단독 매수 — Paper/Live 모두 차단 (무료 Gemini 승률 저조)
@@ -649,10 +653,10 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
           return true;
         }
         // 9. AI BUY 추천 종목 — AI가 매수 추천하면 기술점수 낮아도 진입
-        // v15: NEUTRAL 종목도 AI가 BUY + confidence ≥ 60% → 진입 허용
+        // v23-QA: 하드코딩 0.60 → 동적 _aiMinConf (시장품질/VIX 반영)
         if (
           ai?.action === 'BUY' &&
-          effectiveConf >= 0.60 &&
+          effectiveConf >= _aiMinConf &&
           t.rsi >= 30 &&
           t.rsi <= 72 &&
           !effectiveBadWR
@@ -753,8 +757,9 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         const techA = a.score * 0.6 + (a.isMomentum ? 20 : 0) + (a.isBigMover ? 15 : 0) + Math.min(a.adx * 0.3, 12);
         const techB = b.score * 0.6 + (b.isMomentum ? 20 : 0) + (b.isBigMover ? 15 : 0) + Math.min(b.adx * 0.3, 12);
         // 개선#4: VWAP 가중치 — VWAP 아래 매수 = 기관 평균보다 저렴
-        const vwapA = a.vwapPosition === 'BELOW' ? 12 : a.vwapPosition === 'AT' ? 5 : -8;
-        const vwapB = b.vwapPosition === 'BELOW' ? 12 : b.vwapPosition === 'AT' ? 5 : -8;
+        // v23-QA: undefined → 0점 (기존: -8 패널티 → VWAP 미산출 종목 불공정 차별)
+        const vwapA = a.vwapPosition === 'BELOW' ? 12 : a.vwapPosition === 'AT' ? 5 : a.vwapPosition === 'ABOVE' ? -8 : 0;
+        const vwapB = b.vwapPosition === 'BELOW' ? 12 : b.vwapPosition === 'AT' ? 5 : b.vwapPosition === 'ABOVE' ? -8 : 0;
         // 개선#2: ATR 진입가 품질 — 일중저점 근처(dayRangePct < 30%) = 좋은 진입
         const atrEntryA = a.dayRangePct < 30 ? 10 : a.dayRangePct < 50 ? 5 : a.dayRangePct > 80 ? -5 : 0;
         const atrEntryB = b.dayRangePct < 30 ? 10 : b.dayRangePct < 50 ? 5 : b.dayRangePct > 80 ? -5 : 0;
@@ -789,9 +794,9 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         // v16.2.3: StockTwits 커뮤니티 감성 (-15 ~ +5)
         const communityA = getOverseasCommunityAdj(a.code);
         const communityB = getOverseasCommunityAdj(b.code);
-        // v14: AI 신뢰도 정렬 반영 — 기존 기술점수만으로 정렬 → AI 고확신 종목 우선
-        const aiConfA = a.ai?.confidence ?? 0;
-        const aiConfB = b.ai?.confidence ?? 0;
+        // v23-QA: uncertainty 보정된 effective confidence 사용 (기존: raw → 불확실 종목 과대평가)
+        const aiConfA = a._effectiveConf ?? a.ai?.confidence ?? 0;
+        const aiConfB = b._effectiveConf ?? b.ai?.confidence ?? 0;
         const aiConfScoreA = aiConfA >= 0.85 ? 15 : aiConfA >= 0.75 ? 10 : aiConfA >= 0.65 ? 5 : 0;
         const aiConfScoreB = aiConfB >= 0.85 ? 15 : aiConfB >= 0.75 ? 10 : aiConfB >= 0.65 ? 5 : 0;
         const sa =
