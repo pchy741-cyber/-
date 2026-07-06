@@ -94,7 +94,7 @@ dashboardNewsRoutes.get('/news/macro', async (c) => {
   }
 });
 
-// ── 장세 한마디 (한글 종합) ──
+// ── 장세 한마디 (한글 종합) — v23: 딥 분석 + bull/bear 팩터 ──
 dashboardNewsRoutes.get('/news/regime-summary', async (c) => {
   try {
     const { detectMarketRegime, generateMarketSummaryKorean } = await import('../../automation/market-regime.js');
@@ -112,16 +112,50 @@ dashboardNewsRoutes.get('/news/regime-summary', async (c) => {
       };
     } catch { /* US 데이터 실패 시 무시 */ }
 
+    // AI 뉴스 딥 분석 (캐시 우선)
+    let deepAnalysis = '';
+    let bullCatalysts: string[] = [];
+    let bearCatalysts: string[] = [];
+    let outlook = 'SHORT_TERM_NEUTRAL';
+    try {
+      const { getCachedNewsAnalysis } = await import('../../automation/news-analyzer.js');
+      const analysis = getCachedNewsAnalysis();
+      if (analysis) {
+        deepAnalysis = analysis.deepAnalysis ?? '';
+        bullCatalysts = analysis.bullCatalysts ?? [];
+        bearCatalysts = analysis.bearCatalysts ?? [];
+        outlook = analysis.outlook ?? 'SHORT_TERM_NEUTRAL';
+      }
+    } catch { /* AI 분석 실패 시 무시 */ }
+
+    // factorBreakdown: 프론트엔드 표시용 간결한 형태
+    const factorBreakdown = Object.values(regime.factorDetail).map((f) => ({
+      label: f.label,
+      value: f.value.toString(),
+      type: f.impact,
+    }));
+
     return c.json({
       summary: generateMarketSummaryKorean(regime),
       regime: regime.regime,
       score: regime.score,
       recommended: regime.recommendedMode,
       reasons: regime.reasons,
+      bullFactors: regime.bullFactors,
+      bearFactors: regime.bearFactors,
+      deepAnalysis,
+      bullCatalysts,
+      bearCatalysts,
+      outlook,
+      factorBreakdown,
       usMarket,
     });
   } catch {
-    return c.json({ summary: '', regime: 'NEUTRAL', score: 0, recommended: 'SWING', reasons: [], usMarket: null });
+    return c.json({
+      summary: '', regime: 'NEUTRAL', score: 0, recommended: 'SWING', reasons: [],
+      bullFactors: [], bearFactors: [], deepAnalysis: '', bullCatalysts: [], bearCatalysts: [],
+      outlook: 'SHORT_TERM_NEUTRAL', factorBreakdown: [], usMarket: null,
+    });
   }
 });
 

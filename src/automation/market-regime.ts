@@ -20,6 +20,13 @@ import { calculateFearGreedIndex, getMacroSnapshot } from './macro-data.js';
  * → SWING / DEFENSE / DIVIDEND 모드 자동 전환
  */
 
+export interface FactorDetail {
+  label: string;
+  value: number;
+  impact: 'bull' | 'bear' | 'neutral';
+  weight: number;
+}
+
 export interface MarketRegime {
   regime: 'BULLISH' | 'NEUTRAL' | 'BEARISH' | 'PANIC';
   kospiChange: number;
@@ -31,6 +38,9 @@ export interface MarketRegime {
   score: number; // 종합 점수 (양수=강세, 음수=약세)
   recommendedMode: 'SWING' | 'SCALPING' | 'DEFENSE';
   reasons: string[];
+  bullFactors: string[];   // 상승 요인 목록
+  bearFactors: string[];   // 하락 요인 목록
+  factorDetail: Record<string, FactorDetail>;
 }
 
 // ── ⑧ AI 뉴스 분석 → regime 스코어 (v22.1 하이브리드) ──
@@ -160,105 +170,99 @@ export async function detectMarketRegime(): Promise<MarketRegime> {
   const fearGreed = macro?.fearGreedIndex ?? calculateFearGreedIndex(vkospi, kospiChange);
   const consecutiveDays = calcConsecutiveDays(kospiHistory);
 
-  // ── 점수 계산 (양수=강세, 음수=약세) ──
+  // ── 점수 계산 (양수=강세, 음수=약세) + Bull/Bear 팩터 분리 ──
   let score = 0;
+  const bullFactors: string[] = [];
+  const bearFactors: string[] = [];
+  const factorDetail: Record<string, FactorDetail> = {};
+
+  // 헬퍼: 팩터 추가 + bull/bear 분류
+  const addFactor = (key: string, label: string, value: number, pts: number) => {
+    score += pts;
+    const impact: 'bull' | 'bear' | 'neutral' = pts > 0 ? 'bull' : pts < 0 ? 'bear' : 'neutral';
+    factorDetail[key] = { label, value, impact, weight: Math.abs(pts) };
+    reasons.push(label);
+    if (impact === 'bull') bullFactors.push(label);
+    else if (impact === 'bear') bearFactors.push(label);
+  };
 
   // ① 오늘 KOSPI 등락률
   if (kospiChange >= 1.5) {
-    score += 4;
-    reasons.push(`KOSPI +${kospiChange.toFixed(1)}% 강세`);
+    addFactor('kospi', `KOSPI +${kospiChange.toFixed(1)}% 강세`, kospiChange, 4);
   } else if (kospiChange >= 0.5) {
-    score += 2;
-    reasons.push(`KOSPI +${kospiChange.toFixed(1)}%`);
+    addFactor('kospi', `KOSPI +${kospiChange.toFixed(1)}%`, kospiChange, 2);
   } else if (kospiChange <= -2.0) {
-    score -= 5;
-    reasons.push(`KOSPI ${kospiChange.toFixed(1)}% 급락`);
+    addFactor('kospi', `KOSPI ${kospiChange.toFixed(1)}% 급락`, kospiChange, -5);
   } else if (kospiChange <= -1.0) {
-    score -= 3;
-    reasons.push(`KOSPI ${kospiChange.toFixed(1)}% 하락`);
+    addFactor('kospi', `KOSPI ${kospiChange.toFixed(1)}% 하락`, kospiChange, -3);
   } else if (kospiChange <= -0.5) {
-    score -= 1;
-    reasons.push(`KOSPI ${kospiChange.toFixed(1)}%`);
+    addFactor('kospi', `KOSPI ${kospiChange.toFixed(1)}%`, kospiChange, -1);
   }
 
   // ② 연속 상승/하락일
   if (consecutiveDays >= 3) {
-    score += 3;
-    reasons.push(`연속 ${consecutiveDays}일 상승`);
+    addFactor('streak', `연속 ${consecutiveDays}일 상승`, consecutiveDays, 3);
   } else if (consecutiveDays >= 2) {
-    score += 1;
-    reasons.push(`연속 ${consecutiveDays}일 상승`);
+    addFactor('streak', `연속 ${consecutiveDays}일 상승`, consecutiveDays, 1);
   } else if (consecutiveDays <= -3) {
-    score -= 4;
-    reasons.push(`연속 ${Math.abs(consecutiveDays)}일 하락`);
+    addFactor('streak', `연속 ${Math.abs(consecutiveDays)}일 하락`, consecutiveDays, -4);
   } else if (consecutiveDays <= -2) {
-    score -= 2;
-    reasons.push(`연속 ${Math.abs(consecutiveDays)}일 하락`);
+    addFactor('streak', `연속 ${Math.abs(consecutiveDays)}일 하락`, consecutiveDays, -2);
   }
 
   // ③ VKOSPI (공포지수)
   if (vkospi >= 35) {
-    score -= 4;
-    reasons.push(`VKOSPI ${vkospi.toFixed(1)} (극단 공포)`);
+    addFactor('vkospi', `VKOSPI ${vkospi.toFixed(1)} (극단 공포)`, vkospi, -4);
   } else if (vkospi >= 25) {
-    score -= 2;
-    reasons.push(`VKOSPI ${vkospi.toFixed(1)} (공포)`);
+    addFactor('vkospi', `VKOSPI ${vkospi.toFixed(1)} (공포)`, vkospi, -2);
   } else if (vkospi <= 14) {
-    score += 3;
-    reasons.push(`VKOSPI ${vkospi.toFixed(1)} (극단 탐욕)`);
+    addFactor('vkospi', `VKOSPI ${vkospi.toFixed(1)} (극단 탐욕)`, vkospi, 3);
   } else if (vkospi <= 18) {
-    score += 1;
-    reasons.push(`VKOSPI ${vkospi.toFixed(1)} (탐욕)`);
+    addFactor('vkospi', `VKOSPI ${vkospi.toFixed(1)} 안정`, vkospi, 1);
   }
 
   // ④ 외국인 수급 (3일 합산)
   if (foreignNet > 3000) {
-    score += 3;
-    reasons.push(`외국인 3일 순매수 ${(foreignNet / 100).toFixed(0)}억`);
+    addFactor('foreign', `외국인 순매수 +${(foreignNet / 100).toFixed(0)}억`, foreignNet, 3);
   } else if (foreignNet > 500) {
-    score += 1;
-    reasons.push(`외국인 순매수`);
+    addFactor('foreign', `외국인 순매수`, foreignNet, 1);
   } else if (foreignNet < -3000) {
-    score -= 3;
-    reasons.push(`외국인 3일 순매도 ${(Math.abs(foreignNet) / 100).toFixed(0)}억`);
+    addFactor('foreign', `외국인 순매도 ${(Math.abs(foreignNet) / 100).toFixed(0)}억`, foreignNet, -3);
   } else if (foreignNet < -500) {
-    score -= 1;
-    reasons.push(`외국인 순매도`);
+    addFactor('foreign', `외국인 순매도`, foreignNet, -1);
   }
 
   // ⑤ Fear & Greed
   if (fearGreed >= 75) {
-    score += 2;
-    reasons.push(`탐욕 지수 ${fearGreed}`);
+    addFactor('feargreed', `탐욕 지수 ${fearGreed}`, fearGreed, 2);
   } else if (fearGreed >= 60) {
-    score += 1;
+    score += 1; // 약한 신호는 reasons에 안 넣되 점수만
   } else if (fearGreed <= 20) {
-    score += 1;
-    reasons.push(`극단 공포 → 역발상 매수 (F&G ${fearGreed})`);
-  } // 역발상
-  else if (fearGreed <= 35) {
-    score -= 2;
-    reasons.push(`공포 지수 ${fearGreed}`);
+    addFactor('feargreed', `극단 공포 → 역발상 매수 (F&G ${fearGreed})`, fearGreed, 1);
+  } else if (fearGreed <= 35) {
+    addFactor('feargreed', `공포 지수 ${fearGreed}`, fearGreed, -2);
   }
 
   // ⑥ KOSPI200 이중 확인
   if (kospi200Change <= -2.0) {
-    score -= 2;
-    reasons.push(`KOSPI200 ${kospi200Change.toFixed(1)}% 급락`);
+    addFactor('kospi200', `KOSPI200 ${kospi200Change.toFixed(1)}% 급락`, kospi200Change, -2);
   }
 
   // ⑦ FRED 미국 매크로 (Fed 금리/CPI/실업률/수익률곡선/VIX) — 독립 신호
-  // 한국장도 미국 매크로에 큰 영향, 점수 반영 (FRED_API_KEY 없으면 0점)
   if (fredAdj.score !== 0) {
-    score += fredAdj.score;
-    for (const r of fredAdj.reasons) reasons.push(`FRED: ${r}`);
+    for (const r of fredAdj.reasons) {
+      const fredPts = fredAdj.score > 0
+        ? Math.ceil(fredAdj.score / fredAdj.reasons.length)
+        : Math.floor(fredAdj.score / fredAdj.reasons.length);
+      addFactor(`fred_${r.slice(0, 10)}`, `FRED: ${r}`, fredAdj.score, fredPts);
+    }
   }
 
   // ⑧ 매크로 뉴스 충격 (v22: 국민연금·금리인상·전쟁 등 대형 이벤트)
-  // 가격이 아직 안 움직여도 뉴스가 확산 중이면 선제 감점 (최대 -4점)
   if (newsShockAdj.score !== 0) {
-    score += newsShockAdj.score;
-    for (const r of newsShockAdj.reasons) reasons.push(r);
+    for (const r of newsShockAdj.reasons) {
+      addFactor(`news_${r.slice(0, 10)}`, r, newsShockAdj.score, newsShockAdj.score);
+    }
   }
 
   // ── 체제 판단 ──
@@ -298,11 +302,15 @@ export async function detectMarketRegime(): Promise<MarketRegime> {
     score,
     recommendedMode,
     reasons,
+    bullFactors,
+    bearFactors,
+    factorDetail,
   };
 }
 
 /**
- * 장세 한글 종합 한마디 — 프론트엔드 뉴스탭 표시용
+ * 장세 한글 종합 딥 요약 — 프론트엔드 뉴스탭 표시용 (v23: 딥 분석)
+ * 기존 한줄 → 상승/하락 요인 대비 구조의 3~4문장 분석
  */
 export function generateMarketSummaryKorean(regime: MarketRegime): string {
   const moodKr: Record<string, string> = {
@@ -312,25 +320,50 @@ export function generateMarketSummaryKorean(regime: MarketRegime): string {
     PANIC: '공황장',
   };
   const mood = moodKr[regime.regime] || '보합장';
-  const factors: string[] = [];
 
-  if (regime.foreignNetBuy > 500) factors.push('외국인 매수세 강함');
-  else if (regime.foreignNetBuy < -500) factors.push('외국인 매도세 지속');
+  const bulls = regime.bullFactors;
+  const bears = regime.bearFactors;
 
-  if (regime.vix >= 25) factors.push('변동성 높은 불안한 장세');
-  else if (regime.vix > 0 && regime.vix <= 18) factors.push('변동성 낮아 안정적');
+  // 핵심 수치 포맷
+  const kospiStr = `KOSPI ${regime.kospiChange >= 0 ? '+' : ''}${regime.kospiChange.toFixed(1)}%`;
+  const foreignStr = regime.foreignNetBuy !== 0
+    ? `외국인 ${regime.foreignNetBuy > 0 ? '순매수' : '순매도'} ${Math.abs(regime.foreignNetBuy / 100).toFixed(0)}억`
+    : '';
+  const vkospiStr = regime.vix > 0 ? `VKOSPI ${regime.vix.toFixed(1)}` : '';
 
-  if (regime.consecutiveDays >= 3) factors.push(`${regime.consecutiveDays}일 연속 상승 중`);
-  else if (regime.consecutiveDays <= -3) factors.push(`${Math.abs(regime.consecutiveDays)}일 연속 하락 중`);
+  const parts: string[] = [];
 
-  if (regime.fearGreed >= 70) factors.push('탐욕 구간 진입');
-  else if (regime.fearGreed > 0 && regime.fearGreed <= 30) factors.push('공포 구간');
+  if (regime.regime === 'NEUTRAL') {
+    // 보합장: 상승/하락 요인 대비 구조 강조
+    if (bulls.length > 0 && bears.length > 0) {
+      parts.push(`상승 요인(${bulls.slice(0, 2).join(', ')})과 하락 요인(${bears.slice(0, 2).join(', ')})이 맞서며 팽팽한 균형.`);
+    } else if (bulls.length > 0) {
+      parts.push(`${bulls.slice(0, 2).join(', ')} 등 긍정 신호에도 추가 모멘텀 부재로 관망세.`);
+    } else if (bears.length > 0) {
+      parts.push(`${bears.slice(0, 2).join(', ')} 등 부정 요인이 있으나 하방 지지가 유효.`);
+    } else {
+      parts.push(`뚜렷한 방향성 없이 횡보 중.`);
+    }
+    parts.push(`${kospiStr}${foreignStr ? ', ' + foreignStr : ''}${vkospiStr ? ', ' + vkospiStr : ''}.`);
+  } else if (regime.regime === 'BULLISH') {
+    parts.push(`${bulls.slice(0, 3).join(', ')} 등이 시장을 견인하며 상승 흐름.`);
+    if (bears.length > 0) {
+      parts.push(`다만 ${bears.slice(0, 2).join(', ')} 등 리스크 요인은 주시 필요.`);
+    }
+    parts.push(`${kospiStr}, 적극 매매 구간.`);
+  } else if (regime.regime === 'BEARISH') {
+    parts.push(`${bears.slice(0, 3).join(', ')} 등 하락 압력이 우세.`);
+    if (bulls.length > 0) {
+      parts.push(`${bulls.slice(0, 2).join(', ')} 등이 바닥을 지지하나 반등 모멘텀 약함.`);
+    }
+    parts.push(`${kospiStr}, 방어 모드 전환 권장.`);
+  } else {
+    // PANIC
+    parts.push(`${bears.slice(0, 3).join(', ')} 등 복합 악재로 시장 패닉.`);
+    parts.push(`${kospiStr}${vkospiStr ? ', ' + vkospiStr : ''}, 최대 방어 태세.`);
+  }
 
-  if (regime.kospiChange >= 1.0) factors.push(`KOSPI +${regime.kospiChange.toFixed(1)}%`);
-  else if (regime.kospiChange <= -1.0) factors.push(`KOSPI ${regime.kospiChange.toFixed(1)}%`);
-
-  const factorStr = factors.length > 0 ? ` ${factors.join(', ')}.` : '';
-  return `오늘은 ${mood} 분위기입니다 (스코어 ${regime.score >= 0 ? '+' : ''}${regime.score}).${factorStr}`;
+  return `오늘은 ${mood} (스코어 ${regime.score >= 0 ? '+' : ''}${regime.score}). ${parts.join(' ')}`;
 }
 
 /**

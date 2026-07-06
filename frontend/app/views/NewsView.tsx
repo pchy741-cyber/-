@@ -9,7 +9,14 @@ import { NewsSummaryPanel } from './news/NewsSummaryPanel';
 
 import type { WatchlistItem } from '../types';
 
-interface RegimeSummary { summary: string; regime: string; score: number; recommended: string; reasons: string[]; usMarket?: { trend: string; spy: number; qqq: number; breadth: string } | null }
+interface RegimeSummary {
+  summary: string; regime: string; score: number; recommended: string; reasons: string[];
+  bullFactors?: string[]; bearFactors?: string[];
+  deepAnalysis?: string; bullCatalysts?: string[]; bearCatalysts?: string[];
+  outlook?: string;
+  factorBreakdown?: Array<{ label: string; value: string; type: 'bull' | 'bear' | 'neutral' }>;
+  usMarket?: { trend: string; spy: number; qqq: number; breadth: string } | null;
+}
 interface YTVideo { title: string; link: string; channel: string; publishedAt: string; sentiment: 'bullish' | 'bearish' | 'neutral'; sentimentScore: number }
 interface StockNewsEntry { stockCode: string; items: Array<{ title: string; link?: string; publishedAt?: string }> }
 interface MacroHeadlineItem { title: string; link: string; source: string; publishedAt: string; relativeTime?: string }
@@ -163,6 +170,7 @@ function NewsView({ watchlist, setWatchlist, viewMode = 'live' }: { watchlist: W
           </div>
 
           <div className="p-5 pb-3">
+            {/* 상단: 장세 레이블 + 스코어 + 날짜 */}
             <div className="flex items-center gap-2 mb-3">
               <span className="text-xl">{regimeIcon}</span>
               <span className={`text-xs font-bold px-2.5 py-1 rounded-full ${
@@ -175,14 +183,90 @@ function NewsView({ watchlist, setWatchlist, viewMode = 'live' }: { watchlist: W
               {regime.score !== 0 && (
                 <span className="text-[10px] text-slate-600">({regime.score > 0 ? '+' : ''}{regime.score})</span>
               )}
+              {regime.outlook && regime.outlook !== 'SHORT_TERM_NEUTRAL' && (
+                <span className={`text-[10px] px-1.5 py-0.5 rounded ${
+                  regime.outlook === 'SHORT_TERM_BULL' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-rose-500/10 text-rose-400'
+                }`}>{regime.outlook === 'SHORT_TERM_BULL' ? '단기 상승' : '단기 하락'}</span>
+              )}
               <span className="text-[10px] text-slate-600 ml-auto">{todayStr}</span>
             </div>
-            <p className="text-sm text-slate-200 leading-relaxed font-medium">{regime.summary}</p>
-            {regime.reasons.length > 0 && (
-              <div className="flex flex-wrap gap-1.5 mt-2.5">
-                {regime.reasons.slice(0, 5).map((r, i) => (
-                  <span key={i} className="text-[10px] px-2 py-0.5 rounded-md bg-white/[0.04] text-slate-400 border border-white/[0.06]">{r}</span>
-                ))}
+
+            {/* 중단: 딥 분석 텍스트 (deepAnalysis 우선, 없으면 summary) */}
+            <p className="text-sm text-slate-200 leading-relaxed font-medium">
+              {regime.deepAnalysis || regime.summary}
+            </p>
+            {regime.deepAnalysis && regime.summary && (
+              <p className="text-xs text-slate-400 mt-1.5 leading-relaxed">{regime.summary}</p>
+            )}
+
+            {/* 하단: Bull/Bear 팩터 2컬럼 */}
+            {((regime.bullFactors && regime.bullFactors.length > 0) || (regime.bearFactors && regime.bearFactors.length > 0)) && (
+              <div className="grid grid-cols-2 gap-3 mt-4">
+                {/* 상승 요인 */}
+                <div className="rounded-xl bg-emerald-500/[0.06] border border-emerald-500/10 p-3">
+                  <div className="flex items-center gap-1.5 mb-2">
+                    <span className="text-xs">📈</span>
+                    <span className="text-[11px] font-bold text-emerald-400">상승 요인</span>
+                    {regime.bullFactors && <span className="text-[9px] text-emerald-500/60 ml-auto">{regime.bullFactors.length}</span>}
+                  </div>
+                  {regime.bullFactors && regime.bullFactors.length > 0 ? (
+                    <div className="space-y-1">
+                      {regime.bullFactors.slice(0, 5).map((f, i) => (
+                        <div key={i} className="flex items-start gap-1.5">
+                          <span className="text-emerald-500/40 text-[10px] mt-0.5 shrink-0">{i < regime.bullFactors!.length - 1 ? '├' : '└'}</span>
+                          <span className="text-[11px] text-slate-300 leading-tight">{f}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-[10px] text-slate-600">해당 없음</p>
+                  )}
+                  {/* AI 상승 촉매 */}
+                  {regime.bullCatalysts && regime.bullCatalysts.length > 0 && (
+                    <div className="mt-2 pt-2 border-t border-emerald-500/10">
+                      <span className="text-[9px] text-emerald-500/50 font-medium">AI 촉매</span>
+                      {regime.bullCatalysts.map((c, i) => (
+                        <div key={i} className="flex items-start gap-1.5 mt-0.5">
+                          <span className="text-emerald-500/30 text-[9px] mt-0.5 shrink-0">+</span>
+                          <span className="text-[10px] text-emerald-300/70 leading-tight">{c}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* 하락 요인 */}
+                <div className="rounded-xl bg-rose-500/[0.06] border border-rose-500/10 p-3">
+                  <div className="flex items-center gap-1.5 mb-2">
+                    <span className="text-xs">📉</span>
+                    <span className="text-[11px] font-bold text-rose-400">하락 요인</span>
+                    {regime.bearFactors && <span className="text-[9px] text-rose-500/60 ml-auto">{regime.bearFactors.length}</span>}
+                  </div>
+                  {regime.bearFactors && regime.bearFactors.length > 0 ? (
+                    <div className="space-y-1">
+                      {regime.bearFactors.slice(0, 5).map((f, i) => (
+                        <div key={i} className="flex items-start gap-1.5">
+                          <span className="text-rose-500/40 text-[10px] mt-0.5 shrink-0">{i < regime.bearFactors!.length - 1 ? '├' : '└'}</span>
+                          <span className="text-[11px] text-slate-300 leading-tight">{f}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-[10px] text-slate-600">해당 없음</p>
+                  )}
+                  {/* AI 하락 촉매 */}
+                  {regime.bearCatalysts && regime.bearCatalysts.length > 0 && (
+                    <div className="mt-2 pt-2 border-t border-rose-500/10">
+                      <span className="text-[9px] text-rose-500/50 font-medium">AI 촉매</span>
+                      {regime.bearCatalysts.map((c, i) => (
+                        <div key={i} className="flex items-start gap-1.5 mt-0.5">
+                          <span className="text-rose-500/30 text-[9px] mt-0.5 shrink-0">-</span>
+                          <span className="text-[10px] text-rose-300/70 leading-tight">{c}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
             )}
           </div>

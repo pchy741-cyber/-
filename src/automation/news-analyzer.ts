@@ -33,6 +33,10 @@ export interface NewsAnalysis {
   overallSentiment: number;       // -1.0 ~ +1.0
   regimeAdjustment: number;       // -5 ~ +3
   marketImpactSummary: string;    // AI 종합 한줄
+  deepAnalysis: string;           // 3~5문장 딥 분석
+  bullCatalysts: string[];        // AI가 판별한 상승 촉매
+  bearCatalysts: string[];        // AI가 판별한 하락 촉매
+  outlook: string;                // SHORT_TERM_BULL / BEAR / NEUTRAL
   analysisSource: 'hybrid' | 'finbert_only' | 'fallback';
   analyzedAt: number;
 }
@@ -73,6 +77,10 @@ export async function analyzeNewsHeadlines(
       overallSentiment: 0,
       regimeAdjustment: 0,
       marketImpactSummary: '수집된 뉴스 없음',
+      deepAnalysis: '',
+      bullCatalysts: [],
+      bearCatalysts: [],
+      outlook: 'SHORT_TERM_NEUTRAL',
       analysisSource: 'fallback',
       analyzedAt: Date.now(),
     };
@@ -197,27 +205,31 @@ async function callGeminiWithPreScored(scored: PreScoredHeadline[]): Promise<New
     .map(([cat, c]) => `${cat}:${c}`)
     .join(' ');
 
-  const prompt = `뉴스 ${scored.length}건 AI 사전분석 결과:
+  const prompt = `당신은 한국 주식시장 전문 애널리스트입니다. 뉴스 ${scored.length}건 AI 사전분석 결과:
 - 긍정 ${positiveCount}건 / 부정 ${negativeCount}건 / 중립 ${neutralCount}건
 - 시스템리스크 키워드: ${systemicCount}건
 - 평균센티먼트: ${avgSentiment.toFixed(2)} (-1부정~+1긍정)
 - 카테고리: ${catSummary}
 ${importantHeadlines ? `\n주요 헤드라인:\n${importantHeadlines}` : ''}
 
-위 사전분석을 종합하여 JSON만 반환:
-{"regimeAdjustment":0,"marketImpactSummary":"한줄요약","headlineSummaries":[{"idx":0,"summary":"요약"}]}
+위 사전분석을 전문 애널리스트 수준으로 종합하여 JSON만 반환:
+{"regimeAdjustment":0,"marketImpactSummary":"한줄요약30자","deepAnalysis":"3~5문장 딥분석","bullCatalysts":["상승촉매1","상승촉매2"],"bearCatalysts":["하락촉매1","하락촉매2"],"outlook":"SHORT_TERM_NEUTRAL","headlineSummaries":[{"idx":0,"summary":"요약"}]}
 
 규칙:
 - regimeAdjustment: -5~+3 (시장 장세 점수 조정. 국민연금매도=-3, Fed금리인하=+2, 평범=0)
 - marketImpactSummary: 투자자용 오늘 뉴스 종합 한줄 (한국어 30자)
+- deepAnalysis: 전문가 수준 시장 분석 3~5문장. 현재 시장 핵심 동인, 단기 전망, 주의 리스크 포함. 구체적 수치와 맥락을 서술.
+- bullCatalysts: 뉴스에서 추출한 상승 촉매 (최대 4개, 구체적으로)
+- bearCatalysts: 뉴스에서 추출한 하락 촉매 (최대 4개, 구체적으로)
+- outlook: SHORT_TERM_BULL / SHORT_TERM_BEAR / SHORT_TERM_NEUTRAL 중 하나
 - headlineSummaries: 시스템리스크/고영향 헤드라인만 요약 (나머지 생략)
 - 부정문 구분 필수: "금리인상 중단"→긍정, "전쟁 회피"→긍정`;
 
   const raw = await Promise.race([
     callVertexGemini(
-      '한국 주식시장 뉴스 애널리스트. JSON만 반환.',
+      '한국 주식시장 전문 애널리스트. 딥한 시장 분석을 JSON으로 반환.',
       prompt,
-      { temperature: 0.1, maxOutputTokens: 512, label: '뉴스-AI종합' },
+      { temperature: 0.1, maxOutputTokens: 800, label: '뉴스-AI종합' },
     ),
     new Promise<string>((_, reject) => setTimeout(() => reject(new Error('timeout')), 15000)),
   ]);
@@ -228,6 +240,10 @@ ${importantHeadlines ? `\n주요 헤드라인:\n${importantHeadlines}` : ''}
   const parsed = JSON.parse(jsonMatch[0]) as {
     regimeAdjustment?: number;
     marketImpactSummary?: string;
+    deepAnalysis?: string;
+    bullCatalysts?: string[];
+    bearCatalysts?: string[];
+    outlook?: string;
     headlineSummaries?: Array<{ idx: number; summary: string }>;
   };
 
@@ -252,6 +268,10 @@ ${importantHeadlines ? `\n주요 헤드라인:\n${importantHeadlines}` : ''}
     overallSentiment: clamp(avgSentiment, -1, 1),
     regimeAdjustment: clamp(parsed.regimeAdjustment ?? 0, -5, 3),
     marketImpactSummary: parsed.marketImpactSummary ?? '',
+    deepAnalysis: parsed.deepAnalysis ?? '',
+    bullCatalysts: Array.isArray(parsed.bullCatalysts) ? parsed.bullCatalysts : [],
+    bearCatalysts: Array.isArray(parsed.bearCatalysts) ? parsed.bearCatalysts : [],
+    outlook: parsed.outlook ?? 'SHORT_TERM_NEUTRAL',
     analysisSource: 'hybrid',
     analyzedAt: Date.now(),
   };
@@ -279,6 +299,11 @@ function buildFromPreScored(scored: PreScoredHeadline[], source: NewsAnalysis['a
     source: 'finbert' as const,
   }));
 
+  // FinBERT 단독 시 bull/bear 촉매 추출
+  const bullCatalysts = scored.filter((s) => s.finbertSentiment > 0.3).map((s) => s.title).slice(0, 3);
+  const bearCatalysts = scored.filter((s) => s.finbertSentiment < -0.3).map((s) => s.title).slice(0, 3);
+  const outlook = regimeAdj > 0 ? 'SHORT_TERM_BULL' : regimeAdj < 0 ? 'SHORT_TERM_BEAR' : 'SHORT_TERM_NEUTRAL';
+
   return {
     headlines,
     overallSentiment: clamp(avgSentiment, -1, 1),
@@ -286,6 +311,10 @@ function buildFromPreScored(scored: PreScoredHeadline[], source: NewsAnalysis['a
     marketImpactSummary: systemicCount > 0
       ? `시스템 리스크 ${systemicCount}건 — 경계`
       : avgSentiment < -0.2 ? '부정 뉴스 우세' : avgSentiment > 0.2 ? '긍정 뉴스 우세' : '중립 장세',
+    deepAnalysis: '',
+    bullCatalysts,
+    bearCatalysts,
+    outlook,
     analysisSource: source,
     analyzedAt: Date.now(),
   };
