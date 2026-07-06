@@ -133,6 +133,30 @@ export async function getOrderFills(orderNo: string): Promise<FillInfo | null> {
 }
 
 /**
+ * v28: Chase 주문 래퍼 — 기존 주문 취소 + 새 가격으로 재접수
+ */
+export async function chaseOrder(params: {
+  originalOrderNo: string;
+  stockCode: string;
+  quantity: number;
+  newPrice: number;
+  side: OrderSide;
+}): Promise<OrderResult> {
+  await cancelOrder({
+    orderNo: params.originalOrderNo,
+    stockCode: params.stockCode,
+    quantity: params.quantity,
+  });
+  return placeOrder({
+    stockCode: params.stockCode,
+    side: params.side,
+    quantity: params.quantity,
+    price: params.newPrice,
+    orderType: OrderType.LIMIT,
+  });
+}
+
+/**
  * 주문 취소
  */
 export async function cancelOrder(params: {

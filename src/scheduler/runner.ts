@@ -273,6 +273,28 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
+  // 🏦 v28: 세금수확 스켈레톤 — 매일 09:00 (12월 1~20일만 실제 활성)
+  cron.schedule(
+    '0 9 * * 1-5',
+    () => {
+      import('./tax-harvest-job.js')
+        .then((m) => m.runTaxHarvestCheck())
+        .catch((e) => logger.error(`세금수확 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 💱 v28: 환전 배치 스켈레톤 — 수요일 10:00 KST
+  cron.schedule(
+    '0 10 * * 3',
+    () => {
+      import('./fx-batch-job.js')
+        .then((m) => m.runFxBatchJob())
+        .catch((e) => logger.error(`환전 배치 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
   // 📊 일일 학습 리포트 — 평일 18:30 KST (paper + live, Telegram) — Claude Haiku 호출
   cron.schedule(
     '30 18 * * 1-5',

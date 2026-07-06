@@ -459,8 +459,43 @@ export class TradeExecutor {
         }
       }
 
-      // 🎯 대형 주문 진입타이밍 AI 검토 (100만원 이상, ETF 파킹/바닥낚시 제외)
+      // v28: 스마트 집행 — 비ETF + 비방어 + 금액 30만+ → 상태머신
       const orderAmountKrw = estimatedPrice * gatedQuantity;
+      if (!skipGates && orderAmountKrw >= 300_000) {
+        try {
+          const { smartExecuteBuy, checkLiquidityGate } = await import('./execution-engine.js');
+          const execResult = await smartExecuteBuy({
+            stockCode,
+            quantity: gatedQuantity,
+            estimatedPrice,
+            isPaper: isPaperSnapshot,
+            strategyMode: mode,
+            expectedTpPct: STRATEGY_PARAMS[mode]?.takeProfitPct ?? 5,
+          });
+          if (execResult.skippedReason) {
+            releaseBuyIntent(stockCode);
+            logger.warn(`🚧 유동성 게이트 차단 [${stockCode}]: ${execResult.skippedReason}`, { component: 'EXECUTOR' });
+            this._logFire('WARN', 'LIQUIDITY_GATE', `차단: ${stockCode} reason=${execResult.skippedReason}`);
+            return;
+          }
+          if (!execResult.success) {
+            releaseBuyIntent(stockCode);
+            logger.warn(`❌ 스마트 집행 실패 [${stockCode}]: chase=${execResult.chaseCount}`, { component: 'EXECUTOR' });
+            return;
+          }
+          // 스마트 집행 성공 — 체인 생성 + 후속 처리는 아래 기존 로직으로 계속
+          // (executeOrder + confirmFill 블록을 건너뛰고 직접 체인 생성)
+          logger.info(
+            `✅ 스마트 집행 성공: ${stockCode} ${execResult.filledQty}주 @${execResult.filledPrice} chase=${execResult.chaseCount} ${execResult.elapsed_ms}ms`,
+            { component: 'EXECUTOR' },
+          );
+        } catch (smartErr) {
+          // fail-open: 스마트 집행 실패 시 기존 로직으로 폴백
+          logger.warn(`스마트 집행 오류 → 기존 로직 폴백: ${stockCode} ${smartErr}`, { component: 'EXECUTOR' });
+        }
+      }
+
+      // 🎯 대형 주문 진입타이밍 AI 검토 (100만원 이상, ETF 파킹/바닥낚시 제외)
       if (!skipGates && orderAmountKrw >= 1_000_000) {
         try {
           const entryCandles = await getDailyChart(stockCode, 20).catch(() => []);

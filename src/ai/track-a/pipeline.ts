@@ -322,9 +322,15 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
               ? '[YouTube]'
               : s.source_type === 'research'
                 ? '[리서치]'
-                : s.source_type === 'news'
-                  ? '[뉴스]'
-                  : '[기사]';
+                : s.source_type === 'fable'
+                  ? '[Fable]'
+                  : s.source_type === 'news'
+                    ? '[뉴스]'
+                    : '[기사]';
+          // Fable 카드: body 텍스트 표시 (url 대신)
+          if (s.body) {
+            return `${typeLabel} ${s.title}\n${s.body}`;
+          }
           return `${typeLabel} ${s.title}: ${s.url}${s.memo ? ` (메모: ${s.memo})` : ''}`;
         })
         .join('\n');

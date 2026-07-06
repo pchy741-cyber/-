@@ -104,3 +104,31 @@ export async function getAllRecentScores(): Promise<AIScore[]> {
   );
   return fallback;
 }
+
+/** v27: 오늘 composite_score 상위 후보 종목 조회 — candidates API 용 */
+export async function getTopCandidates(
+  limit = 10,
+): Promise<Array<{ stock_code: string; composite_score: number; signal: string; reasoning: string }>> {
+  if (isMemoryMode()) return [];
+  const today = kstDateStr(getKSTNow());
+  const { rows } = await queryWithRetry(
+    `SELECT stock_code, composite_score, signal, reasoning
+     FROM ai_scores
+     WHERE score_date = $1 AND composite_score > 0
+     ORDER BY composite_score DESC
+     LIMIT $2`,
+    [today, limit],
+  );
+  if (rows.length > 0) return rows;
+  // 오늘 없으면 최근 2일 fallback
+  const twoDaysAgo = kstDateStr(new Date(getKSTNow().getTime() - 2 * 24 * 60 * 60 * 1000));
+  const { rows: fallback } = await queryWithRetry(
+    `SELECT DISTINCT ON (stock_code) stock_code, composite_score, signal, reasoning
+     FROM ai_scores
+     WHERE score_date >= $1 AND composite_score > 0
+     ORDER BY stock_code, composite_score DESC
+     LIMIT $2`,
+    [twoDaysAgo, limit],
+  );
+  return fallback;
+}

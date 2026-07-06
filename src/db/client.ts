@@ -21,7 +21,7 @@ export {
 export { getActiveWatchlist, upsertWatchlistItem } from './repo/watchlist.js';
 
 // ── AI Scores ──
-export { getAllRecentScores, getLatestScores, upsertAIScore } from './repo/ai-scores.js';
+export { getAllRecentScores, getLatestScores, getTopCandidates, upsertAIScore } from './repo/ai-scores.js';
 
 // ── Transaction Chains ──
 export { createChain, getOpenChains, updateChain } from './repo/chains.js';
@@ -60,4 +60,4 @@ export { logSystem } from './repo/system-log.js';
 export { insertRiskEvent } from './repo/risk-events.js';
 
 // ── Market Sources ──
-export { getRecentSources } from './repo/market-sources.js';
+export { getRecentSources, replaceFableCards } from './repo/market-sources.js';
