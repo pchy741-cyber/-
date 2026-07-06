@@ -39,8 +39,9 @@ const MARKET_TABS = [
   { key: 'US' as const, label: '해외' },
 ];
 
-function pctColor(v: number) { return v > 0 ? 'text-emerald-400' : v < 0 ? 'text-rose-400' : 'text-slate-400'; }
-function fmtPct(v: number) { return (v > 0 ? '+' : '') + v.toFixed(2) + '%'; }
+function n(v: unknown): number { return typeof v === 'number' && isFinite(v) ? v : 0; }
+function pctColor(v: number) { return n(v) > 0 ? 'text-emerald-400' : n(v) < 0 ? 'text-rose-400' : 'text-slate-400'; }
+function fmtPct(v: number) { const x = n(v); return (x > 0 ? '+' : '') + x.toFixed(2) + '%'; }
 
 function MetricRow({ label, value, sub }: { label: string; value: React.ReactNode; sub?: string }) {
   return (
@@ -86,9 +87,14 @@ export default React.memo(function StrategyHealthCard({ viewMode = 'live' }: { v
     </div>
   );
 
-  if (!data) return null;
+  if (!data || !data.period || !data.returns) return null;
 
-  const { returns: ret, risk, efficiency: eff, consistency: con, goal, benchmark: bm } = data;
+  const ret = data.returns ?? {} as any;
+  const risk = data.risk ?? {} as any;
+  const eff = data.efficiency ?? {} as any;
+  const con = data.consistency ?? {} as any;
+  const goal = data.goal ?? {} as any;
+  const bm = data.benchmark ?? {} as any;
   const gradeStyle = GRADE_COLORS[data.grade] || GRADE_COLORS['C'];
   const ltTrack = LONG_TERM_TRACK[goal.onTrackLongTerm] ?? LONG_TERM_TRACK.NEUTRAL;
   const gradeHasStar = data.grade.endsWith('*');
@@ -144,11 +150,11 @@ export default React.memo(function StrategyHealthCard({ viewMode = 'live' }: { v
             style={{ width: `${Math.min(100, Math.max(0, goal.monthlyTargetPct > 0 ? (goal.currentMonthPct / goal.monthlyTargetPct) * 100 : 0))}%` }} />
         </div>
         <div className="flex justify-between mt-1">
-          <span className="text-[10px] text-slate-500">현재 {goal.currentMonthPct.toFixed(1)}%</span>
-          <span className="text-[10px] text-slate-500">목표 {goal.monthlyTargetPct}% (예상 {goal.projectedMonthlyPct.toFixed(1)}%)</span>
+          <span className="text-[10px] text-slate-500">현재 {n(goal.currentMonthPct).toFixed(1)}%</span>
+          <span className="text-[10px] text-slate-500">목표 {n(goal.monthlyTargetPct)}% (예상 {n(goal.projectedMonthlyPct).toFixed(1)}%)</span>
         </div>
         {!goal.goalRealistic && (
-          <div className="text-[10px] text-rose-400 mt-1">필요 Sharpe {goal.requiredSharpe.toFixed(1)} — 비현실적</div>
+          <div className="text-[10px] text-rose-400 mt-1">필요 Sharpe {n(goal.requiredSharpe).toFixed(1)} — 비현실적</div>
         )}
       </div>
 
@@ -161,26 +167,26 @@ export default React.memo(function StrategyHealthCard({ viewMode = 'live' }: { v
         </div>
         <div className="bg-white/[0.03] rounded-xl p-2.5 text-center">
           <div className="text-[10px] text-slate-500 mb-0.5">Sharpe</div>
-          <div className={`text-base font-bold tabular-nums ${eff.sharpeRatio >= 1.5 ? 'text-emerald-400' : eff.sharpeRatio >= 1 ? 'text-blue-400' : eff.sharpeRatio >= 0 ? 'text-amber-400' : 'text-rose-400'}`}>
-            {eff.sharpeRatio.toFixed(2)}
+          <div className={`text-base font-bold tabular-nums ${n(eff.sharpeRatio) >= 1.5 ? 'text-emerald-400' : n(eff.sharpeRatio) >= 1 ? 'text-blue-400' : n(eff.sharpeRatio) >= 0 ? 'text-amber-400' : 'text-rose-400'}`}>
+            {n(eff.sharpeRatio).toFixed(2)}
           </div>
-          <div className={`text-[10px] ${eff.psrSignificant ? 'text-emerald-500' : 'text-slate-500'}`}>
-            PSR {(eff.psr * 100).toFixed(0)}%{eff.psrSignificant ? ' (유의)' : ''}
+          <div className={`text-[10px] ${eff?.psrSignificant ? 'text-emerald-500' : 'text-slate-500'}`}>
+            PSR {(n(eff.psr) * 100).toFixed(0)}%{eff?.psrSignificant ? ' (유의)' : ''}
           </div>
         </div>
         <div className="bg-white/[0.03] rounded-xl p-2.5 text-center">
           <div className="text-[10px] text-slate-500 mb-0.5">MDD</div>
-          <div className={`text-base font-bold tabular-nums ${risk.maxDrawdownPct < 5 ? 'text-emerald-400' : risk.maxDrawdownPct < 10 ? 'text-amber-400' : 'text-rose-400'}`}>
-            -{risk.maxDrawdownPct.toFixed(1)}%
+          <div className={`text-base font-bold tabular-nums ${n(risk.maxDrawdownPct) < 5 ? 'text-emerald-400' : n(risk.maxDrawdownPct) < 10 ? 'text-amber-400' : 'text-rose-400'}`}>
+            -{n(risk.maxDrawdownPct).toFixed(1)}%
           </div>
           <div className="text-[10px] text-slate-500">{risk.maxDrawdownTrades}거래 지속</div>
         </div>
         <div className="bg-white/[0.03] rounded-xl p-2.5 text-center">
           <div className="text-[10px] text-slate-500 mb-0.5">승률</div>
-          <div className={`text-base font-bold tabular-nums ${con.winRate >= 55 ? 'text-emerald-400' : con.winRate >= 45 ? 'text-amber-400' : 'text-rose-400'}`}>
-            {con.winRate.toFixed(1)}%
+          <div className={`text-base font-bold tabular-nums ${n(con.winRate) >= 55 ? 'text-emerald-400' : n(con.winRate) >= 45 ? 'text-amber-400' : 'text-rose-400'}`}>
+            {n(con.winRate).toFixed(1)}%
           </div>
-          <div className="text-[10px] text-slate-500">PF {eff.profitFactor.toFixed(2)}</div>
+          <div className="text-[10px] text-slate-500">PF {n(eff.profitFactor).toFixed(2)}</div>
         </div>
       </div>
 
@@ -191,25 +197,25 @@ export default React.memo(function StrategyHealthCard({ viewMode = 'live' }: { v
           <MetricRow label="월 평균" value={<span className={pctColor(ret.monthlyAvgPct)}>{fmtPct(ret.monthlyAvgPct)}</span>} />
           <MetricRow label="일 평균" value={<span className={pctColor(ret.dailyAvgPct)}>{fmtPct(ret.dailyAvgPct)}</span>} />
           <MetricRow label="최고/최저 거래" value={<><span className="text-emerald-400">{fmtPct(ret.bestTradePct)}</span><span className="text-slate-600 mx-1">/</span><span className="text-rose-400">{fmtPct(ret.worstTradePct)}</span></>} />
-          <MetricRow label="총 손익" value={`₩${ret.totalPnlKrw.toLocaleString('ko-KR')}`} />
+          <MetricRow label="총 손익" value={`₩${n(ret.totalPnlKrw).toLocaleString('ko-KR')}`} />
         </Section>
 
         <Section title="효율성">
-          <MetricRow label="Sortino" value={eff.sortinoRatio.toFixed(2)} sub="하방 위험 대비" />
-          <MetricRow label="Calmar" value={eff.calmarRatio.toFixed(2)} sub="MDD 대비 수익" />
-          <MetricRow label="Payoff Ratio" value={eff.payoffRatio.toFixed(2)} sub="평균 이익/손실" />
-          <MetricRow label="Recovery Factor" value={con.recoveryFactor.toFixed(2)} sub="MDD 회복력" />
-          <MetricRow label="MinTRL" value={eff.minTRL >= 9999 ? 'N/A' : `${eff.minTRL}일`} sub={`현재 ${data.period.tradingDays}일`} />
+          <MetricRow label="Sortino" value={n(eff.sortinoRatio).toFixed(2)} sub="하방 위험 대비" />
+          <MetricRow label="Calmar" value={n(eff.calmarRatio).toFixed(2)} sub="MDD 대비 수익" />
+          <MetricRow label="Payoff Ratio" value={n(eff.payoffRatio).toFixed(2)} sub="평균 이익/손실" />
+          <MetricRow label="Recovery Factor" value={n(con.recoveryFactor).toFixed(2)} sub="MDD 회복력" />
+          <MetricRow label="MinTRL" value={n(eff.minTRL) >= 9999 ? 'N/A' : `${n(eff.minTRL)}일`} sub={`현재 ${n(data.period.tradingDays)}일`} />
         </Section>
 
         <Section title="리스크">
-          <MetricRow label="현재 낙폭" value={<span className={pctColor(-risk.currentDrawdownPct)}>{risk.currentDrawdownPct > 0 ? `-${risk.currentDrawdownPct.toFixed(1)}%` : '0%'}</span>} />
-          <MetricRow label="거래 변동성" value={`${risk.volatilityTrade.toFixed(2)}%`} sub="거래별" />
-          <MetricRow label="연 변동성" value={`${risk.volatilityAnnual.toFixed(1)}%`} />
+          <MetricRow label="현재 낙폭" value={<span className={pctColor(-n(risk.currentDrawdownPct))}>{n(risk.currentDrawdownPct) > 0 ? `-${n(risk.currentDrawdownPct).toFixed(1)}%` : '0%'}</span>} />
+          <MetricRow label="거래 변동성" value={`${n(risk.volatilityTrade).toFixed(2)}%`} sub="거래별" />
+          <MetricRow label="연 변동성" value={`${n(risk.volatilityAnnual).toFixed(1)}%`} />
         </Section>
 
         <Section title="일관성">
-          <MetricRow label="수익일 비율" value={`${con.profitDaysRate.toFixed(1)}%`} />
+          <MetricRow label="수익일 비율" value={`${n(con.profitDaysRate).toFixed(1)}%`} />
           <MetricRow label="최대 연승" value={`${con.maxConsecutiveWins}연승`} />
           <MetricRow label="최대 연패" value={<span className="text-rose-400">{con.maxConsecutiveLosses}연패</span>} />
         </Section>
@@ -217,8 +223,8 @@ export default React.memo(function StrategyHealthCard({ viewMode = 'live' }: { v
         {bm?.available && (
           <Section title="벤치마크 (SPY)">
             <MetricRow label="Alpha" value={<span className={pctColor(bm.alpha)}>{fmtPct(bm.alpha)}</span>} sub="CAPM 초과수익" />
-            <MetricRow label="Beta" value={bm.beta.toFixed(2)} sub={bm.beta > 1 ? '고변동' : '저변동'} />
-            <MetricRow label="Info Ratio" value={bm.informationRatio.toFixed(2)} sub={`TE ${bm.trackingError.toFixed(1)}%`} />
+            <MetricRow label="Beta" value={n(bm.beta).toFixed(2)} sub={n(bm.beta) > 1 ? '고변동' : '저변동'} />
+            <MetricRow label="Info Ratio" value={n(bm.informationRatio).toFixed(2)} sub={`TE ${n(bm.trackingError).toFixed(1)}%`} />
             <MetricRow label="SPY CAGR" value={<span className={pctColor(bm.benchmarkCagr)}>{fmtPct(bm.benchmarkCagr)}</span>} />
           </Section>
         )}
