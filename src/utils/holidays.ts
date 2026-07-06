@@ -147,17 +147,15 @@ export function isTradingDay(date: Date = new Date()): boolean {
 
 /**
  * 전 세계 주요 시장 완전 휴장 시간대 판별
- * 토요일 09:00 KST ~ 월요일 06:00 KST (약 45시간)
- * - 토 09:00: US 금요 포스트마켓+정산 완료
- * - 월 06:00: 아시아 개장 준비 / US 프리마켓 시작 전
- * 이 시간대에는 국내/해외 어떤 시장도 안 열리므로 전체 스킵 가능
+ * 금요일 US 포스트마켓(토 08:00 KST) 이후 ~ 월요일 06:00 KST
+ * 토요일·일요일 전체 + 월요일 새벽은 어떤 시장도 안 열림
  */
 export function isWeekendClosed(): boolean {
   const kst = getKSTNow();
   const day = kst.getUTCDay(); // 0=Sun, 6=Sat
   const h = kst.getUTCHours();
   if (day === 0) return true; // 일요일 전체
-  if (day === 6 && h >= 9) return true; // 토요일 09:00 이후
+  if (day === 6) return true; // 토요일 전체 (US 포스트마켓도 08:00 전 종료)
   if (day === 1 && h < 6) return true; // 월요일 06:00 전
   return false;
 }

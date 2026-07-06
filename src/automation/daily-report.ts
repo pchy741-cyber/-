@@ -193,11 +193,11 @@ ${data.reasons.length > 0 ? `- 최근 판단: ${data.reasons.join(' | ')}` : ''}
   return text.slice(0, 500);
 }
 
-/** 이번 주 월요일 날짜 */
+/** 이번 주 월요일 날짜 (UTC 안전 — getDay()→getUTCDay() 타임존 버그 수정) */
 function getWeekStart(dateStr: string): string {
-  const d = new Date(dateStr);
-  const day = d.getDay();
-  const diff = d.getDate() - day + (day === 0 ? -6 : 1);
-  d.setDate(diff);
+  const d = new Date(dateStr + 'T00:00:00Z');
+  const day = d.getUTCDay();
+  const diff = d.getUTCDate() - day + (day === 0 ? -6 : 1);
+  d.setUTCDate(diff);
   return d.toISOString().split('T')[0];
 }
