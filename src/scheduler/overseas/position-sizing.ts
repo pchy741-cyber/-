@@ -167,7 +167,8 @@ export function calcPositionSize(params: SizingParams): SizingResult {
           : PHI.MEDIUM; // 23.6% 기본
 
   // v15: Kelly Cap 소폭 상향 (해외는 안정적 운용)
-  const kellyCap = isPaper ? 0.50 : 0.45;
+  // v26: Paper 0.50→0.40 (Live와 동일하게 — 과대 포지션 → 15연패 원인)
+  const kellyCap = isPaper ? 0.40 : 0.45;
   const baseSize = portfolioValue * Math.min(kellyPct, kellyCap);
 
   // v16.2: 현금 유보 최소화 — 통합증거금 KRW→USD 자동전환 활용, idle 현금 줄이기

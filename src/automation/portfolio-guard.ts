@@ -633,6 +633,13 @@ export function getConcentrationSellTargets(
         `🔧 집중 자동조정: ${chain.stock_code} — 비중 ${(pct * 100).toFixed(1)}% 초과, 수익 +${unrealizedPnlPct.toFixed(1)}%`,
         { component: COMPONENT },
       );
+    } else if (pct > 0.50) {
+      // v26: 50% 초과는 손실이어도 부분 축소 대상 (63% 쏠림 위험 방지)
+      targets.add(chain.stock_code);
+      logger.warn(
+        `🚨 극단 쏠림 축소: ${chain.stock_code} — 비중 ${(pct * 100).toFixed(1)}% (PnL ${unrealizedPnlPct >= 0 ? '+' : ''}${unrealizedPnlPct.toFixed(1)}%)`,
+        { component: COMPONENT },
+      );
     }
   }
 

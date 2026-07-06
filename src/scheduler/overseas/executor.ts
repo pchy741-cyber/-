@@ -18,8 +18,9 @@ import { resolveOverseasStockName } from './watchlist.js';
 
 // ── Named constants (magic number extraction) ──
 /** Paper order slippage simulation
- * v16.2.1: 0.1%→0.35% (실제 체결 슬리피지에 근접, 연습모드 과대수익 방지) */
-const PAPER_SLIPPAGE_PCT = 0.0035;
+ * v16.2.1: 0.1%→0.35% (실제 체결 슬리피지에 근접, 연습모드 과대수익 방지)
+ * v26: 0.35%→0.15% (sell-logic에서 roundTripFee 0.7% 별도 가산 → 이중차감으로 15연패 원인) */
+const PAPER_SLIPPAGE_PCT = 0.0015;
 /** Milliseconds per day — used for holding day calculation */
 const MS_PER_DAY = 86_400_000;
 /** PnL threshold for WIN/LOSS/BREAK_EVEN classification
