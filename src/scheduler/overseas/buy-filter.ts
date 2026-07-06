@@ -67,8 +67,9 @@ const SMALL_ACCOUNT_USD = 500;
 const REENTRY_CONF_THRESHOLD = 0.75;
 /** RSI threshold for oversold bounce detection
  * v12.2: 33→28 (Connors RSI-2 연구: 승률 76%, Wilder 1978: 30 이하 과매도)
- * 33은 약한 조정만 포착 → 28로 낮춰 진짜 과매도 반등 포착 */
-const RSI_OVERSOLD = 28;
+ * v23: 28→30 (28은 극단 과매도만 포착 — 보통 과매도 반등(30-33) 놓침, 매수 기회 감소)
+ * RSI≤25 극단 과매도는 별도 경로(line 587) 처리 */
+const RSI_OVERSOLD = 30;
 /** Sector concentration weight limit (fallback) */
 const SECTOR_WEIGHT_LIMIT_DEFAULT = 0.3;
 
@@ -478,14 +479,14 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         // v14: Paper/Live 통합 — Live 과필터링으로 고점수 승률 17% (Paper 100%)
         // Paper 검증 결과 낮은 바닥이 더 좋은 진입 타이밍 → Live도 동일 적용
         const baseMinConf = recoveryMode
-          ? 0.70 // v15: 0.75→0.70 (회복모드 약간 완화)
+          ? 0.68 // v23: 0.70→0.68 (회복모드 완화 — 우량종목 과매도 재진입 기회 확보)
           : mq === 'GREAT'
-            ? 0.55 // v15: 0.58→0.55 (GREAT 장 소폭 완화)
+            ? 0.52 // v23: 0.55→0.52 (상승장 진입 문턱 낮춤 → 승률 높은 장에서 매수 확대)
             : mq === 'CAUTIOUS'
-              ? 0.60 // v15: 0.63→0.60
+              ? 0.57 // v23: 0.60→0.57 (보합장도 기회 → 기존 너무 보수적)
               : mq === 'DANGER'
-                ? 0.72 // v15: 0.75→0.72
-                : 0.57; // v15: 0.60→0.57 (기본 소폭 하향)
+                ? 0.68 // v23: 0.72→0.68 (위험장도 고확신 종목은 진입 허용)
+                : 0.54; // v23: 0.57→0.54 (기본 완화 — 더 많은 기술적 셋업 진입)
         const minConf =
           (isBigMoverTarget
             ? Math.max(0.5, baseMinConf - 0.05 + breadthAdj) // v14: Paper/Live 통합 0.5 (기존 Live 0.6)

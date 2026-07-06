@@ -148,8 +148,10 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
     const pnlPct = ((curPrice - holding.avgPrice) / holding.avgPrice) * 100;
 
     // v22: 방어매도 우회 판정 — 긴급 SL/갭방어는 미체결 존재해도 실행
-    // -6% 하드플로어 또는 동적 SL 도달 시 미체결 취소 후 즉시 방어매도
-    const emergencySl = pnlPct <= -6.0 || pnlPct <= (holding.slPct ?? -5);
+    // v23: HIGH_BETA -7%/-6% 하드플로어 (기존 -6% 동일 → 고변동성 종목 일중 5-6% 변동 빈번, 정상 노이즈에 트리거)
+    const _sector0 = WATCHLIST_BY_CODE.get(code)?.sector ?? '';
+    const hardFloor = SECTOR_CLASS.HIGH_BETA.includes(_sector0) ? -7.0 : -6.0;
+    const emergencySl = pnlPct <= hardFloor || pnlPct <= (holding.slPct ?? -5);
     if (hasPendingOrder && !emergencySl) {
       logger.info(`⏳ 미체결 주문 존재 → ${code} 추가 주문 스킵 (PnL=${pnlPct.toFixed(1)}%)`, { component: 'OVERSEAS' });
       continue;
@@ -355,9 +357,10 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
       } else if (tws.action === 'HOLD') {
         // Phase 1 휩소 방어 중 — 구조적 SL만 허용, 일반 손절은 차단
         // v10.8: 단, 하드 TP/ATR 트레일링/수익 확정은 HOLD에서도 허용 (수익 실현 차단 방지)
-        // 🛡️ 절대 하드플로어: HOLD 중에도 -6% 이상 손실은 절대 허용 안 함
-        if (pnlPct <= -6.0) {
-          sellReason = `HOLD 하드플로어 손절(-6%): ${pnlPct.toFixed(1)}% (Phase1 중에도 절대 한계 초과)`;
+        // 🛡️ 절대 하드플로어: HOLD 중에도 하드플로어 이상 손실은 절대 허용 안 함
+        // v23: HIGH_BETA -7% / 기타 -6% (고변동성 종목 정상 변동 허용)
+        if (pnlPct <= hardFloor) {
+          sellReason = `HOLD 하드플로어 손절(${hardFloor}%): ${pnlPct.toFixed(1)}% (Phase1 중에도 절대 한계 초과)`;
         } else if (pnlPct >= hardTpPct) {
           sellReason = `익절(${hardTpPct}%): +${pnlPct.toFixed(1)}% (HOLD 중 TP 도달)`;
         } else if (holdingDays >= 0.5 && maxPnlPct >= trailActivatePct && drawdownFromPeak <= effectiveTrailDropPct) {
