@@ -87,7 +87,7 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
   // 승률가드의 원래 취지(신규매수만 억제)에 맞게 여기서 BUY/AVERAGE_DOWN만 필터링.
   if (!params.isPaper) {
     const { isKrWinRateBelowThreshold } = await import('../../risk/win-rate-guard.js');
-    if (await isKrWinRateBelowThreshold(0.60)) {
+    if (await isKrWinRateBelowThreshold(0.45)) {
       const blockedBuys = decisions.filter((d) => d.action === 'BUY' || d.action === 'AVERAGE_DOWN');
       if (blockedBuys.length > 0) {
         logger.warn(

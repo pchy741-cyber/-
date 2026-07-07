@@ -103,9 +103,9 @@ export function tryFinalEntry(input: EntryInput): EntryVerdict {
     return { action: 'SKIP', reason: `레짐 신뢰도 부족 (${(input.regimeRoute.regimeConfidence * 100).toFixed(0)}%)` };
   }
 
-  // SCALPING 시간 게이트: 개장창구(allowScalpingBuys=true) 이후 → AI 97점 필수
+  // SCALPING 시간 게이트: 개장창구(allowScalpingBuys=true) 이후 → AI 필수 (Paper=75, Live=97)
   if (input.mode === 'SCALPING' && input.allowScalpingBuys === false) {
-    const scalpOffHourMinScore = 97;
+    const scalpOffHourMinScore = getCtxIsPaper() ? 75 : 97;
     const hasHighAI = aiScore && aiScore >= scalpOffHourMinScore;
     if (!hasHighAI) {
       logger.info(

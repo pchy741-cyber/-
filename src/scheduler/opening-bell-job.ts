@@ -428,9 +428,10 @@ JSON만: {"scores":[{"code":"코드","score":점수},...]}`;
           })
         : gapFilteredWatchlist;
 
-    // SCALPING 영구 비활성화 (구조적 비용 > 에지) → 개장벨도 SWING 모드로 실행
+    // v28: Paper 모드에서 SCALPING 부활 — 실전은 구조적 비용 > 에지로 SWING 유지
+    const openingMode = getCtxIsPaper() ? 'SCALPING' : 'SWING';
     const decisions = await technicalFallbackDecisions({
-      mode: 'SWING',
+      mode: openingMode,
       watchlist: judeojuFiltered.map((w) => ({ stock_code: w.stock_code, stock_name: w.stock_name })),
       livePrices,
       chartData,
@@ -449,7 +450,7 @@ JSON만: {"scores":[{"code":"코드","score":점수},...]}`;
         return;
       }
       logger.info(`⚡ [OPENING] 개장 결정 ${decisions.length}건 실행`, { component: 'OPENING_BELL' });
-      await tradeExecutor.processDecisions(decisions, 'SWING', 'OPENING_BELL');
+      await tradeExecutor.processDecisions(decisions, openingMode, 'OPENING_BELL');
     } else {
       logger.info(`[OPENING] 09:0${m} — 매매 신호 없음`, { component: 'OPENING_BELL' });
     }

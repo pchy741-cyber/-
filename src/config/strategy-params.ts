@@ -36,7 +36,7 @@ export const STRATEGY_PARAMS = {
   },
 
   SCALPING: {
-    buyThreshold: 87,
+    buyThreshold: 75, // v28: 87→75 (Paper 부활 — 실질 점수범위 50~85에서 트리거 가능)
     splitCount: 1,
     averageDownPct: 0,
     maxAveragingCount: 0,

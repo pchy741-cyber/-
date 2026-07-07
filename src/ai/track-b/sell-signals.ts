@@ -509,8 +509,22 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
       continue;
     }
 
-    // SCALPING 강제청산 제거: SCALPING 전략 자체가 영구 비활성화됨 (Step 2)
-    // 기존 SCALPING 체인이 남아있는 경우 일반 TP/SL 로직에서 처리
+    // v28: SCALPING Paper 부활 — 10:00 이후 강제청산 (Paper만, Live는 일반 TP/SL)
+    if (chain.strategy_mode === 'SCALPING' && chain.total_quantity > 0) {
+      const { h: scH, m: scM } = getKstScalpTime();
+      if (scH >= 10) {
+        decisions.push({
+          action: 'FORCE_CLOSE',
+          stock_code: chain.stock_code,
+          quantity: chain.total_quantity,
+          price_type: 'MARKET',
+          reasoning: `SCALPING 강제청산: ${scH}:${String(scM).padStart(2, '0')} ≥ 10:00 (최대보유 1시간)`,
+          confidence: 1.0,
+        });
+        processedSellChains.add(chain.id);
+        continue;
+      }
+    }
 
     // BREAKOUT 전용 매도: Williams 변동성 돌파 → 익일 시가 매도 (09:00~09:10)
     if (chain.strategy_mode === 'BREAKOUT' && chain.total_quantity > 0) {
