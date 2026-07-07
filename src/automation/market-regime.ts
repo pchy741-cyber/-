@@ -320,13 +320,23 @@ export async function detectMarketRegime(): Promise<MarketRegime> {
  * 기존 한줄 → 상승/하락 요인 대비 구조의 3~4문장 분석
  */
 export function generateMarketSummaryKorean(regime: MarketRegime): string {
+  // v27: NEUTRAL → 팩트 기반 방향 표기 (보합장 → 약세/강세 구체화)
   const moodKr: Record<string, string> = {
     BULLISH: '상승장',
-    NEUTRAL: '보합장',
     BEARISH: '하락장',
     PANIC: '공황장',
   };
-  const mood = moodKr[regime.regime] || '보합장';
+  let mood: string;
+  if (regime.regime === 'NEUTRAL') {
+    const kc = regime.kospiChange;
+    if (kc >= 0.5) mood = `약한 상승장 (KOSPI +${kc.toFixed(1)}%)`;
+    else if (kc >= 0.1) mood = `상승 보합 (KOSPI +${kc.toFixed(1)}%)`;
+    else if (kc <= -0.5) mood = `약한 하락장 (KOSPI ${kc.toFixed(1)}%)`;
+    else if (kc <= -0.1) mood = `하락 보합 (KOSPI ${kc.toFixed(1)}%)`;
+    else mood = `횡보장 (KOSPI ${kc >= 0 ? '+' : ''}${kc.toFixed(1)}%)`;
+  } else {
+    mood = moodKr[regime.regime] || '횡보장';
+  }
 
   const bulls = regime.bullFactors;
   const bears = regime.bearFactors;
@@ -341,17 +351,14 @@ export function generateMarketSummaryKorean(regime: MarketRegime): string {
   const parts: string[] = [];
 
   if (regime.regime === 'NEUTRAL') {
-    // 보합장: 상승/하락 요인 대비 구조 강조
-    if (bulls.length > 0 && bears.length > 0) {
-      parts.push(`상승 요인(${bulls.slice(0, 2).join(', ')})과 하락 요인(${bears.slice(0, 2).join(', ')})이 맞서며 팽팽한 균형.`);
-    } else if (bulls.length > 0) {
-      parts.push(`${bulls.slice(0, 2).join(', ')} 등 긍정 신호에도 추가 모멘텀 부재로 관망세.`);
-    } else if (bears.length > 0) {
-      parts.push(`${bears.slice(0, 2).join(', ')} 등 부정 요인이 있으나 하방 지지가 유효.`);
-    } else {
-      parts.push(`뚜렷한 방향성 없이 횡보 중.`);
-    }
-    parts.push(`${kospiStr}${foreignStr ? ', ' + foreignStr : ''}${vkospiStr ? ', ' + vkospiStr : ''}.`);
+    // v27: 팩트 기반 방향 표기 — KOSPI 변동률 + 외국인 수급 + 연속일 구체 명시
+    const dirStr = regime.kospiChange >= 0.1 ? '소폭 상승' : regime.kospiChange <= -0.1 ? '소폭 하락' : '보합';
+    const consecStr = regime.consecutiveDays > 0 ? `${regime.consecutiveDays}일 연속 상승` : regime.consecutiveDays < 0 ? `${Math.abs(regime.consecutiveDays)}일 연속 하락` : '';
+    parts.push(`${kospiStr} ${dirStr}${consecStr ? ', ' + consecStr : ''}.`);
+    if (foreignStr) parts.push(`${foreignStr}.`);
+    if (bulls.length > 0) parts.push(`상승요인: ${bulls.slice(0, 2).join(', ')}.`);
+    if (bears.length > 0) parts.push(`하락요인: ${bears.slice(0, 2).join(', ')}.`);
+    if (vkospiStr) parts.push(`${vkospiStr}.`);
   } else if (regime.regime === 'BULLISH') {
     parts.push(`${bulls.slice(0, 3).join(', ')} 등이 시장을 견인하며 상승 흐름.`);
     if (bears.length > 0) {

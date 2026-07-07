@@ -1214,20 +1214,35 @@ export class TradeExecutor {
           const kisPosition = await getPositionForStock(stockCode);
           const actualQty = kisPosition?.quantity ?? 0;
           if (actualQty > 0) {
-            logger.error(
-              `🚨 ${stockCode} 청산 ${failCount}회 연속 실패했지만 KIS 실보유 ${actualQty}주 확인됨 → 강제종료 보류, 수동 확인 필요`,
-              { component: 'EXECUTOR' },
-            );
-            import('../notifications/telegram.js')
-              .then(({ sendTelegramMessage }) =>
-                sendTelegramMessage(
-                  `🚨 매도 반복실패 (실전)\n종목: ${stockCode}\nKIS 실보유: ${actualQty}주 (매도 안 됨!)\n⚠️ 자동종료 보류 — KIS 앱에서 수동 매도 필요`,
-                ).catch((e) => logger.warn(`반복실패 텔레그램 실패: ${e}`, { component: 'EXECUTOR' })),
-              )
-              .catch(() => {});
-            // 10분 백오프 — 반복 실패 로그 스팸 방지 (장 열리면 자연 해소)
-            this._closeFailBackoff.set(failKey, Date.now() + 10 * 60_000);
-            return; // 체인 유지 — 백오프 후 재시도, 절대 장부에서 지우지 않음
+            // v28-fix: 장 중이면 failCount 리셋 후 즉시 시장가 재매도 시도
+            // (장전 5회 실패 → 장 열린 후에도 주문 안 보내던 치명적 버그 수정)
+            const nowKst = getKSTNow();
+            const kH = nowKst.getUTCHours();
+            const kM = nowKst.getUTCMinutes();
+            const isMarketOpen = (kH === 9 && kM >= 0) || (kH >= 10 && kH < 15) || (kH === 15 && kM <= 30);
+            if (isMarketOpen) {
+              logger.warn(
+                `🔄 ${stockCode} 청산 ${failCount}회 실패 → 장중이므로 failCount 리셋, 시장가 재매도 시도 (KIS 실보유 ${actualQty}주)`,
+                { component: 'EXECUTOR' },
+              );
+              this._closeFailCount.set(failKey, 0); // 리셋하여 아래 매도 로직 진행
+              // fall through — 아래 시장가 매도 로직으로 진행
+            } else {
+              logger.error(
+                `🚨 ${stockCode} 청산 ${failCount}회 연속 실패했지만 KIS 실보유 ${actualQty}주 확인됨 → 강제종료 보류 (장외시간)`,
+                { component: 'EXECUTOR' },
+              );
+              import('../notifications/telegram.js')
+                .then(({ sendTelegramMessage }) =>
+                  sendTelegramMessage(
+                    `🚨 매도 반복실패 (실전)\n종목: ${stockCode}\nKIS 실보유: ${actualQty}주 (매도 안 됨!)\n⚠️ 자동종료 보류 — KIS 앱에서 수동 매도 필요`,
+                  ).catch((e) => logger.warn(`반복실패 텔레그램 실패: ${e}`, { component: 'EXECUTOR' })),
+                )
+                .catch(() => {});
+              // 10분 백오프 — 반복 실패 로그 스팸 방지 (장 열리면 자연 해소)
+              this._closeFailBackoff.set(failKey, Date.now() + 10 * 60_000);
+              return; // 체인 유지 — 백오프 후 재시도, 절대 장부에서 지우지 않음
+            }
           }
         } catch (posCheckErr) {
           // KIS 조회 자체가 실패하면 실보유 여부를 알 수 없으므로 안전 우선 — 종료 보류

@@ -183,6 +183,42 @@ adjustment 기준:
       logger.warn(`[MORNING_BRIEF] 뉴스 조기경보 평가 실패: ${newsShockErr}`, { component: 'MORNING_BRIEF' });
     }
 
+    // v27: 장전 보유종목 긴급 뉴스 스캔 — 악재 뉴스 선제 감지 (한화오션 사태 재발 방지)
+    try {
+      const { getPool } = await import('../db/pool.js');
+      const { checkNewsForStock } = await import('./news-sentinel.js');
+      const { rows: openChains } = await getPool().query<{ stock_code: string; stock_name: string | null }>(
+        `SELECT DISTINCT stock_code, stock_name FROM transaction_chains WHERE status IN ('OPEN','AVERAGING') AND is_paper = false`,
+      );
+      if (openChains.length > 0) {
+        const newsResults = await Promise.allSettled(
+          openChains.map(async (c) => ({ code: c.stock_code, name: c.stock_name, news: await checkNewsForStock(c.stock_code) })),
+        );
+        const badNewsStocks: string[] = [];
+        for (const r of newsResults) {
+          if (r.status === 'fulfilled' && r.value.news.hasBadNews) {
+            badNewsStocks.push(`${r.value.name ?? r.value.code}(${r.value.code}): ${r.value.news.headline?.slice(0, 40)}`);
+          }
+        }
+        if (badNewsStocks.length > 0) {
+          logger.warn(
+            `🚨 [MORNING_BRIEF] 장전 보유종목 악재 감지 ${badNewsStocks.length}건: ${badNewsStocks.join(' | ')}`,
+            { component: 'MORNING_BRIEF' },
+          );
+          // 텔레그램 긴급 알림
+          import('../notifications/telegram.js')
+            .then(({ sendTelegramMessage }) =>
+              sendTelegramMessage(`🚨 장전 보유종목 악재!\n${badNewsStocks.join('\n')}\n⚠️ 장 시작 후 즉시 매도 검토 필요`).catch(() => {}),
+            )
+            .catch(() => {});
+        } else {
+          logger.info(`✅ [MORNING_BRIEF] 장전 보유종목 ${openChains.length}건 뉴스 스캔 — 악재 없음`, { component: 'MORNING_BRIEF' });
+        }
+      }
+    } catch (holdingNewsErr) {
+      logger.warn(`[MORNING_BRIEF] 장전 보유종목 뉴스 스캔 실패: ${holdingNewsErr}`, { component: 'MORNING_BRIEF' });
+    }
+
     // v22.1: AI 뉴스 분석 캐시 워밍 (FinBERT + Gemini 하이브리드)
     try {
       const { analyzeNewsHeadlines } = await import('./news-analyzer.js');
