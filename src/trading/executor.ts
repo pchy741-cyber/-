@@ -176,6 +176,17 @@ export class TradeExecutor {
       const isPaper = getCtxIsPaper();
       const modeTag = isPaper ? '🧪PAPER' : '💰LIVE';
 
+      // (0) Live 매수 수동 차단 플래그 — system_state.live_buy_disabled = 'true'
+      if (!isPaper) {
+        try {
+          const { rows } = await getPool().query(`SELECT value FROM system_state WHERE key = 'live_buy_disabled'`);
+          if (rows[0]?.value === 'true') {
+            logger.info(`🔒 [${modeTag}] Live 매수 수동 차단 → ${buys.length}건 스킵 (system_state 플래그)`, { component: 'EXECUTOR' });
+            return;
+          }
+        } catch { /* non-critical */ }
+      }
+
       // (1) 연속손실 8회+ halt — Live: 완전 차단, Paper: 50% 축소는 sizer에서 처리
       if (!isPaper) {
         try {
