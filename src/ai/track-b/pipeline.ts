@@ -909,7 +909,8 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     //   (7건 중 5건이 12:37, 15:01, 15:22, 15:23 진입 — 전부 금지/제한 시간대)
     //   How: paper도 live와 동일한 시간 가드 적용 — 학습 환경에서도 일관된 운영
     // v12: SWING 종가베팅 창구 15:00~15:20 허용 (AI 검증 — 실전 고수 EOD 진입 구간)
-    const isSwingEodBetting = effectiveModeRaw === 'SWING' && kstH === 15 && kstM < 20;
+    // v28: EOD_BETTING 모드에서도 종가베팅 시간창 열림 (Paper 불일치 수정)
+    const isSwingEodBetting = (effectiveModeRaw === 'SWING' || effectiveModeRaw === 'EOD_BETTING') && kstH === 15 && kstM < 20;
     const isPastClose = (kstH > 14 || (kstH === 14 && kstM >= 50)) && !isSwingEodBetting; // v13: 14:00→14:50 복원 (황금오후 차단 버그 수정)
     // v13 시간대별 매수 필터:
     // 09:00~10:20 → 전략 무제한 (황금 오전 — 변동성 피크)

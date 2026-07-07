@@ -1798,11 +1798,13 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
           target.code,
         );
         const targetBucket = classifyBucket(entrySource, isBlueChipEntry);
-        // SNIPER 오버라이드: AI 고확신(≥0.85) + 고점수(≥85) → 집중 단기 익절 전략 [4%@30%, 8%@100%]
+        // SNIPER 오버라이드: AI 고확신 + 고점수 → 집중 단기 익절 전략 [4%@30%, 8%@100%]
+        // v28: 해외 기술점수 범위(-100~100, 실질 15~50)에 맞게 재조정
+        // 기존 85/85는 해외에서 절대 트리거 불가 (죽은 코드) → 35/0.75로 현실화
         const effectiveBucket =
           target.ai?.action === 'BUY' &&
-          (target.ai?.confidence ?? 0) >= 0.85 &&
-          target.score >= 85
+          (target.ai?.confidence ?? 0) >= 0.75 &&
+          target.score >= 35
             ? 'SNIPER'
             : targetBucket;
         const bucketLimit = ALLOCATION_GOLDEN[`${effectiveBucket}_PCT` as keyof typeof ALLOCATION_GOLDEN];

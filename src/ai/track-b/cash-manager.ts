@@ -365,6 +365,12 @@ export function manageCashParking(params: CashManagerParams): TradeDecision[] {
   }
 
   // ── 파킹 매수 조건 v2 ──
+  // v28: 파킹 매수는 연습모드 전용 — 실전에서 파킹으로 사면 손실만 남 (CEO 지시)
+  if (!isPaper) {
+    logger.debug(`💤 파킹 매수 스킵 — 실전모드 파킹 비활성화`, { component: 'CASH_MANAGER' });
+    return decisions;
+  }
+
   // RISK_OFF: 조정장 파킹 전면 중단
   if (macroRiskOff) {
     logger.info(`💤 파킹 중단 — 조정장(RISK_OFF) 현금 유지`, { component: 'CASH_MANAGER' });
