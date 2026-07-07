@@ -1312,12 +1312,11 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     if (winFeedback.thresholdBonus > 0 || winFeedback.requirePullback || winFeedback.minVolumeRatio > 1.0) {
       logger.info(`🎯 승률피드백 적용: ${winFeedback.summary}`, { component: 'TRACK_B' });
     }
-    // 복리 포지션 사이징: 총자산 8% 기반 (v20: 20%→8%)
-    // 근거: 30일 실거래 데이터 분석 — 상위 10% 대형 포지션(평균 2,252만원, 자산의 ~20%)이
-    // 나머지 90%의 흑자(+246만원)를 다 깎아먹고 전체 손익을 -591만원 적자로 만듦.
-    // 승률은 오히려 비슷한데(47% vs 44%) 포지션이 크다는 이유만으로 손익 기여가 반전됨.
-    // perfMult(성과배수, 최대 1.2x)까지 곱해도 상한 ~9.6%로, 연승 후 몰빵되는 걸 방지.
-    const assetBasedMax = Math.round(totalAssets * 0.08);
+    // 복리 포지션 사이징: Live 8%, Paper 15% 기반
+    // v20 근거: 30일 실거래 — 대형 포지션(~20%)이 흑자를 깎아먹음 → Live 8%
+    // v28: Paper는 학습 목적 + 시드 1천만 → 15%로 확대 (80만→150만원, 크래프톤 등 고가주 매수 가능)
+    const positionPct = ctxIsPaper ? 0.15 : 0.08;
+    const assetBasedMax = Math.round(totalAssets * positionPct);
     const baseMaxPos = dailyLoss.earlyWarning ? Math.round(assetBasedMax * 0.5) : assetBasedMax;
     // 스트레스 레벨 1 → 포지션 추가 10% 축소
     const stressMult = portfolioStress >= 1 ? 0.9 : 1.0;

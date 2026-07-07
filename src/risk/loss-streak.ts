@@ -66,11 +66,11 @@ const MULTIPLIER_SEVERE = 0.65; // v12.1: 0.5→0.65 (2-3승으로 복귀 가능
 const MULTIPLIER_MODERATE = 0.8; // v12.1: 0.7→0.8 (2연패는 정상 분산)
 const MULTIPLIER_NORMAL = 1.0;
 
-function calcMultiplier(streak: number): number {
-  if (streak >= STREAK_HALT) return MULTIPLIER_HALT;
-  if (streak >= STREAK_CRITICAL) return MULTIPLIER_CRITICAL;
-  if (streak >= STREAK_SEVERE) return MULTIPLIER_SEVERE;
-  if (streak >= STREAK_MODERATE) return MULTIPLIER_MODERATE;
+function calcMultiplier(streak: number, isPaper = false): number {
+  if (streak >= STREAK_HALT) return isPaper ? 0.5 : MULTIPLIER_HALT; // Paper: 중단 대신 50%
+  if (streak >= STREAK_CRITICAL) return isPaper ? 0.6 : MULTIPLIER_CRITICAL;
+  if (streak >= STREAK_SEVERE) return isPaper ? 0.75 : MULTIPLIER_SEVERE;
+  if (streak >= STREAK_MODERATE) return isPaper ? 0.85 : MULTIPLIER_MODERATE;
   return MULTIPLIER_NORMAL;
 }
 
@@ -90,7 +90,7 @@ export async function recordTradeOutcome(win: boolean, isPaper: boolean): Promis
     else streakLive += 1;
   }
   const streak = isPaper ? streakPaper : streakLive;
-  const mult = calcMultiplier(streak);
+  const mult = calcMultiplier(streak, isPaper);
   if (streak >= STREAK_HALT) {
     logger.warn(`🛑 연속손실 ${streak}회 → 거래 중단! (자동 재개: 수동 리셋 또는 점진 회복)`, { component: 'RISK' });
   } else {
@@ -102,11 +102,11 @@ export async function recordTradeOutcome(win: boolean, isPaper: boolean): Promis
 /** 현재 포지션 축소 배율 반환 (1.0 / 0.7 / 0.5) */
 export async function getLossStreakMultiplier(isPaper: boolean): Promise<number> {
   await load();
-  return calcMultiplier(isPaper ? streakPaper : streakLive);
+  return calcMultiplier(isPaper ? streakPaper : streakLive, isPaper);
 }
 
 export async function getLossStreakStatus(isPaper: boolean): Promise<{ streak: number; multiplier: number }> {
   await load();
   const streak = isPaper ? streakPaper : streakLive;
-  return { streak, multiplier: calcMultiplier(streak) };
+  return { streak, multiplier: calcMultiplier(streak, isPaper) };
 }
