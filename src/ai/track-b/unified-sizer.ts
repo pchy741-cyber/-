@@ -66,11 +66,12 @@ export function computeUnifiedPositionSize(input: UnifiedSizerInput): UnifiedSiz
   const factors: string[] = [];
 
   // 1. Confidence Factor: 고확신 → 확대, 저확신 → 축소
+  // v28: 0.9→0.85 (해외 AI confidence 캡=0.88이라 0.9 달성 불가 — 최고등급 데드코드 수정)
   const confidenceFactor =
-    confidence >= 0.9 ? 1.3 :
-    confidence >= 0.8 ? 1.15 :
-    confidence >= 0.7 ? 1.0 :
-    confidence >= 0.6 ? 0.8 :
+    confidence >= 0.85 ? 1.3 :
+    confidence >= 0.75 ? 1.15 :
+    confidence >= 0.65 ? 1.0 :
+    confidence >= 0.55 ? 0.8 :
     0.5;
   if (confidenceFactor !== 1.0) factors.push(`conf×${confidenceFactor}`);
 

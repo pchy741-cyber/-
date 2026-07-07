@@ -486,7 +486,8 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
       sellReason = `시간익절(${holdingDays.toFixed(0)}일/+${pnlPct.toFixed(1)}%): 모멘텀 없음 → 수익확정`;
 
       // ── 5. AI/기술적 매도 ──
-    } else if (ai?.action === 'SELL' && ai.confidence >= 0.9) {
+    // v28: 0.9→0.85 (해외 AI confidence 캡=0.88이라 0.9 절대 불가)
+    } else if (ai?.action === 'SELL' && ai.confidence >= 0.85) {
       sellReason = `AI 급매도(${(ai.confidence * 100).toFixed(0)}%): ${ai.reasoning}`;
     } else if (ai?.action === 'SELL' && ai.confidence >= minAiSellConf && holdingDays >= minHoldForSell) {
       sellReason = `AI 매도(${(ai.confidence * 100).toFixed(0)}%): ${ai.reasoning}`;
