@@ -97,11 +97,7 @@ export async function runTrackBJob(): Promise<void> {
     const rawDecisions = await runTrackBPipeline();
     reportNoBuyCandidates(!rawDecisions.some((d) => d.action === 'BUY' || d.action === 'AVERAGE_DOWN'));
 
-    // v18: 매수 허용 구간 확대 — pipeline.ts v13 시간 가드와 일치시킴
-    // v17에서 GOLDEN_AM/GOLDEN_PM만 허용 → pipeline.ts가 이미 isLunchBlock(11:30~13:00)으로 제어하는데
-    // track-b-job이 CURSED(10:20~13:00) 전체 차단 → 10:20~11:30 매수 공백 + SWING EOD(15:00~15:20) 차단 버그
-    // 수정: pipeline.ts의 blockNewBuys/isSwingEodBetting이 세밀하게 제어하도록 위임
-    // OPENING_BELL(09:00~09:30)은 아래 개장벨 양보 로직(blockBuyUntil)이 처리하므로 여기서 허용
+    // v18: 매수 허용 구간 — pipeline.ts v13 시간 가드와 일치
     const phase = getKrMarketPhase();
     const isBuyAllowedPhase =
       phase === 'GOLDEN_AM' ||

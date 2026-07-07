@@ -914,13 +914,11 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     const isPastClose = (kstH > 14 || (kstH === 14 && kstM >= 50)) && !isSwingEodBetting; // v13: 14:00→14:50 복원 (황금오후 차단 버그 수정)
     // v13 시간대별 매수 필터:
     // 09:00~10:20 → 전략 무제한 (황금 오전 — 변동성 피크)
-    // 10:20~11:30 → SNIPER 전용 마의구간 창구 (고확신만)
+    // 10:20~11:30 → 허용 (pipeline isLunchBlock이 11:30+ 처리)
     // 11:30~13:00 → 전면 차단 (점심 유동성 소멸)
-    // 13:00~14:50 → 황금 오후 — 전 모드 진입 허용 (v13 복원: 기존 kstH===13 SNIPER전용이 버그였음)
+    // 13:00~14:50 → 황금 오후 — 전 모드 진입 허용
     // 14:50~15:20 → SWING EOD 종가베팅 전용
     // 15:20+      → 전면 차단
-    // v13-fix: 10:20~11:30 마의구간 차단 제거 → 11:30~13:00 점심만 차단
-    // 기존: 10:20부터 차단 → 하루 3시간 매수 불가 → 기회 대량 상실
     const isGoldenAfternoon = kstH === 13 || (kstH === 14 && kstM < 50) || isSwingEodBetting; // 황금오후 + EOD
     const isLunchBan = (kstH === 11 && kstM >= 30) || (kstH === 12); // 11:30~13:00 점심만 차단
     const portfolioStress = calcPortfolioStressLevel(openChains, livePrices, totalAssets);
@@ -1312,22 +1310,12 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     if (winFeedback.thresholdBonus > 0 || winFeedback.requirePullback || winFeedback.minVolumeRatio > 1.0) {
       logger.info(`🎯 승률피드백 적용: ${winFeedback.summary}`, { component: 'TRACK_B' });
     }
-    // 복리 포지션 사이징: Live 8%, Paper 15% 기반
-    // v20 근거: 30일 실거래 — 대형 포지션(~20%)이 흑자를 깎아먹음 → Live 8%
-    // v28: Paper는 학습 목적 + 시드 1천만 → 15%로 확대 (80만→150만원, 크래프톤 등 고가주 매수 가능)
-    const positionPct = ctxIsPaper ? 0.15 : 0.08;
-    const assetBasedMax = Math.round(totalAssets * positionPct);
-    const baseMaxPos = dailyLoss.earlyWarning ? Math.round(assetBasedMax * 0.5) : assetBasedMax;
-    // 스트레스 레벨 1 → 포지션 추가 10% 축소
-    const stressMult = portfolioStress >= 1 ? 0.9 : 1.0;
-    const crossSizingMult = crossBoost.sizingMult;
-    const adjMaxPositionKrw = Math.round(baseMaxPos * perfMult * stressMult * crossSizingMult * adamKhooSizingMult);
-    if (perfMult !== 1.0 || stressMult !== 1.0 || crossSizingMult !== 1.0 || adamKhooSizingMult !== 1.0) {
-      logger.info(
-        `📐 maxPositionKrw 조정: ${baseMaxPos.toLocaleString()} × 성과${perfMult}x × 스트레스${stressMult}x${crossSizingMult !== 1.0 ? ` × Paper피드백${crossSizingMult}x` : ''}${adamKhooSizingMult !== 1.0 ? ` × AK${adamKhooSizingMult}x` : ''} = ${adjMaxPositionKrw.toLocaleString()}원`,
-        { component: 'TRACK_B' },
-      );
-    }
+    // ── T1: 포지션 사이징 플랫화 — E>0 증명 전까지 최소 티어 고정 ──────
+    // 근거: 50만 미만 39건 +100,791원 흑자 vs 50-100만 20건 -143,405원 적자
+    // 모든 승수(성과/스트레스/Paper피드백/AK) OFF, 상한 50만원 고정
+    const FLAT_MAX_POSITION_KRW = ctxIsPaper ? 1_500_000 : 400_000; // Live 40만 고정, Paper 150만 유지
+    const adjMaxPositionKrw = FLAT_MAX_POSITION_KRW;
+    logger.info(`📐 maxPositionKrw 플랫: ${adjMaxPositionKrw.toLocaleString()}원 (T1: 승수 전부 OFF)`, { component: 'TRACK_B' });
 
     // ── 호가 불균형 보정 + 매도벽 하드 게이트 (상위 5종목) ───────────────
     // bid/ask 비율 ≥ 1.5 → 매수세 강함 +6, ≥ 1.2 → +3

@@ -171,6 +171,35 @@ export class TradeExecutor {
       return;
     }
 
+    // ── C2 중앙 안전장치: 모든 매수 경로 통합 차단 (executor 레벨) ──────
+    if (buys.length > 0) {
+      const isPaper = getCtxIsPaper();
+      const modeTag = isPaper ? '🧪PAPER' : '💰LIVE';
+
+      // (1) 연속손실 8회+ halt — Live: 완전 차단, Paper: 50% 축소는 sizer에서 처리
+      if (!isPaper) {
+        try {
+          const { getLossStreakMultiplier } = await import('../risk/loss-streak.js');
+          const lsMult = await getLossStreakMultiplier(false);
+          if (lsMult <= 0) {
+            logger.warn(`🛑 [${modeTag}] 연속손실 HALT → 전체 매수 ${buys.length}건 차단 (executor 중앙 가드)`, { component: 'EXECUTOR' });
+            return;
+          }
+        } catch { /* non-critical */ }
+      }
+
+      // (2) 승률 45% 미만 가드 — Live만, 최소 샘플 8건 이상
+      if (!isPaper) {
+        try {
+          const { isKrWinRateBelowThreshold } = await import('../risk/win-rate-guard.js');
+          if (await isKrWinRateBelowThreshold(0.45)) {
+            logger.warn(`⛔ [${modeTag}] 승률 가드 → 전체 매수 ${buys.length}건 차단 (executor 중앙 가드)`, { component: 'EXECUTOR' });
+            return;
+          }
+        } catch { /* non-critical */ }
+      }
+    }
+
     // 즉시 반전 방지: 같은 사이클에서 매도된 종목은 재매수 차단 (수수료 이중 손실 방지)
     const buyList = justSoldCodes.size > 0 ? buys.filter((b) => {
       if (justSoldCodes.has(b.stock_code)) {

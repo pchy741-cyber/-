@@ -788,18 +788,8 @@ export async function executeBuyDecisions(
     // 우선 테마 보정
     const priorityBonus = PRIORITY_SECTOR_CODES.has(cand.stock_code) ? 1.1 : 1.0;
 
-    // 시그널 기반 포지션 보정: 체결강도 강세 + 스마트머니 유입 → 확대, 공매도 → 축소
-    const signalMultiplier = (() => {
-      if (!signals) return 1.0;
-      let mult = 1.0;
-      const ti = signals.tradingIntensity;
-      const inv = signals.intradayInvestor;
-      const ss = signals.shortSelling;
-      if (ti && ti.intensity >= 120) mult += 0.1; // 체결강도 매수 우위 → +10%
-      if (inv && inv.foreignNetEstMil > 0 && inv.institutionNetEstMil > 0) mult += 0.1; // 동시 순매수
-      if (ss && ss.shortRatio > 5) mult -= 0.1; // 공매도 높으면 -10%
-      return Math.max(0.7, Math.min(1.3, mult));
-    })();
+    // T1: 시그널 배율 OFF — E>0 증명 전까지 모든 승수 플랫
+    const signalMultiplier = 1.0; // was: 0.7~1.3 based on tradingIntensity/investor/shortSelling
 
     // 목표 금액 = 총자산 × 비율 × 보정들
     // 고확신(90+) → 1차 90% (확률싸움: 확신 높으면 적극 투입)
@@ -828,8 +818,8 @@ export async function executeBuyDecisions(
                     : allocationBoostFirstEntry
                       ? 0.75
                       : 0.65;
-    // AI 확신도 기반 포지션 배율: 고득점 → 집중도 상한 확대
-    const aiPosMultiplier = aiScore >= 85 ? 1.5 : aiScore >= 70 ? 1.2 : 1.0;
+    // T1: AI 확신도 배율 OFF — E>0 증명 전까지 모든 승수 플랫
+    const aiPosMultiplier = 1.0; // was: aiScore >= 85 ? 1.5 : aiScore >= 70 ? 1.2 : 1.0
 
     // 연속손실 배율 — 2연속 손실 시 0.8x, 3+연속 시 0.65x, 5+연속 0.4x, 8+연속 HALT
     const lossStreakMult = await getLossStreakMultiplier(getCtxIsPaper());

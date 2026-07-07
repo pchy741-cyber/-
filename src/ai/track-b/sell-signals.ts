@@ -250,12 +250,12 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
     }
 
     // ── BreakEvenGuard: +2.0% 도달 시 SL 상향 ────────────
-    // 근거: "인트라데이 BE 스탑은 장기 수익성 크게 저하" (tradingheroes.com, easylanguagemastery.com)
-    // - SWING(장기): SL → 0% (4H+ 타임프레임에서 BE 유효)
-    // - 기타: SL → -0.3% (수수료 버퍼 유지, 조기 청산 방지)
-    // - 활성화 임계: 1.5% → 2.0% (인트라데이 노이즈 필터)
-    const beTargetSl = chain.strategy_mode === 'SWING' ? 0 : -0.3;
+    // ③b: SWING BreakEvenGuard OFF — 부분익절 후 트레일 즉시활성(0%) 폐지
+    // 근거: +2% 도달 → SL=0% → 정상 눌림에서 BE 청산 → 보유기간 2시간 수렴
+    // SWING은 원래 SL(-2.2%) 유지, 기타 전략만 -0.3% 적용
+    const beTargetSl = chain.strategy_mode === 'SWING' ? null : -0.3;
     if (
+      beTargetSl != null && // ③b: SWING은 null → BreakEvenGuard 비활성
       chain.strategy_mode !== 'SCALPING' &&
       chain.status !== 'PROFIT_TAKING' &&
       pnlPct >= 2.0 &&
@@ -411,6 +411,13 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
 
         // v20: 부분 익절(PROFIT_TAKING) 후 트레일링 완화 — 나머지 포지션 추가 상승 여유
         if (chain.status === 'PROFIT_TAKING') baseTrailDrop -= 2.0;
+
+        // ③a: SWING 마이크로 트레일(waterfall 2b) OFF
+        // 근거: 캔들×볼륨 곱셈(-2.5*0.6*0.7=-1.05%)이 인트라데이 노이즈에 걸려 2시간 내 청산
+        // SWING은 baseTrailDrop 고정 -2.5(일반)/-4.0(러너), 캔들/볼륨 조임 비적용
+        if (chain.strategy_mode === 'SWING') {
+          baseTrailDrop = isRunner ? -4.0 : -2.5; // 마이크로 트레일 리셋 — 위 조임 무효화
+        }
 
         // 고점 수익률 비례 숨고르기 허용폭 확장
         const momentumBonus = curPeak >= 15 ? 4.5 : curPeak >= 10 ? 3.0 : curPeak >= 5 ? 1.5 : 0;
@@ -989,13 +996,14 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
         twStopIsPhase1Hold = true; // ATR 우회 플래그
       }
 
-      if (twStop.action === 'BREAK_EVEN') {
-        // 본절 이동: SL을 twStop이 지정한 값(0%)으로 올림
+      // ③c: SWING 시간 기반 익절 보류 — BREAK_EVEN/TRAIL_TIGHTEN은 SWING에서 비활성
+      // 근거: Phase2 본절(24-48h +3%→SL -1%), Phase3 트레일(48h+ +2%→trail)이
+      //       15일 보유 설계를 2-3일 내 청산으로 단축. 방어 라인(SL/구조적SL)은 유지
+      if (twStop.action === 'BREAK_EVEN' && chain.strategy_mode !== 'SWING') {
         effectiveSl = Math.max(effectiveSl, twStop.effectiveSlPct);
       }
 
-      if (twStop.action === 'TRAIL_TIGHTEN') {
-        // 트레일링 강화: 고점 대비 -2% trail
+      if (twStop.action === 'TRAIL_TIGHTEN' && chain.strategy_mode !== 'SWING') {
         effectiveSl = Math.max(effectiveSl, twStop.effectiveSlPct);
       }
     }
@@ -1116,8 +1124,7 @@ export function generatePartialTpDecisions(
     const pnlPct = ((price.currentPrice - avgBuy) / avgBuy) * 100;
 
     // v10.11.4: SWING TP=7%이므로 단계익절은 TP 미만에서만 동작
-    // 기존: stage3=10%(도달불가, SWING TP=7%에서 전량매도 먼저 발동)
-    // 수정: stage1=2.5%/20%, stage2=5.0%/30%, 전량은 generateSellDecisions TP에 위임
+    // stage1=2.5%/20%, stage2=5.0%/30%, 전량은 generateSellDecisions TP에 위임
     if (chain.strategy_mode === 'SWING') {
       if (pnlPct >= 5.0) {
         const qty = Math.ceil(chain.total_quantity * 0.50);
