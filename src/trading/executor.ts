@@ -220,6 +220,17 @@ export class TradeExecutor {
       return;
     }
 
+    // v28: 최소 주문금액 1만원 — 몇십원/몇백원 단위 의미없는 주문 차단
+    const MIN_ORDER_KRW = 10_000;
+    const estimatedAmount = (limit_price ?? 0) * quantity;
+    if (estimatedAmount > 0 && estimatedAmount < MIN_ORDER_KRW && action !== 'FORCE_CLOSE') {
+      logger.info(
+        `⛔ 최소금액 미달 → 스킵: ${action} ${stock_code} ${quantity}주 × ${limit_price}원 = ${estimatedAmount.toLocaleString()}원 < ${MIN_ORDER_KRW.toLocaleString()}원`,
+        { component: 'EXECUTOR' },
+      );
+      return;
+    }
+
     // 분당 1회 중복 주문 가드 (같은 종목 같은 분에 매수/매도 2번 방지)
     const minuteKey = this._minuteKey(stock_code, action);
     if (this._recentOrderKeys.has(minuteKey)) {
