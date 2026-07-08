@@ -482,19 +482,10 @@ export class RiskEngine {
     // 레짐 기반 동적 투자비율 캡 — 장 좋으면 적극 집행, 나쁘면 보수적
     // Paper 모드: 97% 고정 (거의 전액 집행, 로그 축적 극대화)
     const ar4 = await getAllocRisk(isPaper);
-    let dynamicCap = isPaper ? ar4.maxInvestedPct : config.risk.maxTotalInvestedPct;
-    if (!isPaper) {
-      try {
-        const { rows } = await getPool().query(
-          `SELECT buy_threshold FROM strategy_config WHERE is_active = true AND is_paper = $1 LIMIT 1`,
-          [isPaper],
-        );
-        const bt = Number(rows[0]?.buy_threshold ?? 80);
-        dynamicCap = bt <= 65 ? 95 : bt <= 75 ? 92 : bt <= 85 ? 88 : 80;
-      } catch {
-        /* DB 실패 시 기본값 유지 */
-      }
-    }
+    // v29: 레짐 프로파일 기반 투자비율 캡 (상승 95 / 중립 88 / 조정 75 / 약세 60) — paper·live 동일.
+    // 기존 live: buy_threshold 역산이라 DEFENSE(75)→92%로 오히려 약세에 더 공격적(역전 버그) + 레짐 프로파일 무시.
+    // 수정: 좋은 장 95%까지 풀집행(수익극대화), 약세 60%로 강한 방어. (afterExposure 초과 시 신규매수만 차단, 강제매도 아님)
+    const dynamicCap = ar4.maxInvestedPct;
 
     if (afterExposurePct > dynamicCap) {
       return {

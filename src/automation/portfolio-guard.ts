@@ -486,7 +486,11 @@ export function checkDrawdownShield(currentValue: number, isPaper: boolean): Dra
   const drawdownPct = ((currentValue - peak) / peak) * 100;
 
   // v15: 드로다운 허용치 소폭 확대 (해외는 시간으로 올리는 개념)
+  // v29: 행동(LIQUIDATE/SELL_WORST) 시 peak을 현재값으로 리셋 — 미리셋 시 stale 고점이 유지돼
+  //   매 사이클 동일 드로다운으로 최악포지션을 반복 강제매도(machine-gun) → 연습모드 과다손절 주범.
+  //   리셋하면 새 저점 기준 추가 -4.5% 하락 시에만 재발동(점진적 컷). 신고점은 상단(477)에서 갱신.
   if (drawdownPct <= -7.0) {
+    _portfolioPeak.set(key, currentValue);
     return {
       drawdownPct,
       action: 'LIQUIDATE',
@@ -494,6 +498,7 @@ export function checkDrawdownShield(currentValue: number, isPaper: boolean): Dra
     };
   }
   if (drawdownPct <= -4.5) {
+    _portfolioPeak.set(key, currentValue);
     return {
       drawdownPct,
       action: 'SELL_WORST',

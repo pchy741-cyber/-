@@ -156,6 +156,36 @@ function getCurrentMarket(): 'KR' | 'US' {
   return kstH >= 8 && kstH < 16 ? 'KR' : 'US';
 }
 
+// ── v29 강화: 규칙기반 테마 폴백 (AI 체인 전부 소진 시) — 헤드라인 키워드 매칭 ──
+const _FALLBACK_THEMES_KR = [
+  { kw: ['반도체', 'HBM', '메모리', 'AI 칩', 'AI반도체', '엔비디아', 'TSMC'], theme: 'AI 반도체', stocks: [{ code: '000660', name: 'SK하이닉스', market: 'KOSPI' }, { code: '005930', name: '삼성전자', market: 'KOSPI' }] },
+  { kw: ['방산', '국방', '무기', '수주', '방위'], theme: '방산', stocks: [{ code: '012450', name: '한화에어로스페이스', market: 'KOSPI' }, { code: '042660', name: '한화오션', market: 'KOSPI' }] },
+  { kw: ['2차전지', '배터리', '전기차', '양극재', 'EV'], theme: '2차전지', stocks: [{ code: '373220', name: 'LG에너지솔루션', market: 'KOSPI' }, { code: '006400', name: '삼성SDI', market: 'KOSPI' }] },
+  { kw: ['바이오', '제약', '신약', '임상', 'FDA'], theme: '바이오', stocks: [{ code: '068270', name: '셀트리온', market: 'KOSPI' }, { code: '207940', name: '삼성바이오로직스', market: 'KOSPI' }] },
+  { kw: ['원전', '원자력', 'SMR', '전력'], theme: '원전/전력', stocks: [{ code: '034020', name: '두산에너빌리티', market: 'KOSPI' }] },
+];
+const _FALLBACK_THEMES_US = [
+  { kw: ['semiconductor', 'chip', 'HBM', 'nvidia', 'AI chip', '반도체', '엔비디아'], theme: 'AI Chips', stocks: [{ code: 'NVDA', name: 'NVIDIA', market: 'NASDAQ' }, { code: 'AMD', name: 'AMD', market: 'NASDAQ' }] },
+  { kw: ['defense', 'military', '방산', 'weapon'], theme: 'Defense', stocks: [{ code: 'LMT', name: 'Lockheed Martin', market: 'NYSE' }, { code: 'RTX', name: 'RTX', market: 'NYSE' }] },
+  { kw: ['EV', 'battery', 'electric vehicle', '2차전지', 'tesla'], theme: 'EV/Battery', stocks: [{ code: 'TSLA', name: 'Tesla', market: 'NASDAQ' }] },
+  { kw: ['cloud', 'software', 'cyber', 'AI'], theme: 'Cloud/AI', stocks: [{ code: 'MSFT', name: 'Microsoft', market: 'NASDAQ' }, { code: 'GOOGL', name: 'Alphabet', market: 'NASDAQ' }] },
+];
+function buildFallbackTheme(market: 'KR' | 'US', headlines: string): NewsTheme {
+  const map = market === 'US' ? _FALLBACK_THEMES_US : _FALLBACK_THEMES_KR;
+  const low = headlines.toLowerCase();
+  let best = map[0];
+  let bestHits = -1;
+  for (const t of map) {
+    const hits = t.kw.reduce((n, k) => n + (low.includes(k.toLowerCase()) ? 1 : 0), 0);
+    if (hits > bestHits) { bestHits = hits; best = t; }
+  }
+  return {
+    theme: best.theme,
+    reason: `AI 분석 일시중단(무료 AI 한도 소진) — 헤드라인 키워드 기반 자동 선정`,
+    stocks: best.stocks,
+  } as NewsTheme;
+}
+
 // ── 오늘의 테마 생성 (공용 함수 — API + 프리페치 공유) ──
 export async function generateNewsTheme(macroRaw?: string, forceMarket?: 'KR' | 'US'): Promise<NewsTheme | null> {
   const targetMarket = forceMarket ?? getCurrentMarket();
@@ -226,20 +256,34 @@ ${headlines}
     ? '당신은 미국 주식시장 전문가입니다. 뉴스 헤드라인을 분석하여 테마와 종목을 추천합니다.'
     : '당신은 한국 주식시장 전문가입니다. 뉴스 헤드라인을 분석하여 테마와 종목을 추천합니다.';
 
-  const text = await Promise.race([
-    callVertexTheme(systemMsg, themeUserMsg, { temperature: 0.2, label: `뉴스-테마-${targetMarket}` }),
-    new Promise<never>((_, reject) => setTimeout(() => reject(new Error('theme_timeout_20s')), 20000)),
-  ]);
+  try {
+    const text = await Promise.race([
+      callVertexTheme(systemMsg, themeUserMsg, { temperature: 0.2, label: `뉴스-테마-${targetMarket}` }),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('theme_timeout_20s')), 20000)),
+    ]);
 
-  const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/) ?? text.match(/(\{[\s\S]*\})/);
-  const jsonText = jsonMatch ? (jsonMatch[1] ?? jsonMatch[0]) : text;
+    const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/) ?? text.match(/(\{[\s\S]*\})/);
+    const jsonText = jsonMatch ? (jsonMatch[1] ?? jsonMatch[0]) : text;
 
-  const data = JSON.parse(jsonText.trim()) as NewsTheme;
-  if (!data.theme || !Array.isArray(data.stocks)) throw new Error('invalid');
+    const data = JSON.parse(jsonText.trim()) as NewsTheme;
+    if (!data.theme || !Array.isArray(data.stocks)) throw new Error('invalid');
 
-  _newsThemeCache = { data, fetchedAt: Date.now(), market: targetMarket };
-  logger.info(`🎯 오늘의 테마 [${targetMarket}]: ${data.theme} (${data.stocks.length}종목)`, { component: 'NEWS_THEME' });
-  return data;
+    _newsThemeCache = { data, fetchedAt: Date.now(), market: targetMarket };
+    logger.info(`🎯 오늘의 테마 [${targetMarket}]: ${data.theme} (${data.stocks.length}종목)`, { component: 'NEWS_THEME' });
+    return data;
+  } catch (err) {
+    // v29 강화: AI 체인 전부 소진/타임아웃 시 무한 "AI 분석중" 방지 →
+    //   (1) 직전 성공 테마(stale) 유지 (2) 없으면 헤드라인 키워드 규칙기반 폴백.
+    logger.warn(`오늘의 테마 AI 실패 → 폴백: ${(err as Error).message}`, { component: 'NEWS_THEME' });
+    if (_newsThemeCache.data && _newsThemeCache.market === targetMarket) {
+      logger.info(`  ↩️ 직전 테마 유지 (stale): ${_newsThemeCache.data.theme}`, { component: 'NEWS_THEME' });
+      return _newsThemeCache.data;
+    }
+    const fb = buildFallbackTheme(targetMarket, headlines);
+    _newsThemeCache = { data: fb, fetchedAt: Date.now(), market: targetMarket };
+    logger.info(`  🔧 규칙기반 테마 폴백 [${targetMarket}]: ${fb.theme}`, { component: 'NEWS_THEME' });
+    return fb;
+  }
 }
 
 // ── 뉴스 테마/감성 데이터 export (overseas-job에서 사용) ──

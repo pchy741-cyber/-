@@ -103,7 +103,7 @@ async function buildDashPayload(viewIsPaper: boolean): Promise<unknown> {
     safeQuery(
       `SELECT id, category, insight, confidence, sample_count, last_updated, is_manual,
               recommendation, param_change, is_applied, applied_at, is_paper
-       FROM learned_insights WHERE is_paper = $1 ORDER BY is_manual DESC, confidence DESC LIMIT 30`,
+       FROM learned_insights WHERE is_paper = $1 ORDER BY is_manual DESC, confidence DESC LIMIT 200`,
       [viewIsPaper],
     ).catch(() => ({ rows: [] as any[] })),
     getDefenseParkState().catch(() => ({

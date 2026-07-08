@@ -30,7 +30,7 @@ function KrAiScorePanel({
   // R² 정확도 배지
   const [r2Data, setR2Data] = useState<{ rSquared: number; grade: string; winRate: number } | null>(null);
   useEffect(() => {
-    api('/dashboard-analysis/score-accuracy/r2')
+    api('/score-accuracy/r2')
       .then((r: any) => {
         if (r?.overall?.rSquared != null) setR2Data({ rSquared: r.overall.rSquared, grade: r.overall.grade, winRate: r.overall.winRate });
       })

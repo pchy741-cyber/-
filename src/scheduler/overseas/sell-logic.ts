@@ -148,9 +148,10 @@ export async function evaluateSells(ctx: SellContext): Promise<SellResult> {
     const pnlPct = ((curPrice - holding.avgPrice) / holding.avgPrice) * 100;
 
     // v22: 방어매도 우회 판정 — 긴급 SL/갭방어는 미체결 존재해도 실행
-    // v23: HIGH_BETA -7%/-6% 하드플로어 (기존 -6% 동일 → 고변동성 종목 일중 5-6% 변동 빈번, 정상 노이즈에 트리거)
+    // v29: 하드플로어 -6/-7 → -5/-6 조임 (연습 전수조사: Phase1이 -5.6~5.7%까지 손실 허용 = R:R 0.46 악화).
+    //   계산: avgLoss 캡 → R:R↑. 고변동성(HIGH_BETA)은 일중 5-6% 변동 빈번이라 -6%로 버퍼 유지, 일반은 -5%.
     const _sector0 = WATCHLIST_BY_CODE.get(code)?.sector ?? '';
-    const hardFloor = SECTOR_CLASS.HIGH_BETA.includes(_sector0) ? -7.0 : -6.0;
+    const hardFloor = SECTOR_CLASS.HIGH_BETA.includes(_sector0) ? -6.0 : -5.0;
     const emergencySl = pnlPct <= hardFloor || pnlPct <= (holding.slPct ?? -5);
     if (hasPendingOrder && !emergencySl) {
       logger.info(`⏳ 미체결 주문 존재 → ${code} 추가 주문 스킵 (PnL=${pnlPct.toFixed(1)}%)`, { component: 'OVERSEAS' });

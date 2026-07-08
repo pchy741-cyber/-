@@ -8,7 +8,7 @@ import type { Trade, WithdrawConfig } from '../../types';
 const EquitySparkline = React.memo(function EquitySparkline() {
   const [points, setPoints] = useState<{ date: string; totalValue: number }[]>([]);
   useEffect(() => {
-    api('/dashboard-analysis/equity-curve?days=14&viewMode=live')
+    api('/equity-curve?days=14&viewMode=live')
       .then((r: { points?: { date: string; totalValue: number }[] }) => {
         if (r?.points?.length) setPoints(r.points);
       })

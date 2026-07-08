@@ -151,35 +151,11 @@ function getThemeParkCandidates(
     }
   }
 
-  if (!bestTheme) {
-    // 테마 없으면 배당 ETF 전체 + 메가캡 폴백
-    return { candidates: [...DIVIDEND_ETF_PARK_CANDIDATES, ...MEGA_CAP_PARK_CANDIDATES], hotTheme: null };
-  }
-
-  // 핫 테마에서 대형주만 추출
-  const themeCluster = THEME_CLUSTERS.find((c) => c.id === bestTheme!.id);
-  const themeCandidates: Array<{ code: string; name: string }> = [];
-  const existingCodes = new Set(MEGA_CAP_PARK_CANDIDATES.map((c) => c.code));
-
-  if (themeCluster) {
-    for (const s of themeCluster.stocks) {
-      if (THEME_LARGE_CAPS.has(s.code) && !existingCodes.has(s.code)) {
-        themeCandidates.push(s);
-        existingCodes.add(s.code);
-      }
-    }
-  }
-
-  logger.info(
-    `🎯 오늘의 테마: ${bestTheme.name} (+${bestTheme.avgChange.toFixed(1)}%) → 파킹 후보 ${themeCandidates.length}개 추가`,
-    { component: 'CASH_MANAGER' },
-  );
-
-  return {
-    // 배당 ETF 최우선 → 메가캡 → 테마 (배당 ETF가 안정성 최고)
-    candidates: [...DIVIDEND_ETF_PARK_CANDIDATES, ...MEGA_CAP_PARK_CANDIDATES, ...themeCandidates.slice(0, 3)],
-    hotTheme: bestTheme.id,
-  };
+  // v29: 파킹은 개별주를 '의무적으로' 강제매수하지 않는다 — 메가캡(삼성전자 등)·테마주 제거.
+  //   근거(CEO): "의무적으로 주식 사는 파킹은 말이 안됨". 파킹=원금보전 목적 → 개별주(변동성) 부적합.
+  //   → 안정 ETF(고배당/CD금리/지수)만 후보. 하락장 인버스는 호출부(effectiveParkPool)에서 최우선 추가.
+  //   안정 ETF마저 하락(-0.5%↓) 필터로 다 걸러지면 후보 0 → 파킹 안 함(현금 보유). 강제매수 없음.
+  return { candidates: [...DIVIDEND_ETF_PARK_CANDIDATES], hotTheme: bestTheme?.id ?? null };
 }
 
 export interface CashManagerParams {
@@ -396,7 +372,13 @@ export function manageCashParking(params: CashManagerParams): TradeDecision[] {
   // ── 오늘의 테마 + 대형주 선택: 뉴스/가격 + 기술분석 타이밍 ──
   const { candidates: parkPool, hotTheme } = getThemeParkCandidates(livePrices);
 
-  const scored = parkPool.filter((c) => !alreadyHeld.has(c.code))
+  // v29: 하락장 인버스 파킹 우선 — KODEX 인버스(114800) 상승 중(=시장 하락)이면 파킹 차량 최우선.
+  //   기존: 인버스가 후보에 없어 삼성전자 등 대형주만 파킹 → 하락장에 동반 하락(삼성전자 -4.9% 손절 사례).
+  const _invParkP = livePrices.get('114800');
+  const _invDownMarket = !!_invParkP && _invParkP.changePct >= 0.5 && !alreadyHeld.has('114800');
+  const effectiveParkPool = _invDownMarket ? [{ code: '114800', name: 'KODEX 인버스' }, ...parkPool] : parkPool;
+
+  const scored = effectiveParkPool.filter((c) => !alreadyHeld.has(c.code))
     .map((c) => {
       const price = livePrices.get(c.code);
       const candles = chartData?.get(c.code);
@@ -428,12 +410,18 @@ export function manageCashParking(params: CashManagerParams): TradeDecision[] {
       // 테마 보너스: 핫 테마 종목이면 +8점 (배당 ETF보다 낮게)
       const isThemeStock = hotTheme && !MEGA_CAP_PARK_CANDIDATES.some((m) => m.code === c.code) && !isDividendETF;
       if (isThemeStock) timingScore += 8;
+      // v29: 하락장 인버스 최우선 (+40 — 배당ETF보너스 +20보다 높게)
+      if (c.code === '114800' && _invDownMarket) timingScore += 40;
       return { ...c, price, tech, timingScore };
     })
     // 당일 하락 종목 제외 (v-tune: 칼잡이 원천 차단)
     // Live: 당일 -0.5% 이하면 파킹 대상 제외 (파킹=원금보전, 하락중 매수 금지)
-    // Paper: -2% 허용 (학습 기회)
-    .filter((c) => c.price && c.price.changePct >= (isPaper ? -2.0 : -0.5) && c.price.changePct <= 5.0);
+    // Paper: -2% 허용 (학습 기회). v29: 인버스는 상승 중이면 상한캡(5%) 면제.
+    .filter((c) =>
+      c.code === '114800'
+        ? !!c.price && c.price.changePct >= 0.5
+        : !!c.price && c.price.changePct >= (isPaper ? -2.0 : -0.5) && c.price.changePct <= 5.0,
+    );
 
   // 타이밍 점수 정렬
   const candidates = scored.sort((a, b) => b.timingScore - a.timingScore);
@@ -507,6 +495,9 @@ export function manageCashParking(params: CashManagerParams): TradeDecision[] {
     confidence: 0.7,
     ai_score: 75,
     trigger_source: 'CASH_PARKING',
+    // v29: 파킹은 PARKING 모드로 명시 라벨 — 기존엔 파이프라인 mode(paper=SCALPING) 상속돼
+    //   전략랩에서 파킹 트레이드가 SCALPING으로 잡히던 불일치(셀트리온 짧은 매매 등) 정확히 구분.
+    strategy_mode: 'PARKING',
   });
 
   return decisions;

@@ -1,5 +1,5 @@
 import { getCtxIsPaper } from '../../config/context.js';
-import { getPool, logSystem } from '../../db/client.js';
+import { getPool, isMemoryMode, logSystem } from '../../db/client.js';
 import { sendTelegramMessage } from '../../notifications/telegram.js';
 import { sendPushNotification } from '../../notifications/web-push.js';
 import { callClaudeCli, isClaudeCliEnabled } from '../../utils/claude-cli.js';
@@ -301,6 +301,50 @@ ${insightSummary}
 }
 
 // ── DB Functions ──
+
+/**
+ * D2: 인사이트 겹침/꼬임충돌 정리 — 동일 파라미터(param_change.field)를 두고 경합하는 인사이트 중
+ * 최고신뢰(confidence×sample_count)만 남기고 나머지는 소프트 정리(is_dismissed). 몇 시간마다 실행.
+ * - is_manual / is_applied 인사이트는 절대 정리하지 않음(수동·이미 반영된 것 보존).
+ * - 소프트 정리라 saveInsights가 재생성하지 않음(dismissed 키) + 대시보드에서 복구 가능.
+ */
+export async function cleanupInsightConflicts(): Promise<number> {
+  if (isMemoryMode()) return 0;
+  let dismissed = 0;
+  for (const isPaper of [true, false]) {
+    try {
+      const { rowCount } = await getPool().query(
+        `WITH ranked AS (
+           SELECT id, ROW_NUMBER() OVER (
+             PARTITION BY param_change->>'field'
+             ORDER BY confidence * sample_count DESC, last_updated DESC
+           ) AS rn
+           FROM learned_insights
+           WHERE COALESCE(is_dismissed, false) = false
+             AND is_manual IS NOT TRUE
+             AND param_change IS NOT NULL
+             AND param_change->>'field' IS NOT NULL
+             AND is_paper = $1
+         )
+         UPDATE learned_insights li SET is_dismissed = true
+         FROM ranked r
+         WHERE li.id = r.id AND r.rn > 1 AND COALESCE(li.is_applied, false) = false`,
+        [isPaper],
+      );
+      const n = rowCount ?? 0;
+      if (n > 0) {
+        dismissed += n;
+        logger.info(
+          `🧹 인사이트 충돌 정리(${isPaper ? 'paper' : 'live'}): ${n}건 소프트 정리 (동일 파라미터 경합 → 최고신뢰만 유지)`,
+          { component: 'SELF_LEARN' },
+        );
+      }
+    } catch (e) {
+      logger.warn(`인사이트 충돌 정리 실패(${isPaper ? 'paper' : 'live'}): ${e}`, { component: 'SELF_LEARN' });
+    }
+  }
+  return dismissed;
+}
 
 async function saveInsights(insights: LearnedInsight[]): Promise<void> {
   if (insights.length > 0) {

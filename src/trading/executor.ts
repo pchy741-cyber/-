@@ -535,6 +535,8 @@ export class TradeExecutor {
 
       // v28: 스마트 집행 — 비ETF + 비방어 + 금액 30만+ → 상태머신
       const orderAmountKrw = estimatedPrice * gatedQuantity;
+      // v29 이중주문 버그 수정: 스마트집행 성공 시 체결 저장 → 이후 대형게이트/호가계산/executeOrder 전부 스킵(더블매수 방지).
+      let smartFill: { filledQty: number; filledPrice: number; orderNo: string } | null = null;
       if (!skipGates && orderAmountKrw >= 300_000) {
         try {
           const { smartExecuteBuy, checkLiquidityGate } = await import('./execution-engine.js');
@@ -557,8 +559,8 @@ export class TradeExecutor {
             logger.warn(`❌ 스마트 집행 실패 [${stockCode}]: chase=${execResult.chaseCount}`, { component: 'EXECUTOR' });
             return;
           }
-          // 스마트 집행 성공 — 체인 생성 + 후속 처리는 아래 기존 로직으로 계속
-          // (executeOrder + confirmFill 블록을 건너뛰고 직접 체인 생성)
+          // v29: 스마트 집행 성공 → 체결 저장. 아래 대형게이트/호가계산/executeOrder 전부 스킵하고 이 체결로 체인 생성.
+          smartFill = { filledQty: execResult.filledQty, filledPrice: execResult.filledPrice, orderNo: execResult.orderNo };
           logger.info(
             `✅ 스마트 집행 성공: ${stockCode} ${execResult.filledQty}주 @${execResult.filledPrice} chase=${execResult.chaseCount} ${execResult.elapsed_ms}ms`,
             { component: 'EXECUTOR' },
@@ -569,8 +571,8 @@ export class TradeExecutor {
         }
       }
 
-      // 🎯 대형 주문 진입타이밍 AI 검토 (100만원 이상, ETF 파킹/바닥낚시 제외)
-      if (!skipGates && orderAmountKrw >= 1_000_000) {
+      // 🎯 대형 주문 진입타이밍 AI 검토 (100만원 이상, ETF 파킹/바닥낚시 제외). v29: 스마트 이미 체결 시 스킵(고아포지션 방지).
+      if (!skipGates && !smartFill && orderAmountKrw >= 1_000_000) {
         try {
           const entryCandles = await getDailyChart(stockCode, 20).catch(() => []);
           const entryCheck = await checkLargeOrderEntryTiming(
@@ -615,7 +617,7 @@ export class TradeExecutor {
       // v18: Paper 모드도 지지선매수 적용 (단순 시장가 → 스마트 진입)
       const isHighConviction = (aiScore ?? 0) >= 85 && (tpSlHints?.confidence ?? 0) >= 0.7;
       let smartBuyPrice: number | undefined;
-      if (!skipGates) {
+      if (!skipGates && !smartFill) {
         try {
           const book = await getOrderbook(stockCode);
           const ask1 = book[0]?.askPrice ?? 0;
@@ -668,24 +670,30 @@ export class TradeExecutor {
       // smartBuyPrice=0 방어: 시장가 폴백 (penny stock 등 비정상 호가)
       if (smartBuyPrice !== undefined && smartBuyPrice <= 0) smartBuyPrice = undefined;
 
-      // 주문 실행 (지정가 우선 → 호가 없으면 시장가 폴백)
-      const result = await this.executeOrder({
-        stockCode,
-        side: 'BUY',
-        quantity: gatedQuantity,
-        price: priceType === 'LIMIT' ? limitPrice : smartBuyPrice,
-        triggerSource: triggerSource ?? 'TRACK_B',
-        aiReasoning: reasoning,
-        isPaper: isPaperSnapshot,
-      });
-
-      if (!result.success) {
-        releaseBuyIntent(stockCode);
-        return;
+      // 주문 실행 (지정가 우선 → 호가 없으면 시장가 폴백). v29: 스마트집행 이미 체결 시 재주문 금지(더블매수 방지).
+      let fill: { filledQty: number; filledPrice: number; orderNo: string } | null;
+      if (smartFill) {
+        fill = smartFill;
+        logger.info(`✅ 스마트 체결 사용(재주문 스킵): ${stockCode} ${fill.filledQty}주 @${fill.filledPrice}`, { component: 'EXECUTOR' });
+      } else {
+        const result = await this.executeOrder({
+          stockCode,
+          side: 'BUY',
+          quantity: gatedQuantity,
+          price: priceType === 'LIMIT' ? limitPrice : smartBuyPrice,
+          triggerSource: triggerSource ?? 'TRACK_B',
+          aiReasoning: reasoning,
+          isPaper: isPaperSnapshot,
+        });
+        if (!result.success) {
+          releaseBuyIntent(stockCode);
+          return;
+        }
+        const cf = await this.confirmFill(result.orderNo, stockCode, gatedQuantity, estimatedPrice);
+        fill = cf ? { ...cf, orderNo: result.orderNo } : null;
       }
 
       {
-        const fill = await this.confirmFill(result.orderNo, stockCode, gatedQuantity, estimatedPrice);
         if (!fill) {
           releaseBuyIntent(stockCode);
           logger.error(`체결 미확인 → 체인 생성 보류: ${stockCode}`, { component: 'EXECUTOR' });
@@ -767,7 +775,7 @@ export class TradeExecutor {
               isPaper: isPaperSnapshot,
             });
             // orders.chain_id 연결 — 고아 포지션 방지 (audit P0)
-            await updateOrderByKisOrderNo(result.orderNo, { chain_id: chainId });
+            await updateOrderByKisOrderNo(fill.orderNo, { chain_id: chainId });
             chainCreated = true;
 
             // 워치독: 체결 즉시 TP 지정가 + SL 10초 폴링 (0-180초 무보호 갭 제거)
@@ -1513,6 +1521,10 @@ export class TradeExecutor {
         recordSellForCooldown(stockCode, isPaperSnapshot, pnlPct < 0); // v21: 손절 시 isStopLoss=true → 4h 쿨다운
       } else {
         await chainManager.partialProfit(chain.id, soldQty, fill.filledPrice, chain);
+        // v29 [수익잠식 버그#1]: 부분매도도 재매수 쿨다운 등록 — 기존엔 full close만 등록되어
+        //   슬라이스 매도 후 다음 사이클 즉시 재매수 churn(수익 반납)이 무제한이었음.
+        //   익절 partial→2h / 손절 partial→4h. 강한 setup(AI≥85+주도주+반전)만 hard-gates 우회로 재진입.
+        recordSellForCooldown(stockCode, isPaperSnapshot, pnlPct < 0);
         // v10.9.4: FORCE_CLOSE 부분체결 → 잔여 수량 즉시 시장가 재매도 (잔여 포지션 방치 방지)
         if (action === 'FORCE_CLOSE' && remainQty > 0) {
           logger.warn(`🔄 FORCE_CLOSE 잔여 ${remainQty}주 즉시 재매도: ${stockCode}`, { component: 'EXECUTOR' });

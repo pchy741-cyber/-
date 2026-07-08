@@ -153,7 +153,9 @@ export async function runPreMarketOrders(): Promise<PreMarketResult> {
         price_type: 'LIMIT',
         limit_price: limitPrice,
         reasoning: `[동시호가][AI:${score.composite_score}] ${score.reasoning?.slice(0, 100) ?? ''}`,
-        confidence: (score.confidence ?? 50) / 100,
+        // v29 버그수정: confidence는 0~1 스케일(ensemble BASE 0.5)인데 /100 하면 0.85→0.0085로 붕괴
+        //   → executor isHighConviction(>=0.7) 영원히 미달, 장전 고확신 종목이 크게 못 삼. /100 제거.
+        confidence: score.confidence ?? 0.5,
         ai_score: score.composite_score ?? 0,
         trigger_source: 'PRE_MARKET_ORDER',
       });

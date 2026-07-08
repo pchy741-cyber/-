@@ -12,6 +12,7 @@ import type { DailyCandle } from '../../kis/market.js';
 import { logger } from '../../utils/logger.js';
 import type { RegimeHint } from '../prompts/track-a-scoring.js';
 import type { GeminiAnalysis } from './gemini.js';
+import { composeInstructionPrompt } from './instruction-prompt.js';
 
 const COMP = 'ENSEMBLE';
 
@@ -82,7 +83,8 @@ async function runModel(model: keyof EnsembleWeights, params: EnsembleParams): P
         scores = await runGeminiScoring({
           mode: params.mode,
           geminiAnalysis: params.geminiAnalysis,
-          customPrompt: params.strategy?.gemini_prompt ?? undefined,
+          // 지시탭 4종 합류 (analysis+전략서+리스크+매매) — runGeminiAnalysis와 동일 헬퍼로 일관 주입
+          customPrompt: composeInstructionPrompt(params.strategy) || undefined,
           regimeHint: params.regimeHint,
         });
         break;

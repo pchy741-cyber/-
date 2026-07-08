@@ -258,7 +258,9 @@ export async function generateSellDecisions(params: TechnicalFallbackParams): Pr
       beTargetSl != null && // ③b: SWING은 null → BreakEvenGuard 비활성
       chain.strategy_mode !== 'SCALPING' &&
       chain.status !== 'PROFIT_TAKING' &&
-      pnlPct >= 2.0 &&
+      // v29: +2.0→+1.5 조기화. 계산근거: 현재 R:R 0.46(꼬리손실이 R:R 죽임) → +1.5% 찍으면 SL을 -0.3%로 캡해
+      // 꼬리손실(-4.5%) 축소 이득이 whipsaw(-0.3%) 비용 압도. 트레일링 활성(1.5%)과 정렬 → 반납 손실확정 차단.
+      pnlPct >= 1.5 &&
       chain.stop_loss_pct != null &&
       Number(chain.stop_loss_pct) < beTargetSl
     ) {

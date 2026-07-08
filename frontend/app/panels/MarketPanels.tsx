@@ -106,20 +106,23 @@ export function PerformanceVsKospiPanel({ viewMode = 'live' }: { viewMode?: stri
     api(`/market/performance-vs-kospi?viewMode=${viewMode}`, { timeout: 15000 }).then(setData).catch(() => {});
   }, [viewMode]);
 
-  if (!data || (data.bot.length === 0 && data.kospi.length === 0)) return null;
+  if (!data || (!data.bot?.length && !data.kospi?.length)) return null;
+  // 부분 payload({}, {bot:[...]}, {kospi:[...]}) 방어 — 한쪽만 오면 .map 크래시로 홈 전체 블랭크되던 것
+  const bot = data.bot ?? [];
+  const kospi = data.kospi ?? [];
 
-  const allVals = [...data.bot.map(p => p.value), ...data.kospi.map(p => p.value)];
+  const allVals = [...bot.map(p => p.value), ...kospi.map(p => p.value)];
   const minV = Math.min(...allVals, 0);
   const maxV = Math.max(...allVals, 0);
   const range = maxV - minV || 1;
   const H = 80; const W = 300;
 
   const toY = (v: number) => H - ((v - minV) / range) * H;
-  const botPath = data.bot.map((p, i) => `${i === 0 ? 'M' : 'L'}${(i / Math.max(data.bot.length - 1, 1)) * W},${toY(p.value)}`).join(' ');
-  const kospiPath = data.kospi.map((p, i) => `${i === 0 ? 'M' : 'L'}${(i / Math.max(data.kospi.length - 1, 1)) * W},${toY(p.value)}`).join(' ');
+  const botPath = bot.map((p, i) => `${i === 0 ? 'M' : 'L'}${(i / Math.max(bot.length - 1, 1)) * W},${toY(p.value)}`).join(' ');
+  const kospiPath = kospi.map((p, i) => `${i === 0 ? 'M' : 'L'}${(i / Math.max(kospi.length - 1, 1)) * W},${toY(p.value)}`).join(' ');
   const zeroY = toY(0);
-  const botLast = data.bot[data.bot.length - 1]?.value ?? 0;
-  const kospiLast = data.kospi[data.kospi.length - 1]?.value ?? 0;
+  const botLast = bot[bot.length - 1]?.value ?? 0;
+  const kospiLast = kospi[kospi.length - 1]?.value ?? 0;
 
   return (
     <Panel title="봇 수익률 vs KOSPI">
@@ -134,7 +137,7 @@ export function PerformanceVsKospiPanel({ viewMode = 'live' }: { viewMode?: stri
           {botPath && <path d={botPath} fill="none" stroke="#34d399" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />}
         </svg>
         <div className="flex justify-between text-[9px] text-slate-600 mt-1">
-          <span>{data.bot[0]?.date ?? data.kospi[0]?.date ?? ''}</span>
+          <span>{bot[0]?.date ?? kospi[0]?.date ?? ''}</span>
           <span>오늘</span>
         </div>
       </div>
@@ -151,21 +154,24 @@ export function TaxEstimatePanel({ viewMode = 'live' }: { viewMode?: string }) {
   React.useEffect(() => {
     api(`/market/tax-estimate?viewMode=${viewMode}`).then(setData).catch(() => {});
   }, [viewMode]);
-  if (!data) return null;
+  if (!data?.year) return null; // {} 방어 — 빈 객체면 "NaN원"/"undefined년" 렌더되던 것
+  const txTax = Number(data.transactionTax) || 0;
+  const netGain = Number(data.netGain) || 0;
+  const sellAmt = Number(data.totalSellAmount) || 0;
   return (
     <Panel title={`${data.year}년 세금 추정`}>
       <div className="px-4 pb-3 grid grid-cols-2 gap-2">
         <div className="bg-slate-800/40 rounded-xl p-3">
           <p className="text-[10px] text-slate-500 mb-1">거래세 (0.18%)</p>
-          <p className="text-sm font-bold text-amber-400">{Math.round(data.transactionTax).toLocaleString()}원</p>
+          <p className="text-sm font-bold text-amber-400">{Math.round(txTax).toLocaleString()}원</p>
         </div>
         <div className="bg-slate-800/40 rounded-xl p-3">
           <p className="text-[10px] text-slate-500 mb-1">순실현손익</p>
-          <p className={`text-sm font-bold ${pc(data.netGain)}`}>{data.netGain > 0 ? '+' : ''}{Math.round(data.netGain).toLocaleString()}원</p>
+          <p className={`text-sm font-bold ${pc(netGain)}`}>{netGain > 0 ? '+' : ''}{Math.round(netGain).toLocaleString()}원</p>
         </div>
         <div className="bg-slate-800/40 rounded-xl p-3">
           <p className="text-[10px] text-slate-500 mb-1">총 매도금액</p>
-          <p className="text-sm font-bold text-slate-200">{Math.round(data.totalSellAmount / 10000).toLocaleString()}만원</p>
+          <p className="text-sm font-bold text-slate-200">{Math.round(sellAmt / 10000).toLocaleString()}만원</p>
         </div>
         <div className="bg-emerald-950/30 border border-emerald-900/30 rounded-xl p-3">
           <p className="text-[10px] text-slate-500 mb-1">양도세 (소액주주)</p>

@@ -35,6 +35,16 @@ export function checkQualityGates(input: QualityGateInput): GateResult {
     if (!isPaper && mode === 'SWING' && tech.sma20 < tech.sma60 && aiScore < 85 && tech.rsi14 >= 30) return false;
     if (!isPaper && mode === 'SWING' && tech.sma5 < tech.sma20 && aiScore < 85 && tech.rsi14 >= 35) return false;
     if (mode === 'DEFENSE' && curPrice < tech.sma20 && aiScore < 65 && tech.score < 50) return false;
+    // v29: MA20 아래(구조적 약세) 매수 보류 — 연습·실전 공통. 근거: 연습 바보손절 top 사유 "구조적SL: MA20↓ (0h)"(0승12패).
+    //   [검증근거] Larry Connors RSI2 평균회귀(다수 백테스트, 승률 70~85%): 과매도 매수는 '상승추세(장기MA 위)'에서만.
+    //   200MA 추세필터 시 거래당 평균이익 +0.95%·MDD 감소. 하락추세 과매도 매수 = falling knife(=바보손절).
+    //   → 딥매수 예외는 (장기추세 MA60 위 + RSI 과매도 + 반등확인)일 때만. 고AI(≥80)는 별도 허용.
+    const _uptrend = !(tech.sma60 > 0) || curPrice > tech.sma60; // 장기추세 필터 (MA60; Connors 200MA 원리)
+    const _oversoldDip =
+      _uptrend &&
+      tech.rsi14 < 30 &&
+      (tech.rsi2 < 10 || tech.macdHistogram >= 0 || tech.macdCrossover === 'BULLISH' || hasBullishCandle || tech.stochasticSignal === 'OVERSOLD');
+    if (curPrice < tech.sma20 && !_oversoldDip && aiScore < 80) return false;
     return true;
   })();
 

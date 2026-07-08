@@ -193,7 +193,7 @@ export async function setMomentumHoldMeta(chainId: string, count: number, peak: 
     await safeQuery(
       `UPDATE transaction_chains
        SET metadata = COALESCE(metadata, '{}'::jsonb)
-         || jsonb_build_object('momentum_hold_count', $2, 'momentum_hold_last_peak', $3)
+         || jsonb_build_object('momentum_hold_count', $2::int, 'momentum_hold_last_peak', $3::float)
        WHERE id = $1`,
       [chainId, count, peak],
     );

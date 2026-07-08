@@ -602,5 +602,21 @@ export async function applyDecisionFlow(params: DecisionFlowParams): Promise<Tra
     return (scoreMap.get(b.stock_code) ?? 0) - (scoreMap.get(a.stock_code) ?? 0);
   });
 
-  return filtered;
+  // ── v29: 중복 매수 제거 — 같은 종목 acquire(BUY/AVERAGE_DOWN)가 여러 소스에서 나오면 최우선 1건만 ──
+  //   정렬 후라 첫 등장이 최우선(인버스/CRASH_PROFIT 우선). 특히 114800 인버스가 cash-manager 파킹 +
+  //   crash-profit generateInverseDecisions에서 동시 매수돼 이중매수되던 꼬임충돌 방지 (CEO 파킹 전수조사).
+  const _seenAcquire = new Set<string>();
+  const deduped = filtered.filter((d) => {
+    if (d.action !== 'BUY' && d.action !== 'AVERAGE_DOWN') return true;
+    if (_seenAcquire.has(d.stock_code)) {
+      logger.info(`  🔁 중복 매수 제거: ${d.stock_code} (${d.trigger_source ?? '?'} — 우선순위 낮음)`, {
+        component: 'DECISION_FLOW',
+      });
+      return false;
+    }
+    _seenAcquire.add(d.stock_code);
+    return true;
+  });
+
+  return deduped;
 }

@@ -1,5 +1,6 @@
 import { Telegraf } from 'telegraf';
 import { baseIsPaper, baseTradingMode, config } from '../config/index.js';
+import { approveRevision, rejectRevision } from '../db/repo/prompt-revisions.js';
 import { getAccountBalance } from '../kis/account.js';
 import { deactivateKillSwitchAll, getKillSwitchStatusAll } from '../risk/kill-switch.js';
 import { logger } from '../utils/logger.js';
@@ -21,6 +22,15 @@ export function initTelegram(): void {
     const chatId = String(ctx.chat?.id ?? '');
     // 🔒 엄격한 동등 비교 (endsWith 취약점 차단)
     return !!(allowedId && (fromId === allowedId || chatId === allowedId));
+  };
+
+  // 🔐 특권 명령(승인/반려/kill/resume) 전용 — TELEGRAM_ADMIN_USER_ID(CEO 개인 user id)가 설정되면
+  // 그 사용자만 허용 → 그룹챗의 chatId 매칭 우회(멤버 아무나 실행) 차단.
+  // 미설정 시 기존 isAuthorized로 폴백(설정 오류로 인한 긴급명령 락아웃 방지). 실제 강화하려면 env 설정 필수.
+  const isAdminUser = (ctx: any): boolean => {
+    const adminId = String(process.env.TELEGRAM_ADMIN_USER_ID ?? '').trim();
+    if (!adminId) return isAuthorized(ctx);
+    return String(ctx.from?.id ?? '') === adminId;
   };
 
   // /status 명령어 — 시스템 상태 확인 (🔒 인증 필수)
@@ -63,7 +73,7 @@ export function initTelegram(): void {
 
   // /kill 명령어 — Kill Switch 수동 발동 (인증된 사용자만)
   bot.command('kill', async (ctx) => {
-    if (!isAuthorized(ctx)) {
+    if (!isAdminUser(ctx)) {
       logger.warn(`Telegram /kill 미인증 시도: userId=${ctx.from?.id}`, { component: 'TELEGRAM' });
       return;
     }
@@ -74,7 +84,7 @@ export function initTelegram(): void {
 
   // /resume 명령어 — Kill Switch 해제 (인증된 사용자만)
   bot.command('resume', async (ctx) => {
-    if (!isAuthorized(ctx)) {
+    if (!isAdminUser(ctx)) {
       logger.warn(`Telegram /resume 미인증 시도: userId=${ctx.from?.id}`, { component: 'TELEGRAM' });
       return;
     }
@@ -107,6 +117,40 @@ export function initTelegram(): void {
       await ctx.reply(`📊 *보유 종목*\n\n${lines.join('\n\n')}`, { parse_mode: 'Markdown' });
     } catch (err) {
       await ctx.reply(`❌ 조회 실패: ${err}`);
+    }
+  });
+
+  // /approve_p{id} — T8 프롬프트 변경 제안 승인 → 해당 지시탭 실전 반영 (🔒 인증 필수)
+  bot.hears(/^\/approve_p(\d+)$/, async (ctx) => {
+    if (!isAdminUser(ctx)) {
+      logger.warn(`🚨 Telegram /approve_p 미인증 시도: userId=${ctx.from?.id}, chatId=${ctx.chat?.id}`, {
+        component: 'TELEGRAM',
+      });
+      return;
+    }
+    const id = Number(ctx.match[1]);
+    try {
+      const res = await approveRevision(id);
+      await ctx.reply(res.message, { parse_mode: 'Markdown' });
+    } catch (err) {
+      await ctx.reply(`❌ 승인 처리 실패: ${err}`);
+    }
+  });
+
+  // /reject_p{id} — T8 프롬프트 변경 제안 반려 (🔒 인증 필수)
+  bot.hears(/^\/reject_p(\d+)$/, async (ctx) => {
+    if (!isAdminUser(ctx)) {
+      logger.warn(`🚨 Telegram /reject_p 미인증 시도: userId=${ctx.from?.id}, chatId=${ctx.chat?.id}`, {
+        component: 'TELEGRAM',
+      });
+      return;
+    }
+    const id = Number(ctx.match[1]);
+    try {
+      const res = await rejectRevision(id);
+      await ctx.reply(res.message, { parse_mode: 'Markdown' });
+    } catch (err) {
+      await ctx.reply(`❌ 반려 처리 실패: ${err}`);
     }
   });
 

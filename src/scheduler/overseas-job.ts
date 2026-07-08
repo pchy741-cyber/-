@@ -77,6 +77,7 @@ import {
   getLossCooldownStocks,
   getManualSellCooldownStocks,
   getRecentLossStocks,
+  getRecentlySoldOverseas,
   getUserInsights,
   syncPendingOverseasOrders,
 } from './overseas/order-sync.js';
@@ -854,6 +855,7 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
 
     let aiDecisions: Awaited<ReturnType<typeof analyzeOverseasWithAI>> = [];
     let _hoistedSentimentScore: number | undefined; // v12.3: 감성 점수를 매수 필터까지 전달
+    let _hoistedSentimentLabel: string | undefined; // v29: 감성 라벨 — analyzer가 AI 프롬프트에 주입(죽은버그 수정)
 
     // v17: 뉴스/감성 분석을 shouldCallAI 밖으로 추출 (기존: AI 쿨다운 시 뉴스 데이터 전부 스킵)
     // mktCtx는 shouldCallAI 블록 안에서 생성되므로 별도 변수에 저장 → 나중에 주입
@@ -896,6 +898,7 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
         ]);
         if (sentiment) {
           _hoistedSentimentScore = sentiment.average.score;
+          _hoistedSentimentLabel = sentiment.average.label;
           logger.info(`📰 뉴스 감성: ${sentiment.average.label} (${sentiment.average.score.toFixed(2)})`, { component: SCOPE });
         } else {
           logger.warn('📰 뉴스 감성 분석 타임아웃 (12s 초과)', { component: SCOPE });
@@ -957,7 +960,10 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
       if (_preNewsSummary) mktCtx.newsSummary = _preNewsSummary;
       if (_hoistedSentimentScore != null) {
         mktCtx.newsSentimentScore = _hoistedSentimentScore;
+        // [죽은버그 수정]: analyzer.ts:360이 newsSentiment(라벨)를 봐 AI 프롬프트에 감성 주입 → 라벨도 세팅.
+        if (_hoistedSentimentLabel) mktCtx.newsSentiment = _hoistedSentimentLabel;
       }
+
 
       // Gemini 활성 → AI 분석, 비활성 → 규칙기반 ($0)
       const { config: appConfig } = await import('../config/index.js');
@@ -1095,7 +1101,10 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
     // ── 3.5 Anti-Drawdown Shield — 포트폴리오 전체 고점 대비 드로다운 체크 ──
     try {
       const { checkDrawdownShield } = await import('../automation/portfolio-guard.js');
-      const shield = checkDrawdownShield(portfolioValue, isPaper());
+      // v29 [강제청산 오발동 수정]: 쉴드는 '해외 전용' 가치로 판정해야 함. 기존 portfolioValue(=max(해외, 총계좌USD))는
+      //   국내 매매손실·FX·자본배치까지 낙폭으로 오인 → 해외 +수익인데 peak $1275→현재 $850 phantom -33%로 해외 전량 강제청산.
+      //   킬스위치(1230)와 동일 원인. overseasOnlyUsd(해외현금+해외평가)로 판정 → 국내/FX 무관.
+      const shield = checkDrawdownShield(overseasOnlyUsd, isPaper());
       if (shield.action === 'LIQUIDATE' || shield.action === 'SELL_WORST') {
         logger.warn(`🛡️ ${shield.reason}`, { component: 'OVERSEAS' });
         await sendTelegramMessage(`🛡️ Anti-Drawdown: ${shield.reason}`).catch(() => {});
@@ -1210,8 +1219,24 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
     const lossBaseTotalUsd = targetOverseasUsd > 0
       ? targetOverseasUsd / lossAllocPct // 실제 배분비율로 역산 → 전체 계좌 (USD)
       : portfolioValue;
-    // 총자산 기준 손실율 (분모: 전체 계좌, 분자: 해외 미실현 손실)
-    const lossPctOfTotal = lossBaseTotalUsd > 0 ? (unrealizedLossUsd / lossBaseTotalUsd) * 100 : 0;
+    // 총자산 기준 미실현 손실율 (분모: 전체 계좌, 분자: 해외 미실현 손실)
+    const unrealizedLossPct = lossBaseTotalUsd > 0 ? (unrealizedLossUsd / lossBaseTotalUsd) * 100 : 0;
+    // #2 [수익잠식 방어]: 세션 시작 대비 낙폭 = 실현+미실현 손익 모두 포함.
+    //   기존 킬스위치는 '미실현'만 봐서, 손실을 실현(매도)하고 재매수하면 미실현이 리셋 →
+    //   하루종일 실현 라운드트립 손실이 쌓여도 캡에 안 잡히던 구멍. (야간 US세션엔 국내장 마감이라
+    //   계좌 낙폭 ≈ 해외 실현손익.) 미실현 스냅샷과 '더 나쁜 값'으로 리스크 판정 → 실현 출혈도 차단.
+    const sessionDrawdownPct = _sessionStart > 0 ? Math.max(0, ((_sessionStart - portfolioValue) / _sessionStart) * 100) : 0;
+    // v29 [킬스위치 오발동 수정]: 잔고 델타(sessionDrawdownPct)는 매매손실이 아닌 자본배치(예: 국내 자본집행으로
+    //   총자산 portfolioValue 감소)·세션시작 기준값 stale·스코프 변화까지 '낙폭'으로 오인함.
+    //   실제 사례: 해외 +$3 수익인데 _sessionStart($1275) vs 현재($850) 잔고델타로 -33% 오판정 → 라이브 전체 차단.
+    //   → 킬스위치 트리거는 신뢰가능한 미실현 손실율만 사용. 실현 라운드트립 churn은 별도 4h 재매수 쿨다운(getRecentlySoldOverseas)이 차단.
+    const lossPctOfTotal = unrealizedLossPct; // 잔고델타 제외 — 오발동 방지
+    if (sessionDrawdownPct >= osLimit.killPct && unrealizedLossPct < osLimit.warnPct) {
+      logger.warn(
+        `ℹ️ 세션 잔고낙폭 -${sessionDrawdownPct.toFixed(1)}%이나 미실현손실 -${unrealizedLossPct.toFixed(1)}% → 자본배치/스코프 변화로 판단, 킬스위치 미발동`,
+        { component: 'OVERSEAS' },
+      );
+    }
     // 해외자산 기준 손실율 (로그용)
     const lossPctOfPortfolio = portfolioValue > 0 ? (unrealizedLossUsd / portfolioValue) * 100 : 0;
 
@@ -1349,12 +1374,20 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
     }
 
     if (!riskBlocked && !allocBlocked && currentHoldingCount < MAX_POSITIONS && cash >= minCashForBuy) {
-      const [lossCooldownSet, recentLossSet, manualSellCdSet, bigLossSet] = await Promise.all([
+      const [lossCooldownSet, recentLossSet, manualSellCdSet, bigLossSet, recentSoldSet] = await Promise.all([
         getLossCooldownStocks(isPaper()),
         getRecentLossStocks(isPaper()),
         getManualSellCooldownStocks(),
         getBigLossBlockedOverseas(isPaper()),
+        getRecentlySoldOverseas(isPaper()),
       ]);
+      // 재매수 쿨다운(익절 포함 모든 매도 4h) → 하드 차단 세트에 병합.
+      // 익절 직후 꼭대기 재매수(AMD +7.7%→재매수→-5% 사례) 방지. RECOVERY_BUY 80%+반전확인만 우회.
+      for (const code of recentSoldSet) lossCooldownSet.add(code);
+      if (recentSoldSet.size > 0)
+        logger.info(`🔁 재매수 쿨다운 (4h, 익절포함): ${[...recentSoldSet].join(', ')} — 강한 반전만 우회`, {
+          component: 'OVERSEAS',
+        });
       if (lossCooldownSet.size > 0)
         logger.info(`🚫 손절 쿨다운 종목 (24h): ${[...lossCooldownSet].join(', ')}`, { component: 'OVERSEAS' });
       if (recentLossSet.size > 0)
@@ -1452,15 +1485,49 @@ export async function runOverseasJob(_opts?: { isPaper?: boolean; isRescan?: boo
         getUserFavorites(),
         fetchKospiRegime().catch(() => ({ penalty: 0 as const })),
       ]);
-      // 섹터별 평균 등락률 맵 — O(n) 단일패스 (기존 O(n²) → O(n))
+      // 섹터 모멘텀 맵 — v29 [섹터 배선]: 기존 자기참조 프록시(워치리스트 당일변동 평균, 보합장서 0)를
+      //   진짜 SPDR 11섹터 ETF 로테이션(상대강도)으로 교체. 약섹터는 음수 → buy-filter의 -8/-15 페널티로 자동 반영.
+      //   ETF 미매핑 버킷(CRYPTO/레버리지 등)은 자기참조 프록시로 폴백.
       const _sectorAcc = new Map<string, { sum: number; count: number }>();
       for (const t of techResults) {
         const prev = _sectorAcc.get(t.sector);
         if (prev) { prev.sum += t.price.changePct; prev.count++; }
         else _sectorAcc.set(t.sector, { sum: t.price.changePct, count: 1 });
       }
+      // 워치리스트 버킷 → SPDR 섹터 ETF 라벨 매핑
+      const BUCKET_TO_ETF_SECTOR: Record<string, string> = {
+        AI_SEMI: 'TECH', TW_SEMI: 'TECH', TECH: 'TECH', CLOUD: 'TECH', INFRA: 'TECH', JP_TECH: 'TECH', FINTECH: 'TECH',
+        DEFENSE: 'INDUSTRIAL', INDUSTRIAL: 'INDUSTRIAL', JP_AUTO: 'INDUSTRIAL',
+        FINANCE: 'FINANCE', JP_BANK: 'FINANCE', JP_FINANCE: 'FINANCE',
+        HEALTH: 'HEALTHCARE', BIOTECH: 'HEALTHCARE',
+        ENERGY: 'ENERGY', EV: 'CONSUMER', CONSUMER: 'CONSUMER', CN_ADR: 'CONSUMER',
+        REIT: 'REAL_ESTATE', UTILITY: 'UTILITIES',
+      };
       const sectorMomentumMap = new Map<string, number>();
-      for (const [sec, { sum, count }] of _sectorAcc) sectorMomentumMap.set(sec, sum / count);
+      try {
+        const { getUSSectorSignals } = await import('../market/us-sector-signals.js');
+        const _snap = await getUSSectorSignals();
+        const _etfPct = new Map<string, number>();
+        for (const s of _snap.sectors) _etfPct.set(s.sector, s.changePct);
+        if (_etfPct.size > 0) {
+          for (const [bucket, etfSec] of Object.entries(BUCKET_TO_ETF_SECTOR)) {
+            const pct = _etfPct.get(etfSec);
+            if (pct != null) sectorMomentumMap.set(bucket, pct);
+          }
+          logger.info(`📊 섹터 로테이션 주입: ${_etfPct.size}개 SPDR ETF → 매수 스코어링 (실질 상대강도)`, { component: 'OVERSEAS' });
+        }
+      } catch (e) {
+        logger.warn(`섹터 ETF 로테이션 조회 실패 → 자기참조 폴백: ${e}`, { component: 'OVERSEAS' });
+      }
+      // v29: 레버리지(3x)·단일종목 버킷은 자기참조 시 3배증폭/자기점수 이중계상 → 극단(고점) 추격 유발.
+      //   LEV_BULL은 오른 날 항상 +25, LEV_BEAR는 내린 날 +25 = 최고위험 상품을 극단에서 프로사이클 추격.
+      //   → 중립(0) 고정으로 자동 추격 차단(레버리지는 의도적 전략으로만). 단일종목(COIN/MELI)도 double-count 방지.
+      const NEUTRAL_MOMENTUM_BUCKETS = ['LEV_BULL', 'LEV_BEAR', 'CRYPTO', 'GROWTH'];
+      for (const b of NEUTRAL_MOMENTUM_BUCKETS) if (!sectorMomentumMap.has(b)) sectorMomentumMap.set(b, 0);
+      // ETF에 매핑 안 된 나머지 버킷만 자기참조 프록시로 폴백
+      for (const [sec, { sum, count }] of _sectorAcc) {
+        if (!sectorMomentumMap.has(sec)) sectorMomentumMap.set(sec, sum / count);
+      }
 
       // v12.3: 뉴스 테마 → 해외 섹터 매핑 (캐시에서 직접 읽기, AI 분석 여부와 무관)
       const _THEME_SECTOR_MAP: Record<string, string[]> = {

@@ -60,13 +60,28 @@ async function recordOverseasScoreAccuracy(params: {
 
     // v23-audit: Paper 모드 데이터는 EXPLORE 태깅
     const tradingProfile = isPaper ? 'EXPLORE' : 'LIVE';
+    // v29 클린 스플릿: 해외 전략축 = 실제 버킷(overseas_holdings.strategy_bucket: SWING/CORE/TACTICAL/SNIPER).
+    //   보유행에서 실제 버킷 조회(추측 아님). 이미 삭제됐으면 청산사유로 폴백(DIP/SCALP→TACTICAL, else SWING).
+    let strategyMode = 'SWING';
+    try {
+      const { rows: bkRows } = await pool.query(
+        `SELECT strategy_bucket FROM overseas_holdings WHERE stock_code = $1 AND is_paper = $2 LIMIT 1`,
+        [stockCode, isPaper],
+      );
+      const bk = bkRows[0]?.strategy_bucket;
+      if (bk) strategyMode = String(bk);
+      else if (/딥바이|dip|스캘핑|scalp|프리마켓|premarket|마감 강제청산|TACTICAL/i.test(params.reasoning ?? ''))
+        strategyMode = 'TACTICAL';
+    } catch {
+      /* 폴백 SWING */
+    }
     await pool.query(
       `INSERT INTO score_accuracy
          (stock_code, order_id, market, realized_pnl_pct, outcome, holding_days,
-          close_reason, is_paper, trading_profile)
-       VALUES ($1, $2, 'US', $3, $4, $5, $6, $7, $8)
+          close_reason, is_paper, trading_profile, strategy_mode)
+       VALUES ($1, $2, 'US', $3, $4, $5, $6, $7, $8, $9)
        ON CONFLICT (order_id) WHERE order_id IS NOT NULL DO NOTHING`,
-      [stockCode, orderId, pnlPct, outcome, holdingDays, params.reasoning, isPaper, tradingProfile],
+      [stockCode, orderId, pnlPct, outcome, holdingDays, params.reasoning, isPaper, tradingProfile, strategyMode],
     );
     logger.info(`📝 해외 스코어 기록: ${stockCode} ${outcome} (${pnlPct > 0 ? '+' : ''}${pnlPct.toFixed(2)}%)`, {
       component: 'OVERSEAS',

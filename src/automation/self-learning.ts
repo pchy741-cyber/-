@@ -15,6 +15,7 @@ export {
   analyzeTradeHistory,
   applyInsightById,
   autoApplyInsights,
+  cleanupInsightConflicts,
   getInsightsForDashboard,
   getLearnedInsightsForPrompt,
   getLearnedParameters,

@@ -155,10 +155,15 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
   // ── VIX ≥ 30 + 나스닥 ≤ -2% 복합 하락장 → 신규매수 전면 차단 ──
   // 근거: VIX 30+ = 시장 공포 구간, 나스닥 -2% = 실제 하락 확인
   // 조합 시 false signal 비율 급감 (VIX 단독 대비 63% 정확도 향상 — BIS 2024)
-  const isBearGate = !isPaper && vixValue >= 30 && nasdaqChange1d != null && nasdaqChange1d <= -2.0;
+  // v29 fail-open 수정: 나스닥 데이터가 null이면 기존엔 VIX 40+에도 차단 스킵(fail-open) → 위기에 무방비.
+  //   → 나스닥 있으면 VIX30+ & 나스닥-2%, 나스닥 null이면 VIX35+ 단독으로 방어(fail-closed).
+  const isBearGate = !isPaper && (
+    (vixValue >= 30 && nasdaqChange1d != null && nasdaqChange1d <= -2.0) ||
+    (vixValue >= 35 && nasdaqChange1d == null)
+  );
   if (isBearGate) {
     logger.info(
-      `🐻 하락장 매수 전면 차단: VIX=${vixValue.toFixed(0)} ≥ 30, NASDAQ=${nasdaqChange1d!.toFixed(1)}% ≤ -2%`,
+      `🐻 하락장 매수 전면 차단: VIX=${vixValue.toFixed(0)}${nasdaqChange1d != null ? ` ≥ 30, NASDAQ=${nasdaqChange1d.toFixed(1)}% ≤ -2%` : ' ≥ 35 (나스닥 데이터 없음 → VIX 단독 방어)'}`,
       { component: 'OVERSEAS' },
     );
     return [];
@@ -392,8 +397,8 @@ export function filterAndRankBuyTargets(ctx: BuyFilterContext): BuyTarget[] {
         const isOversold = t.rsi <= RSI_OVERSOLD && t.trendStrength !== 'WEAK';
         const isAbove50 = t.rsi >= 50;
         // v15 Hyper: developing zone RSI 30-49 + ADX 12+ (기존 35-49/ADX15 → 회복 초기 포착)
-        const isDeveloping = t.rsi >= 30 && t.rsi < 50 && t.adx >= 12;
-        const adxThreshold = 12; // v15: 15→12 (약한 추세도 진입 허용)
+        const isDeveloping = t.rsi >= 30 && t.rsi < 50 && t.adx >= 15;
+        const adxThreshold = 15; // v29: 12→15 (횡보/약추세 진입 축소 — 보합장 whipsaw 손실 방지). 과매도/dip/모멘텀 우회는 유지
         // 조정장 급락 바이패스
         const isDipBuyEntry = (t.rsi <= 30 && t.price.changePct <= -2.5)
           || (t.rsi <= 25 && t.price.changePct <= -1.5)

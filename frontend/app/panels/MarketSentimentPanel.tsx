@@ -39,12 +39,12 @@ function MarketSentimentPanel() {
   const [data, setData] = useState<SentimentData | null>(null);
 
   useEffect(() => {
-    api('/dashboard-analysis/market/sentiment')
+    api('/market/sentiment')
       .then((r: SentimentData) => { if (r?.fearGreedScore != null) setData(r); })
       .catch(() => {});
     // 30분마다 갱신
     const id = setInterval(() => {
-      api('/dashboard-analysis/market/sentiment')
+      api('/market/sentiment')
         .then((r: SentimentData) => { if (r?.fearGreedScore != null) setData(r); })
         .catch(() => {});
     }, 30 * 60 * 1000);
@@ -93,7 +93,7 @@ function MarketSentimentPanel() {
         {/* VIX */}
         <div className="shrink-0 text-right border-l border-white/[0.06] pl-3">
           <div className="text-[9px] text-slate-500">VIX</div>
-          <div className={`text-sm font-bold tabular-nums ${vixInfo.color}`}>{vix.toFixed(1)}</div>
+          <div className={`text-sm font-bold tabular-nums ${vixInfo.color}`}>{Number(vix ?? 0).toFixed(1)}</div>
           <div className={`text-[9px] font-medium ${vixInfo.color}`}>{vixInfo.label}</div>
         </div>
       </div>

@@ -86,7 +86,9 @@ export default function PerformancePanel({ trades, strategy, setStrategy, toast,
         ...strategy,
         claude_prompt: (strategy?.claude_prompt ?? '') + '\n\n[CEO 추가 지시 ' + new Date().toLocaleDateString('ko') + ']\n' + quickPrompt.trim(),
       };
-      const u = await api('/strategy', { method: 'PUT', body: JSON.stringify(body) });
+      // viewMode 누락 버그 수정: 현재 보고 있는 모드(strategy.is_paper)에 저장 — paper 보면서 입력한 지시가 live로 새던 것 방지
+      const vm = strategy?.is_paper ? 'paper' : 'live';
+      const u = await api(`/strategy?viewMode=${vm}`, { method: 'PUT', body: JSON.stringify(body) });
       setStrategy(u);
       setQuickPrompt('');
       toast?.('전략 지시 추가됨', 'ok');

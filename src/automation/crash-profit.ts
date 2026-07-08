@@ -74,6 +74,35 @@ interface CrashContext {
  * CRASH:   하락장 — 인버스 매수 실행
  * PANIC:   패닉 — 인버스 대량 매수 + 전 포지션 긴급 청산
  */
+/**
+ * 장전(08:00~09:00) KODEX 인버스(114800) NXT 프리마켓 신호 — 하락장 조기 감지.
+ * 인버스가 상승 = 시장 하락. NXT→UN→J 순 폴백(실측용 source 표기), +1%↑면 하락장 신호.
+ * Phase 1: 실측 로그 + 신호 반환만(매도/주문 없음). Phase 2에서 스마트 위험롱 매도(NXT) 연결 예정.
+ */
+export async function checkPreMarketInverseSignal(): Promise<{ changePct: number; crash: boolean; source: string }> {
+  const { getCurrentPrice } = await import('../kis/market.js');
+  const INVERSE_CODE = '114800';
+  const CRASH_PCT = 1.0; // 인버스 +1%↑ = 하락장
+  for (const div of ['NX', 'UN', 'J'] as const) {
+    try {
+      const p = await getCurrentPrice(INVERSE_CODE, div);
+      const cur = p.currentPrice ?? 0;
+      const prev = (p as { prevClosePrice?: number }).prevClosePrice ?? 0;
+      if (cur > 0 && prev > 0) {
+        const changePct = ((cur - prev) / prev) * 100;
+        logger.info(
+          `🔎 [장전실측] KODEX인버스(114800) ${div}: ${cur} (전일 ${prev}, ${changePct >= 0 ? '+' : ''}${changePct.toFixed(2)}%)`,
+          { component: 'PREMARKET_GUARD' },
+        );
+        return { changePct, crash: changePct >= CRASH_PCT, source: div };
+      }
+    } catch (e) {
+      logger.warn(`[장전실측] 114800 ${div} 조회 실패: ${e}`, { component: 'PREMARKET_GUARD' });
+    }
+  }
+  return { changePct: 0, crash: false, source: 'none' };
+}
+
 export function assessCrashLevel(ctx: CrashContext): CrashSignal {
   let score = 0;
   const reasons: string[] = [];
@@ -275,18 +304,31 @@ export async function generateInverseDecisions(params: InverseDecisionParams): P
     const price = livePrices.get(etf.code);
 
     // ── 매도: 시장 회복 (NONE) → 전량 청산 ──
+    // v29: 단, 인버스가 아직 당일 상승 중(+0.5%↑)이면 청산 보류. 매크로는 정상(NONE)이라도
+    //   인버스 상승 = KR 실제 하락 지속 → 오르는 인버스를 팔면 승자 조기청산. 모멘텀 꺾인 뒤 매도.
     if (holding && signal.level === 'NONE') {
-      decisions.push({
-        action: 'SELL',
-        stock_code: etf.code,
-        quantity: holding.total_quantity,
-        price_type: 'MARKET',
-        reasoning: `📈 ${etf.name} 청산: 시장 정상화 (score=${signal.score})`,
-        confidence: 0.9,
-        strategy_mode: 'DEFENSE',
-        trigger_source: 'CRASH_PROFIT_EXIT',
-      });
-      continue;
+      const cur = price?.currentPrice ?? 0;
+      const prev = (price as { prevClosePrice?: number } | undefined)?.prevClosePrice ?? 0;
+      const invChgPct = prev > 0 ? ((cur - prev) / prev) * 100 : 0;
+      if (invChgPct >= 0.5) {
+        logger.info(
+          `  ⏸️ ${etf.name} 청산 보류: 당일 +${invChgPct.toFixed(1)}% 상승 중 (KR 하락 지속) — 오르는 인버스 유지`,
+          { component: 'CRASH_PROFIT' },
+        );
+        // 청산 보류하고 아래 손절/익절 로직으로 fall-through (상승 중엔 손절도 안 걸림)
+      } else {
+        decisions.push({
+          action: 'SELL',
+          stock_code: etf.code,
+          quantity: holding.total_quantity,
+          price_type: 'MARKET',
+          reasoning: `📈 ${etf.name} 청산: 시장 정상화 (score=${signal.score}, 인버스 ${invChgPct.toFixed(1)}%)`,
+          confidence: 0.9,
+          strategy_mode: 'DEFENSE',
+          trigger_source: 'CRASH_PROFIT_EXIT',
+        });
+        continue;
+      }
     }
 
     // ── 익절/손절: 보유분 정리 (모든 레벨 공통 손절 + CAUTION 익절) ──
@@ -340,11 +382,13 @@ export async function generateInverseDecisions(params: InverseDecisionParams): P
 
     if (!price || price.currentPrice <= 0) continue;
 
-    // 목표 금액 대비 현재 보유 평가액 → 부족분만 추가매수 (top-up 지원)
+    // 목표 금액 대비 현재 보유 평가액
     const currentValue = holding ? price.currentPrice * Number(holding.total_quantity ?? 0) : 0;
     const targetKrw = Math.round(allocationBase * allocPct); // 총자산 기준 목표 (포트폴리오 대비 헤지)
-    // 목표의 80% 이상 이미 보유 → 추가 불필요
-    if (currentValue >= targetKrw * 0.8) continue;
+    // 반복매수 방지: 이미 인버스 보유 시 추가매수 금지 → 크래시당 1회 진입만.
+    // (기존: 목표 80%까지 매 Track B 사이클 top-up → 15회+ 재매수 churn, -236K 손실 이력.
+    //  Live는 파생ETF 미신청으로 인버스 매수 자체 스킵 → 실전 무관, Paper 반복 방지 목적)
+    if (currentValue > 0) continue;
 
     const shortfallKrw = targetKrw - currentValue;
     const investAmount = Math.min(shortfallKrw, Math.round(remainingCash * 0.9));

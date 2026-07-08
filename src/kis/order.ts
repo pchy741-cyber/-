@@ -34,8 +34,11 @@ export async function placeOrder(params: {
   quantity: number;
   price?: number;
   orderType?: OrderType;
+  // 거래소 라우팅(넥스트레이드). 미지정 시 필드 미전송 = 기존 KRX 기본(무영향).
+  // KRX=한국거래소 · NXT=넥스트레이드(장전 08:00~08:50/장후 ~20:00) · SOR=스마트라우팅(최선호가 자동)
+  exchange?: 'KRX' | 'NXT' | 'SOR';
 }): Promise<OrderResult> {
-  const { stockCode, side, quantity, price, orderType = OrderType.MARKET } = params;
+  const { stockCode, side, quantity, price, orderType = OrderType.MARKET, exchange } = params;
 
   // Input validation: quantity must be positive
   if (!Number.isFinite(quantity) || quantity <= 0) {
@@ -58,6 +61,8 @@ export async function placeOrder(params: {
     // 지정가 주문 시 호가 단위 자동 맞춤 (KRX 규정)
     ORD_UNPR: orderType === OrderType.MARKET ? '0' : String(adjustToTickSize(price ?? 0)),
   };
+  // 거래소 라우팅 (넥스트레이드) — 지정 시에만 추가. KIS: EXCG_ID_DVSN_CD (KRX/NXT/SOR). 미지정=KRX 기본.
+  if (exchange) body.EXCG_ID_DVSN_CD = exchange;
 
   const hashkey = await getHashkey(body);
 

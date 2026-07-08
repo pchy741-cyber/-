@@ -295,6 +295,37 @@ async function analyzeWithGemini(
   return null;
 }
 
+/**
+ * 규칙기반 재무 점수 (0~100) — Gemini 실패/과부하 시 폴백.
+ * XBRL 숫자(매출YoY·영업이익YoY·영업이익률·부채비율·순이익)로 직접 산출 → 재무점수가 0으로 죽지 않게.
+ */
+function computeRuleBasedFundamentalScore(f: NonNullable<ReturnType<typeof buildFinancial>>): number {
+  let score = 50;
+  // 매출 성장 (YoY %)
+  if (f.revenueYoy >= 20) score += 15;
+  else if (f.revenueYoy >= 10) score += 10;
+  else if (f.revenueYoy >= 3) score += 5;
+  else if (f.revenueYoy < 0) score -= 10;
+  // 영업이익 성장 (YoY %)
+  if (f.operatingIncomeYoy >= 20) score += 10;
+  else if (f.operatingIncomeYoy >= 5) score += 5;
+  else if (f.operatingIncomeYoy < -10) score -= 8;
+  // 영업이익률 (%)
+  if (f.operatingMargin >= 25) score += 12;
+  else if (f.operatingMargin >= 15) score += 8;
+  else if (f.operatingMargin >= 5) score += 3;
+  else if (f.operatingMargin < 0) score -= 15; // 영업적자
+  // 부채비율 (낮을수록 좋음)
+  if (f.debtRatio > 0) {
+    if (f.debtRatio <= 40) score += 8;
+    else if (f.debtRatio <= 60) score += 3;
+    else if (f.debtRatio >= 80) score -= 8;
+  }
+  // 순이익 흑자/적자
+  if (f.netIncome < 0) score -= 10;
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
+
 // ── 메인: 종목 리서치 실행 ──
 
 export async function runSecResearch(ticker: string): Promise<SecResearchResult> {
@@ -346,12 +377,19 @@ export async function runSecResearch(ticker: string): Promise<SecResearchResult>
       base.fundamentalScore = geminiResult.score;
       base.keyStrengths = geminiResult.strengths;
       base.keyRisks = geminiResult.risks;
+    } else {
+      // Gemini 실패/과부하(429·503) → XBRL 숫자 기반 규칙 점수 폴백 (재무점수 0 방지 → buy-filter fundAdj 반영)
+      const ruleScore = computeRuleBasedFundamentalScore(financial);
+      base.fundamentalScore = ruleScore;
+      base.aiAnalysis = `규칙기반 재무점수 ${ruleScore} (Gemini 미사용: 매출 ${financial.revenueYoy > 0 ? '+' : ''}${financial.revenueYoy}%·영업이익률 ${financial.operatingMargin}%·부채 ${financial.debtRatio}%)`;
+      logger.info(`SEC 규칙기반 폴백 점수 (${financial.ticker}): ${ruleScore}`, { component: COMP });
     }
   } else {
     logger.warn(`SEC 재무 데이터 파싱 불가: ${ticker} FY${targetFy}`, { component: COMP });
   }
 
   _resultCache.set(cacheKey, { result: base, fetchedAt: Date.now() });
+  upsertSecDbCache(base.ticker, targetFy, base).catch(() => {}); // v29: DB 영속화 (재시작에도 유지)
   return base;
 }
 
@@ -370,6 +408,53 @@ export function getCachedSecFundamentalScore(ticker: string): number | undefined
     }
   }
   return undefined;
+}
+
+/** 캐시된 SEC 리서치 결과 반환 (Gemini 호출 없음 — 버튼 캐시우선/자동로드용). 미캐시 티커는 제외. */
+export function getCachedSecResults(tickers: string[]): SecResearchResult[] {
+  const out: SecResearchResult[] = [];
+  for (const t of tickers) {
+    const upper = t.toUpperCase();
+    for (const [key, entry] of _resultCache) {
+      if (key.startsWith(`${upper}-`) && Date.now() - entry.fetchedAt < CACHE_TTL_MS) {
+        out.push(entry.result);
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+/** v29: SEC 결과 DB 영속화 (재배포/재시작에도 유지) */
+async function upsertSecDbCache(ticker: string, year: number, result: SecResearchResult): Promise<void> {
+  try {
+    const { getPool } = await import('../db/client.js');
+    await getPool().query(
+      `INSERT INTO sec_research_cache (ticker, year, result, fundamental_score)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (ticker, year) DO UPDATE SET result = $3, fundamental_score = $4, analyzed_at = NOW()`,
+      [ticker.toUpperCase(), year, JSON.stringify(result), result.fundamentalScore ?? null],
+    );
+  } catch (e) {
+    logger.debug(`SEC DB캐시 저장 실패 (무시): ${e}`, { component: COMP });
+  }
+}
+
+/** v29: DB에서 캐시된 SEC 결과 조회 (Gemini 없음, 재시작에도 유지) — 각 티커 최신연도 1건 */
+export async function getDbCachedSecResults(tickers: string[]): Promise<SecResearchResult[]> {
+  if (tickers.length === 0) return [];
+  try {
+    const { getPool } = await import('../db/client.js');
+    const { rows } = await getPool().query(
+      `SELECT DISTINCT ON (ticker) result FROM sec_research_cache
+       WHERE ticker = ANY($1) ORDER BY ticker, year DESC`,
+      [tickers.map((t) => t.toUpperCase())],
+    );
+    return rows.map((r: { result: SecResearchResult }) => r.result);
+  } catch (e) {
+    logger.debug(`SEC DB캐시 조회 실패: ${e}`, { component: COMP });
+    return [];
+  }
 }
 
 export async function runSecResearchBatch(tickers: string[]): Promise<SecResearchResult[]> {

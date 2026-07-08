@@ -127,7 +127,7 @@ export async function reconcilePendingOrders(): Promise<void> {
                 await getPool().query(
                   `UPDATE transaction_chains SET status = 'CLOSED', closed_at = NOW(), close_reason = $2, total_quantity = 0,
                     realized_pnl = realized_pnl + CASE WHEN $3 > 0 THEN $3 * (1 - $5) * total_quantity - avg_buy_price * total_quantity ELSE 0 END,
-                    pnl_pct = CASE WHEN $4 IS NOT NULL THEN ROUND($4::numeric, 2) ELSE pnl_pct END
+                    pnl_pct = CASE WHEN $4::numeric IS NOT NULL THEN ROUND($4::numeric, 2) ELSE pnl_pct END
                    WHERE id = $1 AND status != 'CLOSED'`,
                   [ch.id, `체결 확인 자동 정산 (KIS주문: ${kisOrderNo})`, fp, pnlPctNum, KR_FEE.SELL_FEE_PCT],
                 );
@@ -313,7 +313,7 @@ export async function reconcileExternalSells(): Promise<void> {
           await txClient.query(
             `UPDATE transaction_chains SET status = 'CLOSED', closed_at = NOW(), close_reason = $2,
               realized_pnl = CASE WHEN $3 > 0 THEN realized_pnl + $3 * (1 - $5) * total_quantity - avg_buy_price * total_quantity ELSE realized_pnl END,
-              pnl_pct = CASE WHEN $4 IS NOT NULL THEN ROUND($4::numeric, 2) ELSE pnl_pct END
+              pnl_pct = CASE WHEN $4::numeric IS NOT NULL THEN ROUND($4::numeric, 2) ELSE pnl_pct END
              WHERE id = $1`,
             [chain.id, '외부매도 (KIS 앱 직접 매도)', fillPrice, pnlPctNum, KR_FEE.SELL_FEE_PCT],
           );

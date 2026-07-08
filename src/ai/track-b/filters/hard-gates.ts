@@ -10,7 +10,6 @@ import { logger } from '../../../utils/logger.js';
 import { getOverride } from '../../ai-overrides.js';
 import { isDailyStopLossBlocked } from '../sell-cooldown.js';
 import { BUY_BLOCKED_CODES, MEGA_CAP_PRIORITY_CODES } from '../trading-rules.js';
-import { checkSmartReentry } from './smart-reentry.js';
 import type { HardGateInput } from './types.js';
 
 /**
@@ -52,59 +51,37 @@ export function isHardBlocked(input: HardGateInput): boolean {
     return true;
   }
 
-  // ── 스마트 재진입: 손실 이력이 있는 종목에 대해 조건 기반 재진입 판단 ──
-  // v22.3: 대형주는 차트 데이터 부족 시에도 재진입 허용 (봇 성능 문제지 종목 문제 아님)
+  // ── v29 ① 유령 브레이크 수리: 스마트 재진입 폐지 → 손실 이력 종목 하드 차단 ──
+  // 사유: E<0 + 신호 예측력 미증명 상태에서 손절종목 재진입은 대원전선 패턴 재발 경로.
+  //   (checkSmartReentry 조건부 재진입/대형주 면제는 손실확정→재매수 churn을 열어주던 구멍.)
+  //   유일한 예외: CEO 명시적 allowRebuy override.
   const lossRecord = lossHistory?.get(code);
-  const isMegaCap = MEGA_CAP_PRIORITY_CODES.has(code);
   if (lossRecord) {
     const allowRebuy = getOverride<boolean>(`${code}_allowRebuy`);
     if (allowRebuy) {
-      logger.info(`  🔓 ${code}(${name}): allowRebuy override로 손실 차단 해제`, { component: 'TRACK_B' });
+      logger.info(`  🔓 ${code}(${name}): allowRebuy override로 손실 차단 해제 (CEO 명시)`, { component: 'TRACK_B' });
     } else {
-      const candles = chartData?.get(code);
-      const tv = tradingValues?.get(code) ?? 0;
-      const reentry = checkSmartReentry(lossRecord, candles, tv);
-      if (!reentry.allowed) {
-        // v22.3: 대형주는 "차트 데이터 부족" 시 재진입 허용 (스마트재진입 면제)
-        if (isMegaCap && reentry.reason.includes('차트 데이터 부족')) {
-          logger.info(`  ⚠️ ${code}(${name}): 대형주 차트 미로딩 → 재진입 허용 (손실${lossRecord.lossPct.toFixed(1)}%)`, { component: 'TRACK_B' });
-        } else if (isMegaCap && lossRecord.lossPct > -5) {
-          // 대형주 손실 -5% 미만이면 기술적 조건 미충족이어도 재진입 허용 (타이밍 문제)
-          logger.info(`  ⚠️ ${code}(${name}): 대형주 소폭손실(${lossRecord.lossPct.toFixed(1)}%) → 재진입 허용`, { component: 'TRACK_B' });
-        } else {
-          logger.info(
-            `  🚫 ${code}(${name}): 손실${lossRecord.lossPct.toFixed(1)}% 재진입 차단 — ${reentry.reason}`,
-            { component: 'TRACK_B' },
-          );
-          return true;
-        }
-      } else {
-        // 스마트 재진입 허용 — suggestedSl은 input에 기록 (buy-execution에서 참조)
-        logger.info(`  🔓 ${code}(${name}): ${reentry.reason}`, { component: 'TRACK_B' });
-        if (reentry.suggestedSl) {
-          input._smartReentrySl = reentry.suggestedSl;
-        }
-      }
+      logger.info(`  🚫 ${code}(${name}): 손실${lossRecord.lossPct.toFixed(1)}% 종목 재진입 하드차단 (v29 스마트재진입 폐지)`, { component: 'TRACK_B' });
+      return true;
     }
   }
 
-  // 레거시 lossBlockedCodes/bigLossBlockedCodes 체크 (lossHistory 미전달 시 폴백)
-  if (!lossHistory) {
-    if (bigLossBlockedCodes?.has(code) && !isPaper) {
-      const aiForBigLoss = aiScoreMap.get(code) ?? 0;
-      const highConviction = Number.isFinite(aiForBigLoss) && aiForBigLoss >= 90;
-      if (!highConviction) {
-        logger.info(`  🚫 ${code}(${name}): -5%초과 손실 차단 (폴백)`, { component: 'TRACK_B' });
-        return true;
-      }
+  // v29 ①: 실현손실 기반 하드 차단 — 기존 if(!lossHistory) 유령가드로 항상 스킵되던 죽은코드를 재무장.
+  //   bigLossBlockedCodes(-5%초과)·lossBlockedCodes(손절쿨다운)는 lossHistory와 다른 소스(원화기준)라 병행 유지.
+  if (bigLossBlockedCodes?.has(code) && !isPaper) {
+    const aiForBigLoss = aiScoreMap.get(code) ?? 0;
+    const highConviction = Number.isFinite(aiForBigLoss) && aiForBigLoss >= 90;
+    if (!highConviction) {
+      logger.info(`  🚫 ${code}(${name}): -5%초과 손실 차단`, { component: 'TRACK_B' });
+      return true;
     }
-    if (lossBlockedCodes?.has(code)) {
-      const aiForCooldown = aiScoreMap.get(code) ?? 0;
-      const threshold = isPaper ? 45 : 80; // Paper: 45점 이상이면 쿨다운 해제 (전수조사 극대화)
-      if (!Number.isFinite(aiForCooldown) || aiForCooldown < threshold) {
-        logger.info(`  🚫 ${code}(${name}): 손절 쿨다운 (폴백)`, { component: 'TRACK_B' });
-        return true;
-      }
+  }
+  if (lossBlockedCodes?.has(code)) {
+    const aiForCooldown = aiScoreMap.get(code) ?? 0;
+    const threshold = isPaper ? 45 : 80; // Paper: 45점 이상이면 쿨다운 해제 (전수조사 극대화)
+    if (!Number.isFinite(aiForCooldown) || aiForCooldown < threshold) {
+      logger.info(`  🚫 ${code}(${name}): 손절 쿨다운`, { component: 'TRACK_B' });
+      return true;
     }
   }
 
@@ -120,9 +97,11 @@ export function isHardBlocked(input: HardGateInput): boolean {
     return true;
   }
 
-  // v22: 매도 후 쿨다운 — Paper 모드에도 적용 (반복매매=적자 주범)
+  // v22: 매도 후 쿨다운 — 반복매매=적자 주범. 4h 하드월.
+  // v29 ①: 스마트재진입 바이패스 제거 — 손절/익절 무관 매도 후 4h 재진입 하드차단(churn 원천 차단).
+  //   사유: E<0 + 신호 예측력 미증명 상태에서 손절종목 재진입은 대원전선 패턴 재발 경로.
   if (recentlySoldCodes?.has(code)) {
-    logger.info(`  🕐 ${code}(${name}): 매도 후 쿨다운 — 재진입 대기`, { component: 'TRACK_B' });
+    logger.info(`  🕐 ${code}(${name}): 매도 후 쿨다운 (4h) — 재진입 차단`, { component: 'TRACK_B' });
     return true;
   }
 
@@ -173,18 +152,11 @@ export function isHardBlocked(input: HardGateInput): boolean {
     }
   }
 
-  // v22.3: 14일 내 2회+ 손절 블랙리스트 — 대형주/우량주는 면제 (스마트 재진입으로 대체)
-  // 잡주 = 상폐위험/작전주/개미피해 종목. 삼성전자/현대로템 등은 진입타이밍 문제이지 종목 문제 아님
+  // v29 ①: 14일 내 2회+ 손절 → 하드 블랙리스트 (우량주 면제 제거 — 스마트재진입 폐지로 면제 근거 소멸).
+  //   사유: E<0 + 신호 예측력 미증명 상태에서 손절종목 재진입은 대원전선 패턴 재발 경로.
   if (input.repeatLoserCodes?.has(code)) {
-    const isBluechip = MEGA_CAP_PRIORITY_CODES.has(code);
-    const highTv = (tradingValues?.get(code) ?? 0) >= 100_0000_0000; // 거래대금 100억+ = 주도주
-    if (isBluechip || highTv) {
-      // 우량주는 블랙리스트 대신 스마트 재진입 체크에 맡김 (위에서 이미 처리됨)
-      logger.info(`  ⚠️ ${code}(${name}): 반복손절이지만 우량주 → 블랙리스트 면제 (스마트재진입 의존)`, { component: 'TRACK_B' });
-    } else {
-      logger.info(`  🚫 ${code}(${name}): 14일 내 2회+ 손절 — 7일 자동 블랙리스트`, { component: 'TRACK_B' });
-      return true;
-    }
+    logger.info(`  🚫 ${code}(${name}): 14일 내 2회+ 손절 — 하드 블랙리스트 차단`, { component: 'TRACK_B' });
+    return true;
   }
 
   return false; // 통과

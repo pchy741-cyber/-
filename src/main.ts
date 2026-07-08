@@ -177,10 +177,12 @@ app.route('/', aiLoopRoutes); // GET  /api/ai-loop/* (AI Loop 매매 조절)
 import { referenceRoutes } from './api/routes/references.js';
 import { researchRoutes } from './api/routes/research.js';
 import { marketSourcesRoutes } from './api/routes/market-sources.js';
+import { promptManagerRoutes } from './api/routes/prompt-manager.js';
 
 app.route('/', referenceRoutes); // GET/POST/DELETE /api/references (트레이딩 레퍼런스)
 app.route('/', researchRoutes); // GET /api/research/files, POST /api/research/upload, POST /api/research/query
 app.route('/', marketSourcesRoutes); // POST /api/market-sources/replace, GET /api/candidates/today (v27 Fable)
+app.route('/', promptManagerRoutes); // GET /api/prompts/context, POST /api/prompts/proposal (T8 프롬프트 정합성)
 
 // 확장 기능 (OFF by default, 설정에서 켜야 사용)
 import { dividendRoutes } from './api/routes/dividend.js';

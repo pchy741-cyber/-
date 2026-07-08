@@ -227,3 +227,22 @@ researchRoutes.post('/research/sec/batch', async (c) => {
     return c.json({ error: 'Internal server error' }, 500);
   }
 });
+
+// GET /api/research/sec/cached?tickers=NVDA,AMD — 캐시된 SEC 결과 즉시 반환 (Gemini 호출 없음, 버튼 캐시우선)
+researchRoutes.get('/research/sec/cached', async (c) => {
+  try {
+    const tickers = (c.req.query('tickers') ?? '')
+      .split(',')
+      .map((t) => t.trim().toUpperCase())
+      .filter((t) => /^[A-Z]{1,5}$/.test(t))
+      .slice(0, 30);
+    const { getCachedSecResults, getDbCachedSecResults } = await import('../../automation/sec-research.js');
+    const mem = getCachedSecResults(tickers); // 인메모리(fresh)
+    const memSet = new Set(mem.map((r) => r.ticker));
+    const db = (await getDbCachedSecResults(tickers)).filter((r) => !memSet.has(r.ticker)); // DB(재시작에도 유지)
+    const results = [...mem, ...db];
+    return c.json({ ok: true, count: results.length, results });
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500);
+  }
+});

@@ -34,7 +34,10 @@ export interface CurrentPrice {
   sectorCode: string; // 업종 코드 (bstp_cls_code) — hot-sector-watchlist SECTOR_NAMES와 매칭
 }
 
-export async function getCurrentPrice(stockCode: string): Promise<CurrentPrice> {
+export async function getCurrentPrice(
+  stockCode: string,
+  marketDiv: 'J' | 'NX' | 'UN' = 'J',
+): Promise<CurrentPrice> {
   await marketDataRateLimiter.acquire();
   const res = await kisRequest({
     path: '/uapi/domestic-stock/v1/quotations/inquire-price',
@@ -42,7 +45,8 @@ export async function getCurrentPrice(stockCode: string): Promise<CurrentPrice> 
     useRealUrl: true,
     skipRateLimiter: true,
     params: {
-      FID_COND_MRKT_DIV_CODE: 'J',
+      // J=KRX(기본) · NX=넥스트레이드(장전/장후) · UN=통합. 장전 08:00~09:00 NXT가격은 NX/UN 필요.
+      FID_COND_MRKT_DIV_CODE: marketDiv,
       FID_INPUT_ISCD: stockCode,
     },
   });

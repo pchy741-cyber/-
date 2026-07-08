@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { api, fmtTime } from '../../lib/utils';
 import { Spinner } from '@/components/ui';
 import type { DartResult } from './research-types';
@@ -13,6 +13,8 @@ interface Props {
 
 export default function SecReportsTab({ usWatchlist }: Props) {
   const usName = (ticker: string) => usWatchlist.find((s) => s.ticker === ticker)?.name ?? ticker;
+  // 버튼 캐시우선: 자동로드는 /cached(Gemini 없음, 즉시), 새로고침 버튼만 /batch(Gemini) 강제
+  const forceRef = useRef(false);
 
   const { results: secResults, loading: secLoading, error: secError, setError: setSecError, expanded: expandedSec, setExpanded: setExpandedSec, load: loadSecReports } = useReportsFetcher<DartResult>({
     fetchFn: async () => {
@@ -21,11 +23,11 @@ export default function SecReportsTab({ usWatchlist }: Props) {
         setSecError('감시목록에 US 종목이 없습니다');
         return null;
       }
-      const data = await api('/research/sec/batch', {
-        method: 'POST',
-        body: JSON.stringify({ tickers }),
-        timeout: 90000,
-      });
+      const force = forceRef.current;
+      forceRef.current = false;
+      const data = force
+        ? await api('/research/sec/batch', { method: 'POST', body: JSON.stringify({ tickers }), timeout: 90000 })
+        : await api(`/research/sec/cached?tickers=${tickers.join(',')}`);
       if (data.ok && Array.isArray(data.results)) {
         return data.results.map((r: any) => ({
           stockCode: r.ticker,
@@ -71,7 +73,7 @@ export default function SecReportsTab({ usWatchlist }: Props) {
           {usWatchlist.length > 0 ? `US 감시목록 ${usWatchlist.length}종목` : 'US 감시목록 로딩 중...'}
         </span>
         <button
-          onClick={loadSecReports}
+          onClick={() => { forceRef.current = true; loadSecReports(); }}
           disabled={secLoading}
           className="px-3 py-1.5 bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-500 hover:to-blue-400 disabled:opacity-30 disabled:cursor-not-allowed rounded-lg text-[11px] font-bold transition-all shadow-lg shadow-blue-500/10"
         >

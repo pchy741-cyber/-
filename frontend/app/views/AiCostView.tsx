@@ -120,7 +120,7 @@ function DailyCostChart({ daily, exchangeRate }: { daily: AiCostDailyEntry[]; ex
 
 // ── Provider Bar Chart (오늘 비율) ──
 function ProviderBreakdown({ today }: { today: AiCostSummary['today'] }) {
-  const entries = Object.entries(today).sort((a, b) => b[1].costUsd - a[1].costUsd);
+  const entries = Object.entries(today ?? {}).sort((a, b) => b[1].costUsd - a[1].costUsd);
   const totalUsd = entries.reduce((s, [, v]) => s + v.costUsd, 0) || 1;
 
   return (
@@ -146,7 +146,7 @@ function ProviderBreakdown({ today }: { today: AiCostSummary['today'] }) {
 
 // ── Detail Table ──
 function DetailTable({ today, exchangeRate }: { today: AiCostSummary['today']; exchangeRate: number }) {
-  const entries = Object.entries(today).sort((a, b) => b[1].costUsd - a[1].costUsd);
+  const entries = Object.entries(today ?? {}).sort((a, b) => b[1].costUsd - a[1].costUsd);
 
   if (entries.length === 0) {
     return <div className="text-[11px] text-slate-600 text-center py-6">오늘 AI 호출 기록 없음</div>;
@@ -191,7 +191,7 @@ function DailyStackedChart({ daily, exchangeRate }: { daily: AiCostDailyEntry[];
 
   // Collect all providers
   const allProviders = new Set<string>();
-  for (const d of daily) for (const p of Object.keys(d.providers)) allProviders.add(p);
+  for (const d of daily) for (const p of Object.keys(d.providers ?? {})) allProviders.add(p);
   const providers = [...allProviders];
 
   const maxKrw = Math.max(...daily.map(d => d.totalUsd * exchangeRate), 1);

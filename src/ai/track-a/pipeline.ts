@@ -232,10 +232,19 @@ export async function runTrackAPipeline(additionalSources?: string): Promise<voi
         logger.info(`📚 NotebookLM: 레거시 텍스트 주입 (${rawNb.length}자)`, { component: 'TRACK_A' });
       }
     }
-    const geminiBase = strategy?.gemini_prompt?.trim() || '';
-    const customGeminiPrompt = notebookPrompt
-      ? `## NotebookLM 소스 분석\n${notebookPrompt}\n\n${geminiBase}`
-      : geminiBase || undefined;
+    // ── 지시탭 4종 주입: 분석(gemini_prompt)+전략서(strategy_document)+리스크(risk_prompt)+매매(claude_prompt) ──
+    // T8 승인(prompt_revisions)이 strategy_config 컬럼에 반영되면 composeInstructionPrompt()로 합류.
+    // 동일 헬퍼가 앙상블 gemini-scorer(ensemble.ts)에도 쓰여 모든 Gemini 스코어링 표면에 일관 주입.
+    // 각 탭 기본 빈 문자열 → 미승인 시 gemini_prompt만 → 기존 동작(notebook + gemini)과 하위호환.
+    const { composeInstructionPrompt } = await import('./instruction-prompt.js');
+    const instructionPrompt = composeInstructionPrompt(strategy);
+    const promptSections: string[] = [];
+    if (notebookPrompt) promptSections.push(`## NotebookLM 소스 분석\n${notebookPrompt}`);
+    if (instructionPrompt) promptSections.push(instructionPrompt);
+    const customGeminiPrompt = promptSections.length > 0 ? promptSections.join('\n\n') : undefined;
+    if (strategy?.strategy_document?.trim() || strategy?.risk_prompt?.trim() || strategy?.claude_prompt?.trim()) {
+      logger.info('📋 지시탭 주입: 전략서/리스크/매매 지침 → Gemini 분석 프롬프트 합류', { component: 'TRACK_A' });
+    }
     const customGptPrompt = strategy?.gpt_prompt;
 
     // 3. 종목별 차트 데이터 수집 — 8개씩 병렬 (kisRateLimiter가 내부 12/sec 관리)

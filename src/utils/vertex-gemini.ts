@@ -360,8 +360,18 @@ export async function callVertexGemini(
     return text;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    if (msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED')) {
-      logger.warn(`⚠️ Studio 429 [${label}] — Vertex 비상 폴백`, { component: 'AI_COST' });
+    // 429(rate limit) + 503(Service Unavailable/과부하)/UNAVAILABLE/overloaded 모두 폴백 트리거.
+    // 기존: 429만 처리 → 503 "high demand"가 그대로 throw되어 ensemble/해외/뉴스 전부 Gemini 하드실패.
+    const isOverloaded =
+      msg.includes('429') ||
+      msg.includes('RESOURCE_EXHAUSTED') ||
+      msg.includes('503') ||
+      msg.includes('UNAVAILABLE') ||
+      msg.includes('Service Unavailable') ||
+      msg.includes('overloaded') ||
+      msg.includes('high demand');
+    if (isOverloaded) {
+      logger.warn(`⚠️ Studio 과부하(429/503) [${label}] — Vertex 비상 폴백`, { component: 'AI_COST' });
       try {
         const { text, inputTokens, outputTokens } = await callVertexUngrounded(systemPrompt, userMessage, opts);
         const costUsd = calcGeminiVertexCost(inputTokens, outputTokens, false);
@@ -387,6 +397,10 @@ export async function callVertexGemini(
   }
 }
 
+// v29: Groq TPD(일일토큰) 소진 서킷브레이커 — 소진 감지 시 리셋시간까지 Groq 건너뛰고 NVIDIA 직행.
+//   (기존: 매 호출마다 Groq 429 재시도 → 낭비 + 지연. TPD 100k는 장중 자주 소진됨.)
+let _groqTpdBlockedUntil = 0;
+
 /**
  * v27: Gemini 전면 장애 비상 폴백 — Groq → NVIDIA NIM
  * Studio 429 + Vertex 실패 시 최후 수단 (거래 중단 방지)
@@ -404,9 +418,9 @@ async function callLlmEmergencyFallback(
   const userCompact = userMessage.length > 4000 ? userMessage.slice(0, 4000) + '\n…(truncated)' : userMessage;
   const maxTokens = Math.min(opts.maxOutputTokens ?? 4096, 4096);
 
-  // 1차: Groq (llama-3.3-70b)
+  // 1차: Groq (llama-3.3-70b) — v29: TPD 소진 서킷브레이커 활성 시 건너뜀
   const groqKey = process.env.GROQ_API_KEY;
-  if (groqKey) {
+  if (groqKey && Date.now() >= _groqTpdBlockedUntil) {
     try {
       const { default: OpenAI } = await import('openai');
       const groq = new OpenAI({ apiKey: groqKey, baseURL: 'https://api.groq.com/openai/v1' });
@@ -428,8 +442,19 @@ async function callLlmEmergencyFallback(
       logger.info(`🆘 Groq 비상폴백 [${label}]: ${inTok}+${outTok}tok ${durationMs}ms $${costUsd.toFixed(5)}`, { component: 'AI_COST' });
       return text;
     } catch (groqErr) {
-      logger.warn(`⚠️ Groq 비상폴백 실패 [${label}]: ${groqErr instanceof Error ? groqErr.message : groqErr}`, { component: 'AI_COST' });
+      const em = groqErr instanceof Error ? groqErr.message : String(groqErr);
+      // TPD(일일 토큰) 소진 → 리셋시간(에러 메시지의 "try again in Xh Ym")까지 서킷브레이커, NVIDIA 직행
+      if (/tokens per day|per day \(TPD\)|TPD/i.test(em)) {
+        const hm = em.match(/try again in (?:(\d+)h)?(\d+(?:\.\d+)?)m/i);
+        const resetMin = hm ? Number(hm[1] ?? 0) * 60 + Math.ceil(Number(hm[2])) : 60;
+        _groqTpdBlockedUntil = Date.now() + Math.min(resetMin, 120) * 60_000;
+        logger.warn(`⛔ Groq TPD 소진 → ${Math.min(resetMin, 120)}분 서킷브레이커 (이후 NVIDIA 직행) [${label}]`, { component: 'AI_COST' });
+      } else {
+        logger.warn(`⚠️ Groq 비상폴백 실패 [${label}]: ${em}`, { component: 'AI_COST' });
+      }
     }
+  } else if (groqKey) {
+    logger.debug(`⏭️ Groq TPD 서킷브레이커 활성(${Math.round((_groqTpdBlockedUntil - Date.now()) / 60000)}분 남음) → NVIDIA 직행 [${label}]`, { component: 'AI_COST' });
   }
 
   // 2차: NVIDIA NIM (무료)

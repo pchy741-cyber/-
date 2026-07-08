@@ -316,6 +316,37 @@ export async function getRecentLossStocks(isPaper?: boolean): Promise<Set<string
 }
 
 /**
+ * 재매수 쿨다운(익절 포함 모든 매도) — 4시간 이내 매도된 종목 Set 반환.
+ * 손절뿐 아니라 익절 매도도 포함해 "같은 세션 꼭대기 재매수(익절→재매수→손절)"를 차단한다.
+ * 집중캡/강제분산 매도는 제외(진짜 청산이 아니므로). lossCooldownSet에 병합되며,
+ * buy-filter의 RECOVERY_BUY 80%+MA20+양봉 우회는 그대로 적용 → 강한 반전만 재진입 허용.
+ */
+export async function getRecentlySoldOverseas(isPaper?: boolean): Promise<Set<string>> {
+  const mode = (isPaper ?? getCtxIsPaper()) ? 'paper' : 'live';
+  try {
+    const { rows } = await getPool().query(
+      `
+      SELECT DISTINCT stock_code
+      FROM orders
+      WHERE side = 'SELL'
+        AND trigger_source = 'OVERSEAS'
+        AND trading_mode = $1
+        AND status = 'FILLED'
+        AND created_at >= NOW() - INTERVAL '4 hours'
+        AND ai_reasoning NOT LIKE '%집중도 캡%'
+        AND ai_reasoning NOT LIKE '%집중캡%'
+        AND ai_reasoning NOT LIKE '%강제 분산%'
+    `,
+      [mode],
+    );
+    return new Set(rows.map((r: { stock_code: string }) => String(r.stock_code)));
+  } catch (e) {
+    logger.warn(`재매수 쿨다운(전체매도) 조회 실패: ${(e as Error).message}`, { component: 'OVERSEAS' });
+    return new Set();
+  }
+}
+
+/**
  * -5% 초과 손실 매도 종목 — 30일 절대 차단 (CEO allowRebuy override만 해제)
  * 손해보고 판 종목을 승인 없이 재매수하지 않음
  */

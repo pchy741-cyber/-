@@ -1310,12 +1310,20 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
     if (winFeedback.thresholdBonus > 0 || winFeedback.requirePullback || winFeedback.minVolumeRatio > 1.0) {
       logger.info(`🎯 승률피드백 적용: ${winFeedback.summary}`, { component: 'TRACK_B' });
     }
-    // ── T1: 포지션 사이징 플랫화 — E>0 증명 전까지 최소 티어 고정 ──────
-    // 근거: 50만 미만 39건 +100,791원 흑자 vs 50-100만 20건 -143,405원 적자
-    // 모든 승수(성과/스트레스/Paper피드백/AK) OFF, 상한 50만원 고정
-    const FLAT_MAX_POSITION_KRW = ctxIsPaper ? 1_500_000 : 400_000; // Live 40만 고정, Paper 150만 유지
-    const adjMaxPositionKrw = FLAT_MAX_POSITION_KRW;
-    logger.info(`📐 maxPositionKrw 플랫: ${adjMaxPositionKrw.toLocaleString()}원 (T1: 승수 전부 OFF)`, { component: 'TRACK_B' });
+    // ── v29 레짐 적응형 사이징: 플랫 40만을 '바닥(floor)'으로 유지 + 확인된 상승장에서만 상향 ──
+    // T1 플랫화(E>0 증명 전 오버사이징 금지)의 취지는 중립/약세에서 그대로 보존.
+    // boost(KOSPI>MA20>MA60 = 추세 확인) 시에만 종목당 캡을 총자산×positionCapPct%(상승 30%)로 상향
+    // → 좋은 장에 자본 집행 극대화(수익극대화). 중립/약세는 ≤40만 유지 + 하위 사이저의 방어 승수(0.3~0.8×) 그대로.
+    // 근거(플랫 하한): 50만 미만 39건 +100,791원 vs 50-100만 20건 -143,405원 → 미검증장에선 소액.
+    const FLOOR_MAX_POSITION_KRW = ctxIsPaper ? 1_500_000 : 400_000;
+    const regimeCapKrw = Math.round((totalAssets || 0) * ((allocRisk.positionCapPct ?? 15) / 100));
+    const adjMaxPositionKrw = kospiRegime.boost
+      ? Math.max(FLOOR_MAX_POSITION_KRW, regimeCapKrw) // 확인 상승장 → 레짐 캡으로 상향(풀집행). 단일종목 25% 집중캡은 하위에서 유지.
+      : Math.min(FLOOR_MAX_POSITION_KRW, regimeCapKrw || FLOOR_MAX_POSITION_KRW); // 중립/약세 → 보수적(≤40만)
+    logger.info(
+      `📐 maxPositionKrw ${kospiRegime.boost ? '📈상승장 상향' : '🛡️방어 유지'}: ${adjMaxPositionKrw.toLocaleString()}원 (floor ${FLOOR_MAX_POSITION_KRW.toLocaleString()}, 레짐캡 ${regimeCapKrw.toLocaleString()}, capPct ${allocRisk.positionCapPct}%)`,
+      { component: 'TRACK_B' },
+    );
 
     // ── 호가 불균형 보정 + 매도벽 하드 게이트 (상위 5종목) ───────────────
     // bid/ask 비율 ≥ 1.5 → 매수세 강함 +6, ≥ 1.2 → +3
@@ -1616,14 +1624,15 @@ export async function runTrackBPipeline(): Promise<TradeDecision[]> {
       orderableCash,
       totalAssets,
     });
-    // Live 계좌 파생ETF 미신청(CEO 결정, 2026-07-02) — 신규 매수는 항상 KIS 거부(APBK1497)되므로
-    // Live에서는 생성 자체를 스킵. 매도/청산(기존 보유분 정리)만 통과.
-    if (!ctxIsPaper) {
+    // v29(2026-07-08): Live 파생상품 가입 완료 → 인버스 매수 허용(하락장 파킹/헷지).
+    //   기존: 파생ETF 미신청으로 Live 인버스 매수 스킵(APBK1497 거부). 가입 후 해제.
+    //   안전장치: getOverride('live_inverse_disabled')=true면 재차단 (가입 미활성/문제 시 무배포 토글).
+    if (!ctxIsPaper && getOverride<boolean>('live_inverse_disabled') === true) {
       const blockedBuyCount = inverseDecisions.filter((d) => d.action === 'BUY').length;
       inverseDecisions = inverseDecisions.filter((d) => d.action !== 'BUY');
       if (blockedBuyCount > 0) {
         logger.info(
-          `🔻 인버스 매수 ${blockedBuyCount}건 스킵 (Live 계좌 파생ETF 미신청 — CEO 결정)`,
+          `🔻 인버스 매수 ${blockedBuyCount}건 스킵 (live_inverse_disabled 오버라이드 활성)`,
           { component: 'CRASH_PROFIT' },
         );
       }

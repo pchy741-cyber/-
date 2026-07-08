@@ -33,6 +33,7 @@ import { runConsistencyValidator } from './consistency-validator.js';
 import { resetOpeningBellDaily, runOpeningBellCycle, warmupOpeningBell } from './opening-bell-job.js';
 import { runOverseasDual } from './overseas-job.js';
 import { runPreMarketOrders } from './pre-market-order-job.js';
+import { runOpenGapSlSweep } from './open-gap-sl-sweep.js';
 import { runSnapshotJob } from './snapshot-job.js';
 import { runTrackAJob } from './track-a-job.js';
 import { runTrackBJob } from './track-b-job.js';
@@ -512,6 +513,68 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
+  // 08:00~08:57 (3분 간격) — v29 [NXT 장전]: KODEX 인버스(114800) NXT 프리마켓 실측 + 하락장 조기감지.
+  //   인버스 +1%↑ → premarket_crash_level=CRASH (기존 Track B가 신규매수 자동 신중·차단). Phase 1: 매도 없음.
+  cron.schedule(
+    '*/3 8 * * 1-5',
+    async () => {
+      const { isTradingDay } = await import('../utils/holidays.js');
+      if (!isTradingDay()) return;
+      const [{ checkPreMarketInverseSignal, CRASH_LEVEL_RANK }, { getOverride, setOverride }, { sendTelegramMessage }] =
+        await Promise.all([
+          import('../automation/crash-profit.js'),
+          import('../ai/ai-overrides.js'),
+          import('../notifications/telegram.js'),
+        ]);
+      const sig = await checkPreMarketInverseSignal().catch(() => null);
+      if (!sig || !sig.crash) return;
+      const existing = getOverride<'CAUTION' | 'CRASH' | 'PANIC'>('premarket_crash_level');
+      const existingRank = existing ? CRASH_LEVEL_RANK[existing] : 0;
+      if (CRASH_LEVEL_RANK.CRASH >= existingRank) {
+        await setOverride(
+          'signal',
+          'premarket_crash_level',
+          'CRASH',
+          `장전 인버스: 114800 ${sig.source} +${sig.changePct.toFixed(2)}%`,
+          180,
+        );
+        logger.warn(`🚨 장전 인버스 하락신호: 114800 +${sig.changePct.toFixed(2)}% (${sig.source}) → CRASH`, {
+          component: 'SCHEDULER',
+        });
+        await sendTelegramMessage(
+          `🚨 장전 하락장 감지 (KODEX인버스 +${sig.changePct.toFixed(2)}%, ${sig.source})\n신규 매수 자동 신중·차단`,
+        ).catch(() => {});
+      }
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 04:10 — T8 프롬프트 제안 만료 처리 (7일 경과 PENDING → EXPIRED)
+  cron.schedule(
+    '10 4 * * *',
+    async () => {
+      const { expirePendingRevisions } = await import('../db/repo/prompt-revisions.js');
+      const n = await expirePendingRevisions().catch((e) => {
+        logger.error(`[T8] 제안 만료 처리 실패: ${e}`, { component: 'SCHEDULER' });
+        return 0;
+      });
+      if (n > 0) logger.info(`[T8] 프롬프트 제안 ${n}건 만료 처리`, { component: 'SCHEDULER' });
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 일요일 09:00 — T8 주간 프롬프트 정합성 감사 (Fable-5, 비거래일 = 매매 무영향)
+  cron.schedule(
+    '0 9 * * 0',
+    async () => {
+      const { runT8PromptManager } = await import('../automation/t8-prompt-manager.js');
+      await runT8PromptManager({ trigger: 'cron' }).catch((e) =>
+        logger.error(`[T8] 주간 감사 실패: ${e}`, { component: 'SCHEDULER' }),
+      );
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
   // 08:45 — 시장 라우팅: 미국 야간 지수 스캔 → Risk-On/Off 판정 → SOFR 파킹/언파킹
   cron.schedule(
     '45 8 * * 1-5',
@@ -640,6 +703,20 @@ export function startScheduler(): void {
     () => {
       runDomesticDual('동시호가', runPreMarketOrders).catch((e) =>
         logger.error(`동시호가 주문 실패: ${e}`, { component: 'SCHEDULER' }),
+      );
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 🔻 09:01 — 장초반 갭 SL 스위프 (밤사이 갭다운 SL관통 포지션 즉시 시장가 청산, 파킹 포함·30분가드 없이)
+  //   전수조사: SL이 폴링전용(장중만)이라 밤/주말 무감시 → 갭다운이 SL 관통, 한화오션 -20.3% 뒤늦게 감지되던 것 방어.
+  cron.schedule(
+    '1 9 * * 1-5',
+    async () => {
+      const { isTradingDay } = await import('../utils/holidays.js');
+      if (!isTradingDay()) return;
+      runDomesticDual('장초반갭SL', runOpenGapSlSweep).catch((e) =>
+        logger.error(`장초반 갭SL 실패: ${e}`, { component: 'SCHEDULER' }),
       );
     },
     { timezone: MARKET.TIMEZONE },
@@ -803,13 +880,25 @@ export function startScheduler(): void {
     { timezone: MARKET.TIMEZONE },
   );
 
-  // 보유일 손절 체크 — 장중 5분 간격 (v11: 10분→5분, 손절 감지 지연 단축)
+  // 보유일 손절 체크 + DB-KIS 정합 — 장중 3분 간격 (v29: 5→3분, 어긋남 창 축소)
   cron.schedule(
-    '*/5 9-15 * * 1-5',
+    '*/3 9-15 * * 1-5',
     () => {
       runDomesticDual('보유체크', runHoldingCheckJob).catch((e) =>
         logger.error(`보유일 체크 실패: ${e}`, { component: 'SCHEDULER' }),
       );
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // v29: DB-KIS 정합 프로액티브 확장 — 장전/장후/야간/주말도 외부매도 감지 (전체 SL잡 아닌 reconcileExternalSells만).
+  //   보유체크(9-15)가 못 커버하는 시간대. 외부(KIS앱 직접)매도를 늦게라도 잡아 DB 유실 방지. 15분 간격.
+  cron.schedule(
+    '*/15 16-23,0-8 * * *',
+    () => {
+      import('../trading/fill-reconciler.js')
+        .then((m) => runDomesticDual('DB-KIS정합', () => m.reconcileExternalSells()))
+        .catch((e) => logger.debug(`DB-KIS정합 실패: ${e}`, { component: 'SCHEDULER' }));
     },
     { timezone: MARKET.TIMEZONE },
   );
@@ -1093,6 +1182,20 @@ export function startScheduler(): void {
     '30 18 * * 1-5',
     () => {
       runDailyLearning().catch((e) => logger.error(`자기학습 실패: ${e}`, { component: 'SCHEDULER' }));
+    },
+    { timezone: MARKET.TIMEZONE },
+  );
+
+  // 🧹 D2: 인사이트 겹침/충돌 정리 — 6시간마다 (동일 파라미터 경합 → 최고신뢰만 유지, 소프트 정리)
+  cron.schedule(
+    '15 */6 * * *',
+    async () => {
+      const { cleanupInsightConflicts } = await import('../automation/self-learning.js');
+      const n = await cleanupInsightConflicts().catch((e: unknown) => {
+        logger.error(`인사이트 충돌 정리 실패: ${e}`, { component: 'SCHEDULER' });
+        return 0;
+      });
+      if (n > 0) logger.info(`🧹 인사이트 충돌 정리: 총 ${n}건`, { component: 'SCHEDULER' });
     },
     { timezone: MARKET.TIMEZONE },
   );
